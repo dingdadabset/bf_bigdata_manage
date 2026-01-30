@@ -48,6 +48,7 @@ export default {
   name: 'UserList',
   data() {
     return {
+      store,
       // userList: [], // Use computed instead
       loadingUsers: false,
       pagination: { current: 1, pageSize: 8, total: 0 },

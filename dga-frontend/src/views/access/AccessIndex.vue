@@ -1,25 +1,25 @@
 <template>
   <div class="access-management">
-    <a-row :gutter="24">
+    <div class="access-container">
       <!-- Left Panel: User List -->
-      <a-col :span="5">
+      <div class="access-item left-panel">
         <user-list 
           ref="userList"
           @select="onSelectUser"
           @create="createUserVisible = true"
         />
-      </a-col>
+      </div>
 
       <!-- Right Panel: Control Panel -->
-      <a-col :span="19">
+      <div class="access-item right-panel">
         <permission-panel 
           ref="permissionPanel"
           :user="selectedUser" 
           @delete="handleDeleteUser"
           @grant="onGrant"
         />
-      </a-col>
-    </a-row>
+      </div>
+    </div>
 
     <!-- Modals -->
     <create-user-modal 
@@ -106,6 +106,34 @@ export default {
 
 <style scoped>
 .access-management {
-  /* height: 100%; */
+  height: 100%;
+}
+
+.access-container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+  height: 100%;
+}
+
+.left-panel {
+  flex: 1 1 280px; /* Grow 1, Shrink 1, Basis 280px */
+  min-width: 280px;
+  /* Optional: Limit width on very wide screens so list doesn't get too wide */
+  max-width: 400px; 
+}
+
+.right-panel {
+  flex: 999 1 600px; /* Take remaining space, wrap if < 600px */
+  min-width: 600px;
+}
+
+/* Adjust for smaller screens */
+@media (max-width: 768px) {
+  .left-panel, .right-panel {
+    flex: 1 1 100%;
+    min-width: 100%;
+    max-width: 100%;
+  }
 }
 </style>

@@ -7,6 +7,7 @@ import DataSourceManagement from '../components/DataSourceManagement.vue';
 import Metadata from '../views/Metadata.vue';
 import Quality from '../views/Quality.vue';
 import DataMap from '../views/DataMap.vue';
+import UserProfile from '../views/UserProfile.vue';
 
 Vue.use(VueRouter);
 
@@ -23,6 +24,12 @@ const routes = [
       {
         path: '',
         redirect: '/datamap'
+      },
+      {
+        path: 'profile',
+        name: 'UserProfile',
+        component: UserProfile,
+        meta: { title: '个人中心' }
       },
       {
         path: 'datamap',

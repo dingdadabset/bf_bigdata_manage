@@ -24,6 +24,17 @@
                   登录
                 </a-button>
               </a-form-model-item>
+              <a-divider>其他登录方式</a-divider>
+              <div class="social-login">
+                <div class="social-icon-wrapper" @click="handleSocialLogin('wechat')">
+                  <a-icon type="wechat" class="social-icon" />
+                  <span class="social-text">微信</span>
+                </div>
+                <div class="social-icon-wrapper" @click="handleSocialLogin('alipay')">
+                  <a-icon type="alipay-circle" class="social-icon" />
+                  <span class="social-text">支付宝</span>
+                </div>
+              </div>
             </a-form-model>
           </a-tab-pane>
           <a-tab-pane key="2" tab="注册账号">
@@ -84,7 +95,21 @@ export default {
       }
     };
   },
+  mounted() {
+    const token = this.$route.query.token;
+    const username = this.$route.query.username;
+    if (token) {
+      localStorage.setItem('token', token);
+      localStorage.setItem('user', JSON.stringify({ username }));
+      this.$message.success('登录成功');
+      this.$router.push('/');
+    }
+  },
   methods: {
+    handleSocialLogin(provider) {
+      this.$message.info('功能还在开发中');
+      // window.location.href = `http://localhost:8080/oauth2/authorization/${provider}`;
+    },
     validateConfirmPassword(rule, value, callback) {
       if (value && value !== this.regForm.password) {
         callback(new Error('两次输入的密码不一致'));
@@ -147,20 +172,29 @@ export default {
 <style scoped>
 .login-container {
   height: 100vh;
-  background: #f0f2f5;
-  background-image: url('https://gw.alipayobjects.com/zos/rmsportal/TVYTbAXWheQpRcWDaDMu.svg');
+  /* Light gray gradient as base */
+  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+  /* If image exists, it overlays */
+  background-image: url('../assets/login-bg.png'), linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
   background-repeat: no-repeat;
-  background-position: center 110px;
-  background-size: 100%;
+  background-position: center;
+  background-size: cover;
   display: flex;
   justify-content: center;
   align-items: center;
   flex-direction: column;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
 .login-content {
-  width: 368px;
-  margin-bottom: 100px;
+  width: 420px;
+  margin-bottom: 60px;
+  animation: fadeIn 0.8s ease-out;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .login-header {
@@ -169,20 +203,84 @@ export default {
 }
 
 .login-title {
-  font-size: 33px;
-  color: rgba(0, 0, 0, 0.85);
-  font-family: 'Myriad Pro', 'Helvetica Neue', Arial, Helvetica, sans-serif;
-  font-weight: 600;
+  font-size: 32px;
+  color: #1f2937; /* Darker, sharper text */
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  margin-bottom: 8px;
 }
 
 .login-subtitle {
-  font-size: 14px;
-  color: rgba(0, 0, 0, 0.45);
-  margin-top: 12px;
+  font-size: 16px;
+  color: #6b7280; /* Muted tech gray */
+  margin-top: 8px;
+  font-weight: 400;
 }
 
 .login-card {
-  box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-  border-radius: 4px;
+  background: #ffffff;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08); /* Soft diffused shadow */
+  border-radius: 16px; /* Modern rounded corners */
+  padding: 24px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+}
+
+/* Enhancing Input Styles */
+::v-deep .ant-input-lg {
+  font-size: 16px;
+  padding: 12px 11px;
+  border-radius: 8px;
+  background-color: #f9fafb;
+  border: 1px solid #e5e7eb;
+  transition: all 0.3s;
+}
+
+::v-deep .ant-input-lg:focus {
+  background-color: #fff;
+  border-color: #1890ff;
+  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.1);
+}
+
+::v-deep .ant-btn-lg {
+  height: 48px;
+  font-size: 16px;
+  font-weight: 600;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(24, 144, 255, 0.3);
+  letter-spacing: 0.5px;
+}
+
+.social-login {
+  display: flex;
+  justify-content: center;
+  gap: 48px;
+  margin-top: 32px;
+  padding-top: 24px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.social-icon-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  cursor: pointer;
+  color: #9ca3af;
+  transition: all 0.3s ease;
+}
+
+.social-icon-wrapper:hover {
+  color: #1890ff;
+  transform: translateY(-3px);
+}
+
+.social-icon {
+  font-size: 32px;
+  margin-bottom: 8px;
+  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.05));
+}
+
+.social-text {
+  font-size: 13px;
+  font-weight: 500;
 }
 </style>

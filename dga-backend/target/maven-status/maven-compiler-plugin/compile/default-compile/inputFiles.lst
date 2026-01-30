@@ -15,6 +15,8 @@
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/access/service/LdapService.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/quality/repository/QualityExecutionRepository.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/access/dto/TableGrant.java
+/Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/access/entity/User.java
+/Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/access/repository/UserRepository.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/access/dto/BatchGrantRequest.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/access/entity/UserHiveAccess.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/metadata/service/MetadataCollectorFactory.java
@@ -34,4 +36,6 @@
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/DgaApplication.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/datamap/repository/UserRecentViewRepository.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/metadata/entity/ColumnMetadata.java
+/Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/access/config/OAuth2LoginSuccessHandler.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/quality/entity/QualityExecution.java
+/Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/access/config/CustomOAuth2AuthorizationRequestResolver.java

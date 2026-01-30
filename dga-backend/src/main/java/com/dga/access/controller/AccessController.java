@@ -138,34 +138,45 @@ public class AccessController {
     
     @PostMapping("/import")
     public String importUsers() {
-        List<Map<String, Object>> ipaUsers = ipaHttpService.listUsers();
-        int count = 0;
-        for (Map<String, Object> u : ipaUsers) {
-            Object uidObj = u.get("uid");
-            if (uidObj instanceof List && !((List<?>) uidObj).isEmpty()) {
-                String username = (String) ((List<?>) uidObj).get(0);
-                if (!dgaUserRepository.existsByUsername(username)) {
-                    DgaUser newUser = new DgaUser();
-                    newUser.setUsername(username);
-                    newUser.setCreationStrategy("init_user");
-                    newUser.setClusterName("CDH-Cluster-01");
-                    
-                    // Try to get name
-                    Object givenName = u.get("givenname");
-                    if (givenName instanceof List && !((List<?>) givenName).isEmpty()) {
-                        newUser.setFirstName((String)((List<?>) givenName).get(0));
+        try {
+            List<Map<String, Object>> ipaUsers = ipaHttpService.listUsers();
+            int count = 0;
+            int failed = 0;
+            for (Map<String, Object> u : ipaUsers) {
+                try {
+                    Object uidObj = u.get("uid");
+                    if (uidObj instanceof List && !((List<?>) uidObj).isEmpty()) {
+                        String username = (String) ((List<?>) uidObj).get(0);
+                        if (!dgaUserRepository.existsByUsername(username)) {
+                            DgaUser newUser = new DgaUser();
+                            newUser.setUsername(username);
+                            newUser.setCreationStrategy("init_user");
+                            newUser.setClusterName("CDH-Cluster-01");
+                            
+                            // Try to get name
+                            Object givenName = u.get("givenname");
+                            if (givenName instanceof List && !((List<?>) givenName).isEmpty()) {
+                                newUser.setFirstName((String)((List<?>) givenName).get(0));
+                            }
+                            Object sn = u.get("sn");
+                            if (sn instanceof List && !((List<?>) sn).isEmpty()) {
+                                newUser.setLastName((String)((List<?>) sn).get(0));
+                            }
+                            
+                            dgaUserRepository.save(newUser);
+                            count++;
+                        }
                     }
-                    Object sn = u.get("sn");
-                    if (sn instanceof List && !((List<?>) sn).isEmpty()) {
-                        newUser.setLastName((String)((List<?>) sn).get(0));
-                    }
-                    
-                    dgaUserRepository.save(newUser);
-                    count++;
+                } catch (Exception e) {
+                    System.err.println("Failed to import user entry: " + u + " Error: " + e.getMessage());
+                    failed++;
                 }
             }
+            return "Import complete. Success: " + count + ", Failed: " + failed;
+        } catch (Exception e) {
+            e.printStackTrace();
+            return "Import failed: " + e.getMessage();
         }
-        return "Imported " + count + " users from IPA.";
     }
 
     @PostMapping("/sync/{username}")

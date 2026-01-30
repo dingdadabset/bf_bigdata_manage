@@ -4,27 +4,29 @@
       <a-button type="link" icon="sync" @click="handleSync" :loading="syncing" style="margin-right: 8px;">同步权限</a-button>
       <a-button type="link" icon="edit" @click="$emit('edit')">编辑策略</a-button>
     </div>
-    <a-tree
-      v-if="treeData && treeData.length"
-      :tree-data="treeData"
-      :load-data="loadTables"
-      show-icon
-      :expanded-keys="expandedKeys"
-      :auto-expand-parent="autoExpandParent"
-      @expand="onExpand"
-      @select="onSelect"
-    >
-      <a-icon slot="database" type="database" />
-      <a-icon slot="table" type="table" />
-      <template slot="custom" slot-scope="item">
-        <span class="node-title">
-          <span class="node-text">{{ item.title }}</span>
-          <a-tag v-if="item.levelTag" color="blue" style="margin-left: 8px; font-size: 10px">{{ item.levelTag }}</a-tag>
-          <a-tag v-if="item.perms" color="orange" style="margin-left: 8px; font-size: 10px">{{ item.perms }}</a-tag>
-        </span>
-      </template>
-    </a-tree>
+    <div v-if="dbList && dbList.length" class="db-list">
+      <div class="db-row" v-for="db in dbList" :key="db.key">
+        <div class="db-left">
+          <a-icon type="database" style="margin-right: 8px;" />
+          <span class="db-name">{{ db.title }}</span>
+          <a-tag color="blue" style="margin-left: 8px; font-size: 10px">库</a-tag>
+          <a-tag v-if="db.perms" color="orange" style="margin-left: 8px; font-size: 10px">{{ db.perms }}</a-tag>
+        </div>
+        <a-button class="db-action" type="link" icon="table" @click="openTables(db.title, db.perms)">查看表</a-button>
+      </div>
+    </div>
     <a-empty v-else description="暂无权限策略" />
+    <a-modal :visible="tablesVisible" :title="`库 ${tablesDb} 的表`" @cancel="tablesVisible=false" @ok="tablesVisible=false" width="520px">
+      <a-list :data-source="tablesData" bordered size="small">
+        <a-list-item slot="renderItem" slot-scope="item">
+          <a-icon type="table" style="margin-right: 8px;" />
+          <span class="table-name">{{ item }}</span>
+          <a-tag color="blue" style="margin-left: 8px; font-size: 10px">表</a-tag>
+          <a-tag v-if="tablesPerm" color="orange" style="margin-left: 8px; font-size: 10px">{{ tablesPerm }}</a-tag>
+        </a-list-item>
+        <div slot="header">共 {{ tablesData.length }} 张表</div>
+      </a-list>
+    </a-modal>
   </a-card>
 </template>
 
@@ -48,9 +50,11 @@ export default {
   data() {
     return {
       treeData: [],
-      expandedKeys: [],
-      autoExpandParent: false,
-      syncing: false
+      syncing: false,
+      tablesVisible: false,
+      tablesDb: '',
+      tablesPerm: '',
+      tablesData: []
     };
   },
   watch: {
@@ -77,6 +81,9 @@ export default {
     },
     effectiveCluster() {
       return this.cluster || this.currentClusterFromStore;
+    },
+    dbList() {
+      return this.treeData || [];
     }
   },
   methods: {
@@ -86,6 +93,7 @@ export default {
         if (this.effectiveCluster) {
           params.cluster = this.effectiveCluster;
         }
+        params.status = 'ACTIVE';
         const res = await axios.get('/api/access/user/access', {
           params
         });
@@ -116,7 +124,12 @@ export default {
             byDb[r.databaseName].perms = r.permission;
           }
         });
-        this.treeData = Object.values(byDb);
+        this.treeData = Object.values(byDb).map(node => {
+          if (node.children && node.children.length === 0) {
+            delete node.children;
+          }
+          return node;
+        });
       } catch (e) {
         const mock = store.permissions[this.username] || [];
         this.treeData = mock.map(db => ({
@@ -127,32 +140,20 @@ export default {
         }));
       }
     },
-    async loadTables(treeNode) {
-      if (treeNode.dataRef && treeNode.dataRef.children && treeNode.dataRef.children.length) {
-        return;
-      }
-      const db = treeNode.dataRef.title;
+    async openTables(dbName, perms) {
+      this.tablesVisible = true;
+      this.tablesDb = dbName;
+      this.tablesPerm = perms || '';
       try {
-        const params = { database: db };
+        const params = { database: dbName };
         if (this.effectiveCluster) {
           params.cluster = this.effectiveCluster;
         }
         const res = await axios.get('/api/access/hive/tables', { params });
-        const tables = res.data || [];
-        treeNode.dataRef.children = tables.map(t => ({
-          title: t,
-          key: `tbl-${db}-${t}`,
-          slots: { icon: 'table' },
-          scopedSlots: { title: 'custom' },
-          levelTag: '表'
-        }));
+        this.tablesData = res.data || [];
       } catch (e) {
-        treeNode.dataRef.children = [];
+        this.tablesData = [];
       }
-    },
-    onExpand() {},
-    onSelect(selectedKeys, info) {
-      console.log('selected', selectedKeys, info);
     },
     async handleSync() {
       this.syncing = true;
@@ -179,33 +180,112 @@ export default {
   text-align: left;
   overflow-x: hidden;
 }
+.db-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+.db-row {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  width: 100%;
+}
+.db-left {
+  display: flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.db-action {
+  margin-left: auto;
+}
+.db-name, .table-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tree-split {
+  display: flex;
+  gap: 16px;
+}
+.left-tree, .right-tree {
+  flex: 1 1 50%;
+  min-width: 280px;
+}
 .perm-card .ant-tree {
   margin-left: 0;
+  padding-left: 0;
 }
 .perm-card >>> .ant-tree .ant-tree-treenode {
-  min-height: 24px;
+  display: grid;
+  grid-template-columns: 20px auto;
+  align-items: center;
+  justify-content: start;
+  padding: 0 0 4px 0;
+  width: 100%;
 }
 .perm-card >>> .ant-tree .ant-tree-iconEle {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
+  height: 24px;
+  line-height: 24px;
+  width: 20px;
+  min-width: 20px;
 }
 .perm-card >>> .ant-tree .ant-tree-switcher {
-  display: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  line-height: 24px;
+  width: 20px;
+  min-width: 20px;
+  margin-right: 4px;
+}
+.perm-card >>> .ant-tree .ant-tree-switcher-noop {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 24px;
+  line-height: 24px;
+  width: 20px;
+  min-width: 20px;
+  margin-right: 4px;
 }
 .perm-card >>> .ant-tree .ant-tree-node-content-wrapper {
-  display: flex;
-  justify-content: flex-start;
+  display: grid;
+  grid-template-columns: 20px auto;
   align-items: center;
   min-height: 24px;
   height: 24px;
   padding: 0;
   cursor: pointer;
+  line-height: 24px;
+  justify-content: flex-start;
+  text-align: left;
+  width: auto;
+  margin-left: 0;
+}
+.perm-card >>> .ant-tree .ant-tree-title {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+}
+.perm-card >>> .ant-tree .ant-tree-child-tree,
+.perm-card >>> .ant-tree .ant-tree-child-tree-open {
+  padding-left: 0;
+  margin-left: 0;
 }
 .node-title {
   display: inline-flex;
   align-items: center;
   min-width: 0;
   max-width: 100%;
+  height: 100%;
 }
 .node-text {
   min-width: 0;
@@ -216,7 +296,18 @@ export default {
 .node-title .ant-tag {
   display: inline-flex;
   align-items: center;
-  height: 24px;
-  line-height: 24px;
+  height: 20px;
+  line-height: 20px;
+  margin-top: 0;
+  margin-bottom: 0;
+}
+.el-node-title {
+  display: inline-flex;
+  align-items: center;
+}
+.el-node-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>

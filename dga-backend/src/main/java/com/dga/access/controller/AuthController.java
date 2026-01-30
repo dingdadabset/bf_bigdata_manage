@@ -1,7 +1,7 @@
 package com.dga.access.controller;
 
-import com.dga.access.entity.DgaUser;
-import com.dga.access.repository.DgaUserRepository;
+import com.dga.access.entity.User;
+import com.dga.access.repository.UserRepository;
 import com.dga.access.dto.CreateUserRequest;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
@@ -15,15 +15,18 @@ import java.util.HashMap;
 public class AuthController {
 
     @Autowired
-    private DgaUserRepository userRepository;
+    private UserRepository userRepository;
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody Map<String, String> loginRequest) {
         String username = loginRequest.get("username");
         String password = loginRequest.get("password");
 
-        DgaUser user = userRepository.findByUsername(username);
+        User user = userRepository.findByUsername(username);
         if (user != null && password != null && password.equals(user.getPassword())) {
+            if (user.getStatus() != null && user.getStatus() == 0) {
+                return ResponseEntity.status(401).body("Account is disabled");
+            }
             Map<String, Object> response = new HashMap<>();
             response.put("token", "mock-token-" + username);
             response.put("user", user);
@@ -47,13 +50,25 @@ public class AuthController {
             return ResponseEntity.badRequest().body("Username already exists");
         }
 
-        DgaUser user = new DgaUser();
+        User user = new User();
         user.setUsername(request.getUsername());
         user.setPassword(request.getPassword()); // In real world, hash this!
         user.setEmail(request.getEmail());
-        user.setFirstName(request.getFirstName());
-        user.setLastName(request.getLastName());
-        user.setCreationStrategy("SELF_REGISTER");
+        
+        // Map nickname from FirstName/LastName or Username
+        String nickname = request.getUsername();
+        if (request.getFirstName() != null) {
+            nickname = request.getFirstName();
+            if (request.getLastName() != null) {
+                nickname += " " + request.getLastName();
+            }
+        }
+        user.setNickname(nickname);
+        
+        // Set defaults
+        user.setAuthType("local");
+        user.setStatus(1); // Active
+        user.setIsAdmin(0);
         
         userRepository.save(user);
 
