@@ -140,4 +140,12 @@ public class UserHiveAccess {
     public void setStatus(String status) {
         this.status = status;
     }
+
+    public Boolean getDeleted() {
+        return isDeleted;
+    }
+
+    public void setDeleted(Boolean deleted) {
+        this.isDeleted = deleted;
+    }
 }

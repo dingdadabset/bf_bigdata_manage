@@ -1,26 +1,5 @@
 <template>
   <a-card :bordered="false" class="user-list-card" :body-style="{ padding: '12px' }">
-    <div style="margin-bottom: 12px;">
-      <a-select
-        v-model="selectedCluster"
-        placeholder="选择集群(默认全部)"
-        style="width: 100%;"
-        @change="onClusterChange"
-      >
-        <a-select-option :value="''">全部</a-select-option>
-        <a-select-option v-for="cluster in clusters" :key="cluster" :value="cluster">
-          {{ cluster }}
-        </a-select-option>
-      </a-select>
-    </div>
-    <div class="user-search-wrapper">
-      <a-input-search
-        placeholder="搜索用户/角色"
-        v-model="searchText"
-        @search="onSearch"
-        style="margin-bottom: 16px"
-      />
-    </div>
     <a-list
       item-layout="horizontal"
       :data-source="filteredUsers"
@@ -47,13 +26,17 @@
           <a-avatar slot="avatar" icon="user" :style="{ backgroundColor: getAvatarColor(item.username) }" />
         </a-list-item-meta>
       </a-list-item>
-      <div slot="footer" v-if="pagination.total > pagination.pageSize" style="text-align: center">
-        <a-button type="link" size="small" @click="loadMoreUsers">加载更多</a-button>
+      <div slot="footer" style="text-align: center; padding-top: 8px;">
+        <a-pagination
+          :current="pagination.current"
+          :pageSize="pagination.pageSize"
+          :total="pagination.total"
+          size="small"
+          show-less-items
+          @change="onPageChange"
+        />
       </div>
     </a-list>
-    <div style="margin-top: 12px; text-align: center;">
-       <a-button type="dashed" block icon="plus" @click="$emit('create')">新建用户</a-button>
-    </div>
   </a-card>
 </template>
 
@@ -67,10 +50,7 @@ export default {
     return {
       // userList: [], // Use computed instead
       loadingUsers: false,
-      searchText: '',
-      selectedCluster: '',
-      clusters: [],
-      pagination: { current: 1, pageSize: 20, total: 0 },
+      pagination: { current: 1, pageSize: 8, total: 0 },
       selectedUser: null,
     };
   },
@@ -80,29 +60,45 @@ export default {
       return store.users;
     },
     filteredUsers() {
-      let users = this.userList;
-      // Filter out system/login users
-      users = users.filter(u => !['SELF_REGISTER', 'SELF_REG'].includes(u.creationStrategy));
-      
-      if (!this.searchText) return users;
-      return users.filter(u => u.username.toLowerCase().includes(this.searchText.toLowerCase()));
+      // Server-side filtering; return current page content
+      return this.userList.filter(u => !['SELF_REGISTER', 'SELF_REG'].includes(u.creationStrategy));
+    }
+  },
+  watch: {
+    'store.headerSearchText'(val) {
+      this.pagination.current = 1;
+      this.fetchUsers();
+    },
+    'store.headerSelectedCluster'(val) {
+      this.pagination.current = 1;
+      this.fetchUsers();
+    },
+    'store.headerAction'(val) {
+      if (val) {
+        if (val.type === 'import') {
+          this.handleImport();
+        } else if (val.type === 'create') {
+          this.$emit('create');
+        }
+      }
     }
   },
   async mounted() {
-    await this.fetchClusters();
+    // Initial fetch
     this.fetchUsers();
   },
   methods: {
-    async fetchClusters() {
+    async handleImport() {
+      this.loadingUsers = true; // Use loadingUsers to indicate busy
       try {
-        const res = await axios.get('/api/access/clusters');
-        if (res.data && Array.isArray(res.data)) {
-          const unique = new Set(res.data.filter(c => c));
-          this.clusters = Array.from(unique).sort();
-        }
+        const res = await axios.post('/api/access/import');
+        this.$message.success(res.data || 'Import successful');
+        this.fetchUsers();
       } catch (e) {
-        console.error('Failed to fetch clusters', e);
-        this.clusters = [];
+        console.error(e);
+        this.$message.error('Import failed');
+      } finally {
+        this.loadingUsers = false;
       }
     },
     getAvatarColor(username) {
@@ -114,24 +110,33 @@ export default {
       return colors[Math.abs(hash) % colors.length];
     },
     getStrategyColor(strategy) {
-      switch (strategy) {
-        case 'SELF_REG': return 'green';
+      const s = (strategy || '').toUpperCase();
+      switch (s) {
+        case 'SELF_REG': 
+        case 'SELF_REGISTER': return 'green';
         case 'IPA_HTTP': return 'purple';
         case 'LDAP': return 'cyan';
+        case 'INIT_USER': return 'orange';
         default: return 'default';
       }
-    },
-    onClusterChange() {
-      mutations.setCluster(this.selectedCluster || '');
-      this.fetchUsers();
     },
     async fetchUsers(params = {}) {
       this.loadingUsers = true;
       try {
         // Merge params with cluster filter
         const requestParams = { ...params };
-        if (this.selectedCluster) {
-          requestParams.cluster = this.selectedCluster;
+        
+        const cluster = store.headerSelectedCluster;
+        if (cluster) {
+          requestParams.cluster = cluster;
+        }
+        
+        requestParams.page = this.pagination.current - 1;
+        requestParams.size = this.pagination.pageSize;
+        
+        const searchText = store.headerSearchText;
+        if (searchText && searchText.trim()) {
+          requestParams.q = searchText.trim();
         }
         
         const res = await axios.get('/api/access/users', { params: requestParams });
@@ -153,15 +158,13 @@ export default {
         this.loadingUsers = false;
       }
     },
+    onPageChange(page) {
+      this.pagination.current = page;
+      this.fetchUsers();
+    },
     selectUser(user) {
       this.selectedUser = user;
       this.$emit('select', user);
-    },
-    onSearch() {
-      // Client side filter
-    },
-    loadMoreUsers() {
-      // Pagination logic
     }
   }
 };

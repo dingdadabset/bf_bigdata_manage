@@ -6,6 +6,7 @@ public class AccessRequest {
     private String email;
     private String database;
     private String permission; // e.g., ALL, SELECT, CREATE
+    private String cluster;
 
     public String getUsername() {
         return username;

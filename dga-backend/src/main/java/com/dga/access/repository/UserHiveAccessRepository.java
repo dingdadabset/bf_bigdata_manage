@@ -12,6 +12,7 @@ public interface UserHiveAccessRepository extends JpaRepository<UserHiveAccess, 
     List<UserHiveAccess> findByUsernameAndStatus(String username, String status);
     List<UserHiveAccess> findByUsernameAndClusterName(String username, String clusterName);
     List<UserHiveAccess> findByUsernameAndClusterNameAndStatus(String username, String clusterName, String status);
+    List<UserHiveAccess> findByUsernameAndIsDeletedFalse(String username);
 
     @org.springframework.data.jpa.repository.Modifying
     @org.springframework.transaction.annotation.Transactional

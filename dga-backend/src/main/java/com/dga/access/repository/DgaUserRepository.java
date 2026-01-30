@@ -22,4 +22,10 @@ public interface DgaUserRepository extends JpaRepository<DgaUser, Long> {
 
     @Query("SELECT DISTINCT u.clusterName FROM DgaUser u WHERE u.isDeleted = false AND u.clusterName IS NOT NULL")
     List<String> findDistinctClusterNames();
+
+    org.springframework.data.domain.Page<DgaUser> findByIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+            List<String> strategies, String username, org.springframework.data.domain.Pageable pageable);
+
+    org.springframework.data.domain.Page<DgaUser> findByClusterNameAndIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+            String clusterName, List<String> strategies, String username, org.springframework.data.domain.Pageable pageable);
 }

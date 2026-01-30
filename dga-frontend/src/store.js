@@ -3,6 +3,10 @@ import Vue from 'vue';
 export const store = Vue.observable({
   currentCluster: '',
   currentUser: null,
+  // Global Header State for Access Page
+  headerSearchText: '',
+  headerSelectedCluster: '',
+  headerAction: null, // { type: 'import'|'create', timestamp: Date.now() }
   // Mock Data Store
   users: [
     { username: 'dingquan', creationStrategy: 'SELF_REG', role: 'Admin', createTime: new Date(), cluster: 'CDH-Cluster-01', status: 'ACTIVE' },
@@ -26,6 +30,15 @@ export const store = Vue.observable({
 });
 
 export const mutations = {
+  setHeaderSearchText(text) {
+    store.headerSearchText = text;
+  },
+  setHeaderSelectedCluster(cluster) {
+    store.headerSelectedCluster = cluster;
+  },
+  triggerHeaderAction(type) {
+    store.headerAction = { type, timestamp: Date.now() };
+  },
   setCluster(cluster) {
     store.currentCluster = cluster;
   },

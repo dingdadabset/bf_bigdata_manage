@@ -157,6 +157,40 @@ public class IpaHttpService {
         }
     }
 
+    public List<Map<String, Object>> listUsers() {
+        if (!enabled) {
+            throw new IllegalStateException("IPA HTTP is disabled");
+        }
+
+        login();
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("method", "user_find");
+        payload.put("id", 0);
+
+        List<Object> params = new ArrayList<>();
+        params.add(Collections.singletonList("")); // Criteria: all
+        Map<String, Object> kwParams = new HashMap<>();
+        kwParams.put("sizelimit", 0); // No limit
+        kwParams.put("timelimit", 0);
+        params.add(kwParams);
+
+        payload.put("params", params);
+
+        Map<String, Object> response = executeRpcWithResponse(payload, "IPA User List fetched");
+        
+        // Parse response
+        // Structure: { "result": { "result": [ { "uid": ["user1"], ... }, ... ], "count": 10, ... }, ... }
+        Object resultObj = response.get("result");
+        if (resultObj instanceof Map) {
+            Object innerResult = ((Map<?, ?>) resultObj).get("result");
+            if (innerResult instanceof List) {
+                return (List<Map<String, Object>>) innerResult;
+            }
+        }
+        return Collections.emptyList();
+    }
+
     private void executeRpc(Map<String, Object> payload, String successMessage) {
         executeRpcWithResponse(payload, successMessage);
     }
@@ -189,8 +223,6 @@ public class IpaHttpService {
                             msg = String.valueOf(message);
                         }
                     }
-                    // If error is "user not found" during delete, we might want to ignore it?
-                    // But for now, let's throw.
                     throw new RuntimeException("IPA API Error: " + msg);
                 }
                 

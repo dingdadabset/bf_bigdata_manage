@@ -14,12 +14,14 @@ com/dga/access/dto/CreateUserRequest.class
 com/dga/quality/controller/QualityController.class
 com/dga/access/dto/BatchGrantRequest.class
 com/dga/metadata/service/impl/HiveMetadataCollector.class
+com/dga/access/entity/UserHiveAccess.class
 com/dga/access/service/LdapService.class
 com/dga/access/service/IpaHttpService.class
 com/dga/quality/entity/QualityRule.class
 com/dga/metadata/entity/TableMetadata.class
 com/dga/datasource/controller/DataSourceController.class
 com/dga/access/entity/AccessLog.class
+com/dga/access/controller/AccessController.class
 com/dga/quality/repository/QualityRuleRepository.class
 com/dga/access/repository/UserHiveAccessRepository.class
 com/dga/controller/TestController.class
@@ -33,3 +35,4 @@ com/dga/DgaApplication.class
 com/dga/access/service/HiveAuthService.class
 com/dga/access/repository/DgaUserRepository.class
 com/dga/datamap/controller/DataMapController.class
+com/dga/access/service/IpaHttpService$1.class

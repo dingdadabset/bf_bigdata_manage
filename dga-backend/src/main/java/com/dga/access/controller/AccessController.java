@@ -28,6 +28,13 @@ import java.util.HashMap;
 import java.util.Map;
 import java.time.LocalDateTime;
 
+import java.util.Set;
+import java.util.HashSet;
+import java.util.TreeMap;
+import java.util.stream.Collectors;
+import java.util.Objects;
+import java.util.ArrayList;
+
 @RestController
 @RequestMapping("/api/access")
 @CrossOrigin
@@ -129,17 +136,149 @@ public class AccessController {
         return resultMsg;
     }
     
+    @PostMapping("/import")
+    public String importUsers() {
+        List<Map<String, Object>> ipaUsers = ipaHttpService.listUsers();
+        int count = 0;
+        for (Map<String, Object> u : ipaUsers) {
+            Object uidObj = u.get("uid");
+            if (uidObj instanceof List && !((List<?>) uidObj).isEmpty()) {
+                String username = (String) ((List<?>) uidObj).get(0);
+                if (!dgaUserRepository.existsByUsername(username)) {
+                    DgaUser newUser = new DgaUser();
+                    newUser.setUsername(username);
+                    newUser.setCreationStrategy("init_user");
+                    newUser.setClusterName("CDH-Cluster-01");
+                    
+                    // Try to get name
+                    Object givenName = u.get("givenname");
+                    if (givenName instanceof List && !((List<?>) givenName).isEmpty()) {
+                        newUser.setFirstName((String)((List<?>) givenName).get(0));
+                    }
+                    Object sn = u.get("sn");
+                    if (sn instanceof List && !((List<?>) sn).isEmpty()) {
+                        newUser.setLastName((String)((List<?>) sn).get(0));
+                    }
+                    
+                    dgaUserRepository.save(newUser);
+                    count++;
+                }
+            }
+        }
+        return "Imported " + count + " users from IPA.";
+    }
+
+    @PostMapping("/sync/{username}")
+    public String syncUserPermissions(@PathVariable String username, @RequestParam(required = false) String cluster) {
+        String targetCluster = (cluster != null && !cluster.isEmpty()) ? cluster : "CDH-Cluster-01";
+        
+        List<Map<String, Object>> hivePermsRaw = hiveAuthService.getUserPermissions(username);
+        Set<String> hivePermKeys = new HashSet<>();
+        List<UserHiveAccess> toSave = new ArrayList<>();
+        
+        for (Map<String, Object> row : hivePermsRaw) {
+             Map<String, Object> lowerRow = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+             lowerRow.putAll(row);
+             
+             String db = (String) lowerRow.get("database");
+             if (db == null) db = (String) lowerRow.get("database_name");
+             
+             String table = (String) lowerRow.get("table");
+             if (table == null) table = (String) lowerRow.get("table_name");
+
+             String perm = (String) lowerRow.get("privilege");
+             if (perm == null) perm = (String) lowerRow.get("permission");
+             
+             if (db == null || perm == null) continue;
+             
+             perm = perm.toUpperCase();
+             
+             String key = db + "|" + (table == null ? "" : table) + "|" + perm;
+             hivePermKeys.add(key);
+        }
+        
+        List<UserHiveAccess> localPerms = userHiveAccessRepository.findByUsernameAndIsDeletedFalse(username);
+        localPerms = localPerms.stream()
+            .filter(p -> targetCluster.equals(p.getClusterName()))
+            .collect(Collectors.toList());
+
+        int added = 0;
+        int removed = 0;
+        int updated = 0;
+
+        // Process Hive Perms (Insert/Update)
+        for (String key : hivePermKeys) {
+            String[] parts = key.split("\\|", -1);
+            String db = parts[0];
+            String table = parts[1].isEmpty() ? null : parts[1];
+            String perm = parts[2];
+            
+            boolean found = false;
+            for (UserHiveAccess local : localPerms) {
+                if (local.getDatabaseName().equals(db) && 
+                    Objects.equals(local.getTableName(), table) &&
+                    local.getPermission().equals(perm)) {
+                    found = true;
+                    if (!"ACTIVE".equals(local.getStatus())) {
+                        local.setStatus("ACTIVE");
+                        toSave.add(local);
+                        updated++;
+                    }
+                    break;
+                }
+            }
+            
+            if (!found) {
+                UserHiveAccess newAccess = new UserHiveAccess();
+                newAccess.setUsername(username);
+                newAccess.setClusterName(targetCluster);
+                newAccess.setDatabaseName(db);
+                newAccess.setTableName(table);
+                newAccess.setPermission(perm);
+                newAccess.setStatus("ACTIVE");
+                newAccess.setGrantedBy("SYNC");
+                toSave.add(newAccess);
+                added++;
+            }
+        }
+        
+        // Process Local Perms (Delete if not in Hive)
+        for (UserHiveAccess local : localPerms) {
+            String key = local.getDatabaseName() + "|" + (local.getTableName() == null ? "" : local.getTableName()) + "|" + local.getPermission();
+            if (!hivePermKeys.contains(key)) {
+                local.setDeleted(true); 
+                local.setStatus("REVOKED");
+                toSave.add(local);
+                removed++;
+            }
+        }
+        
+        userHiveAccessRepository.saveAll(toSave);
+        return String.format("Sync complete. Added: %d, Updated: %d, Removed: %d", added, updated, removed);
+    }
+
     @GetMapping("/users")
     public Page<DgaUser> listUsers(@RequestParam(defaultValue = "0") int page, 
                                    @RequestParam(defaultValue = "20") int size,
-                                   @RequestParam(required = false) String cluster) {
+                                   @RequestParam(required = false) String cluster,
+                                   @RequestParam(value = "q", required = false) String query) {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createTime"));
         List<String> excludedStrategies = java.util.Arrays.asList("SELF_REGISTER", "SELF_REG");
         
         if (cluster != null && !cluster.isEmpty()) {
-            return dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(cluster, excludedStrategies, pageable);
+            if (query != null && !query.isEmpty()) {
+                return dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+                        cluster, excludedStrategies, query, pageable);
+            }
+            return dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(
+                    cluster, excludedStrategies, pageable);
         }
-        return dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(excludedStrategies, pageable);
+        if (query != null && !query.isEmpty()) {
+            return dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+                    excludedStrategies, query, pageable);
+        }
+        return dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(
+                excludedStrategies, pageable);
     }
 
     @GetMapping("/clusters")

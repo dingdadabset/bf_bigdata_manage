@@ -82,7 +82,7 @@ export default {
       const that = this;
       this.$confirm({
         title: '确认删除用户?',
-        content: `这将删除用户 ${username} 及其关联权限`,
+        content: `删除用户 ${username} 会收回Hive权限，同时会删除Linux上面的用户`,
         okText: 'Yes',
         okType: 'danger',
         cancelText: 'No',

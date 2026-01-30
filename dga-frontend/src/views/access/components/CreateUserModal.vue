@@ -3,9 +3,7 @@
     <a-form-model :model="userForm" :label-col="{ span: 6 }" :wrapper-col="{ span: 14 }">
       <a-form-model-item label="创建方式">
         <a-radio-group v-model="userForm.creationStrategy">
-          <a-radio-button value="LDAP">LDAP</a-radio-button>
           <a-radio-button value="IPA_HTTP">IPA(HTTP)</a-radio-button>
-          <a-radio-button value="SELF_REG">自注册</a-radio-button>
         </a-radio-group>
       </a-form-model-item>
       <a-form-model-item label="所属集群">
@@ -43,7 +41,7 @@ export default {
       userForm: {
         username: '',
         cluster: 'CDH-Cluster-01',
-        creationStrategy: 'LDAP',
+        creationStrategy: 'IPA_HTTP',
         firstName: '',
         lastName: '',
         password: '',

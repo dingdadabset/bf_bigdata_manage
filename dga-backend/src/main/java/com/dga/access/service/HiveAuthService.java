@@ -7,6 +7,7 @@ import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
 import java.util.List;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 @Service
@@ -43,6 +44,37 @@ public class HiveAuthService {
         validateName(database);
         String sql = "SHOW TABLES IN " + database;
         return hiveJdbcTemplate.queryForList(sql, String.class);
+    }
+
+    public List<Map<String, Object>> getUserPermissions(String username) {
+        validateName(username);
+        List<Map<String, Object>> permissions = new java.util.ArrayList<>();
+        
+        // 1. Direct User Grants
+        try {
+            String sql = "SHOW GRANT USER " + username;
+            List<Map<String, Object>> userGrants = hiveJdbcTemplate.queryForList(sql);
+            permissions.addAll(userGrants);
+        } catch (Exception e) {
+            String msg = e.getMessage();
+            if (msg != null && msg.contains("Sentry does not allow privileges")) {
+                // Sentry environment detected; USER grants are not supported. Ignore.
+            } else {
+                System.out.println("SHOW GRANT USER failed: " + msg);
+            }
+        }
+
+        // 2. Role Grants (Sentry)
+        String roleName = "role_" + username;
+        try {
+            String sql = "SHOW GRANT ROLE " + roleName;
+            List<Map<String, Object>> roleGrants = hiveJdbcTemplate.queryForList(sql);
+            permissions.addAll(roleGrants);
+        } catch (Exception e) {
+             // Role might not exist, ignore
+        }
+        
+        return permissions;
     }
 
     public void grantPermission(String username, String database, String permission) {

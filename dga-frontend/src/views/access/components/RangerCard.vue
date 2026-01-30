@@ -1,13 +1,18 @@
 <template>
   <a-card :title="title" :bordered="false" class="perm-card">
-    <a-button slot="extra" type="link" icon="edit" @click="$emit('edit')">编辑策略</a-button>
+    <div slot="extra">
+      <a-button type="link" icon="sync" @click="handleSync" :loading="syncing" style="margin-right: 8px;">同步权限</a-button>
+      <a-button type="link" icon="edit" @click="$emit('edit')">编辑策略</a-button>
+    </div>
     <a-tree
       v-if="treeData && treeData.length"
       :tree-data="treeData"
       :load-data="loadTables"
       show-icon
-      :default-expand-all="false"
+      :expanded-keys="expandedKeys"
+      :auto-expand-parent="autoExpandParent"
       @expand="onExpand"
+      @select="onSelect"
     >
       <a-icon slot="database" type="database" />
       <a-icon slot="table" type="table" />
@@ -42,7 +47,10 @@ export default {
   },
   data() {
     return {
-      treeData: []
+      treeData: [],
+      expandedKeys: [],
+      autoExpandParent: false,
+      syncing: false
     };
   },
   watch: {
@@ -142,7 +150,26 @@ export default {
         treeNode.dataRef.children = [];
       }
     },
-    onExpand() {}
+    onExpand() {},
+    onSelect(selectedKeys, info) {
+      console.log('selected', selectedKeys, info);
+    },
+    async handleSync() {
+      this.syncing = true;
+      try {
+        const params = {};
+        if (this.effectiveCluster) {
+            params.cluster = this.effectiveCluster;
+        }
+        const res = await axios.post(`/api/access/sync/${this.username}`, null, { params });
+        this.$message.success(res.data);
+        this.loadUserAccess();
+      } catch (e) {
+        this.$message.error('同步失败: ' + (e.response ? e.response.data.message : e.message));
+      } finally {
+        this.syncing = false;
+      }
+    }
   }
 };
 </script>
@@ -155,22 +182,24 @@ export default {
 .perm-card .ant-tree {
   margin-left: 0;
 }
-.perm-card .ant-tree .ant-tree-treenode {
+.perm-card >>> .ant-tree .ant-tree-treenode {
   min-height: 24px;
 }
-.perm-card .ant-tree .ant-tree-iconEle {
+.perm-card >>> .ant-tree .ant-tree-iconEle {
   display: inline-flex;
   align-items: center;
 }
-.perm-card .ant-tree .ant-tree-switcher {
-  display: inline-flex;
-  align-items: center;
+.perm-card >>> .ant-tree .ant-tree-switcher {
+  display: none;
 }
-.perm-card .ant-tree .ant-tree-node-content-wrapper {
-  display: inline-flex;
+.perm-card >>> .ant-tree .ant-tree-node-content-wrapper {
+  display: flex;
+  justify-content: flex-start;
   align-items: center;
   min-height: 24px;
   height: 24px;
+  padding: 0;
+  cursor: pointer;
 }
 .node-title {
   display: inline-flex;
