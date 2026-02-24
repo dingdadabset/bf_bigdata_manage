@@ -98,6 +98,10 @@
               <a-icon type="dashboard" />
               <span>数据质量</span>
             </a-menu-item>
+            <a-menu-item key="/resources">
+              <a-icon type="link" />
+              <span>资源导航</span>
+            </a-menu-item>
           </a-menu>
 
           <div class="sider-bottom-actions">

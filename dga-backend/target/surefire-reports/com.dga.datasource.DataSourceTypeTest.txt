@@ -1,0 +1,4 @@
+-------------------------------------------------------------------------------
+Test set: com.dga.datasource.DataSourceTypeTest
+-------------------------------------------------------------------------------
+Tests run: 1, Failures: 0, Errors: 0, Skipped: 0, Time elapsed: 2.131 s - in com.dga.datasource.DataSourceTypeTest

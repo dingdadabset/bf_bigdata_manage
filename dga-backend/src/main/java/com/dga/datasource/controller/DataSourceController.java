@@ -4,10 +4,13 @@ import com.dga.datasource.entity.DataSourceConfig;
 import com.dga.datasource.repository.DataSourceConfigRepository;
 import com.dga.metadata.service.MetadataCollector;
 import com.dga.metadata.service.MetadataCollectorFactory;
+import com.dga.metadata.service.SyncStatusService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/api/datasource")
@@ -19,6 +22,9 @@ public class DataSourceController {
 
     @Autowired
     private MetadataCollectorFactory collectorFactory;
+
+    @Autowired
+    private SyncStatusService syncStatusService;
 
     @GetMapping
     public List<DataSourceConfig> list() {
@@ -43,10 +49,28 @@ public class DataSourceController {
     public String triggerCollection(@PathVariable Long id) {
         DataSourceConfig config = repository.findById(id).orElseThrow(() -> new RuntimeException("Not found"));
         MetadataCollector collector = collectorFactory.getCollector(config.getType());
-         if (collector == null) {
+        if (collector == null) {
             throw new RuntimeException("Unsupported Data Source Type: " + config.getType());
         }
-        collector.collectMetadata(config);
+        String key = "datasource-" + id;
+        syncStatusService.setStatus(key, "RUNNING", "Collecting metadata for " + config.getName());
+        collectMetadataAsync(collector, config, key);
         return "Collection triggered for " + config.getName();
+    }
+
+    @Async("metadataTaskExecutor")
+    protected void collectMetadataAsync(MetadataCollector collector, DataSourceConfig config, String key) {
+        try {
+            collector.collectMetadata(config);
+            syncStatusService.setStatus(key, "SUCCESS", "Metadata collection completed");
+        } catch (Exception e) {
+            syncStatusService.setStatus(key, "FAILED", "Metadata collection failed");
+        }
+    }
+
+    @GetMapping("/collect/status/{id}")
+    public Map<String, Object> getCollectionStatus(@PathVariable Long id) {
+        String key = "datasource-" + id;
+        return syncStatusService.getFullStatus(key);
     }
 }

@@ -6,7 +6,7 @@ import java.time.LocalDateTime;
 
 @Data
 @Entity
-@Table(name = "dga_table_metadata")
+@Table(name = "meta_table_info")
 public class TableMetadata {
 
     @Id
@@ -28,10 +28,10 @@ public class TableMetadata {
     @Column(name = "storage_format")
     private String storageFormat; // e.g., ORC, PARQUET, TEXTFILE
 
-    @Column(name = "location_path")
+    @Column(name = "hdfs_path")
     private String locationPath;
 
-    @Column(name = "total_size")
+    @Column(name = "table_size")
     private Long totalSize; // in bytes
 
     @Column(name = "record_count")
@@ -40,7 +40,7 @@ public class TableMetadata {
     @Column(name = "last_access_time")
     private LocalDateTime lastAccessTime;
 
-    @Column(name = "updated_at")
+    @Column(name = "last_modify_time")
     private LocalDateTime updatedAt;
 
     @PrePersist

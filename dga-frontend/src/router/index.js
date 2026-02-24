@@ -5,9 +5,11 @@ import MainLayout from '../layouts/MainLayout.vue';
 import AccessIndex from '../views/access/AccessIndex.vue';
 import DataSourceManagement from '../components/DataSourceManagement.vue';
 import Metadata from '../views/Metadata.vue';
+import MetadataDetail from '../views/MetadataDetail.vue';
 import Quality from '../views/Quality.vue';
 import DataMap from '../views/DataMap.vue';
 import UserProfile from '../views/UserProfile.vue';
+import ResourceManagement from '../views/ResourceManagement.vue';
 
 Vue.use(VueRouter);
 
@@ -56,10 +58,22 @@ const routes = [
         meta: { title: '元数据管理' }
       },
       {
+        path: 'metadata/detail/:id',
+        name: 'MetadataDetail',
+        component: MetadataDetail,
+        meta: { title: '表详情' }
+      },
+      {
         path: 'quality',
         name: 'Quality',
         component: Quality,
         meta: { title: '数据质量中心' }
+      },
+      {
+        path: 'resources',
+        name: 'ResourceManagement',
+        component: ResourceManagement,
+        meta: { title: '资源导航管理' }
       }
     ]
   }

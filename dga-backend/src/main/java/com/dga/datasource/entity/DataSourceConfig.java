@@ -26,6 +26,9 @@ public class DataSourceConfig {
     @Column(nullable = false)
     private String password;
 
+    @Column(name = "description")
+    private String description;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt;
 
@@ -92,6 +95,14 @@ public class DataSourceConfig {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public String getDescription() {
+        return description;
+    }
+
+    public void setDescription(String description) {
+        this.description = description;
     }
 
     public LocalDateTime getCreatedAt() {

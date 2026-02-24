@@ -116,6 +116,7 @@ export default {
         case 'SELF_REG': 
         case 'SELF_REGISTER': return 'green';
         case 'IPA_HTTP': return 'purple';
+        case 'IPA_IMPORT': return 'orange';
         case 'LDAP': return 'cyan';
         case 'INIT_USER': return 'orange';
         default: return 'default';

@@ -5,7 +5,7 @@ import javax.persistence.*;
 
 @Data
 @Entity
-@Table(name = "dga_column_metadata")
+@Table(name = "meta_column_info")
 public class ColumnMetadata {
 
     @Id
@@ -21,7 +21,7 @@ public class ColumnMetadata {
     @Column(name = "column_type", nullable = false)
     private String columnType; // e.g., STRING, INT, BIGINT
 
-    @Column(name = "comment_str")
+    @Column(name = "column_comment")
     private String comment;
 
     @Column(name = "is_primary_key")
