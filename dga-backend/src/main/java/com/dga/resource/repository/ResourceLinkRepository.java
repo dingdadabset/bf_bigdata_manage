@@ -11,4 +11,6 @@ import java.util.Optional;
 public interface ResourceLinkRepository extends JpaRepository<ResourceLink, Long> {
     List<ResourceLink> findByIsDeletedFalseOrderByRecommendedDescSortOrderAscNameAsc();
     Optional<ResourceLink> findByUrlAndIsDeletedFalse(String url);
+    Optional<ResourceLink> findByUrlAndIsDeletedTrue(String url);
+    Optional<ResourceLink> findByUrl(String url);
 }

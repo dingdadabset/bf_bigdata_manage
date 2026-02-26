@@ -142,7 +142,7 @@
         <a-row :gutter="16">
           <a-col :span="12">
             <a-form-model-item label="分类" prop="category">
-              <a-select v-model="form.category" mode="tags" placeholder="选择或输入分类">
+              <a-select v-model="form.category" mode="combobox" placeholder="选择或输入分类">
                 <a-select-option v-for="cat in categories" :key="cat">{{ cat }}</a-select-option>
               </a-select>
             </a-form-model-item>
@@ -193,7 +193,7 @@
         <a-row :gutter="16">
            <a-col :span="12">
              <a-form-model-item label="分类" prop="category">
-                <a-select v-model="quickForm.category" mode="tags">
+                <a-select v-model="quickForm.category" mode="combobox">
                   <a-select-option v-for="cat in categories" :key="cat">{{ cat }}</a-select-option>
                 </a-select>
              </a-form-model-item>

@@ -23,8 +23,13 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.io.ByteArrayInputStream;
 import java.awt.Color;
 import java.awt.Graphics2D;
+import java.awt.GradientPaint;
+import java.awt.RenderingHints;
+import java.awt.Font;
+import java.awt.BasicStroke;
 import java.awt.image.BufferedImage;
 import javax.imageio.ImageIO;
 
@@ -142,6 +147,17 @@ public class ResourceLinkController {
             data = generateServiceIcon(normalized, name);
         }
 
+        try {
+            ByteArrayInputStream bais = new ByteArrayInputStream(data.bytes);
+            BufferedImage img = ImageIO.read(bais);
+            if (img != null) {
+                if (img.getWidth() <= 24 || img.getHeight() <= 24 || isLowColor(img)) {
+                    data = generateServiceIcon(normalized, name);
+                }
+            }
+        } catch (Exception e) {
+        }
+
         String contentType = data.contentType;
         MediaType mt;
         try {
@@ -185,19 +201,30 @@ public class ResourceLinkController {
         repository.findByUrlAndIsDeletedFalse(urlKey).ifPresent(r -> {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "URL already exists");
         });
+        ResourceLink revived = repository.findByUrlAndIsDeletedTrue(urlKey).orElse(null);
 
         String html = fetchHtml(normalized);
         String title = extractTitle(html);
         String desc = extractDescription(html);
 
-        ResourceLink link = new ResourceLink();
-        link.setUrl(urlKey);
-        link.setName(trimToMax(firstNonEmpty(title, hostLabel(u)), 255));
-        link.setDescription(trimToMax(desc, 500));
-        link.setCategory(trimToMax(safeTrim(req == null ? null : req.getCategory()), 50));
-        link.setEnv(trimToMax(safeTrim(req == null ? null : req.getEnv()), 20));
-        link.setRecommended(req != null && req.getRecommended() != null && req.getRecommended());
-        return repository.save(link);
+        if (revived != null) {
+            revived.setDeleted(false);
+            revived.setName(trimToMax(firstNonEmpty(title, hostLabel(u)), 255));
+            revived.setDescription(trimToMax(desc, 500));
+            revived.setCategory(trimToMax(safeTrim(req == null ? null : req.getCategory()), 50));
+            revived.setEnv(trimToMax(safeTrim(req == null ? null : req.getEnv()), 20));
+            revived.setRecommended(req != null && req.getRecommended() != null && req.getRecommended());
+            return repository.save(revived);
+        } else {
+            ResourceLink link = new ResourceLink();
+            link.setUrl(urlKey);
+            link.setName(trimToMax(firstNonEmpty(title, hostLabel(u)), 255));
+            link.setDescription(trimToMax(desc, 500));
+            link.setCategory(trimToMax(safeTrim(req == null ? null : req.getCategory()), 50));
+            link.setEnv(trimToMax(safeTrim(req == null ? null : req.getEnv()), 20));
+            link.setRecommended(req != null && req.getRecommended() != null && req.getRecommended());
+            return repository.save(link);
+        }
     }
 
     @PostMapping
@@ -207,6 +234,19 @@ public class ResourceLinkController {
             repository.findByUrlAndIsDeletedFalse(url).ifPresent(r -> {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "URL already exists");
             });
+            ResourceLink revived = repository.findByUrlAndIsDeletedTrue(url).orElse(null);
+            if (revived != null) {
+                revived.setDeleted(false);
+                if (resource.getName() != null) revived.setName(resource.getName());
+                if (resource.getDescription() != null) revived.setDescription(resource.getDescription());
+                if (resource.getCategory() != null) revived.setCategory(resource.getCategory());
+                if (resource.getEnv() != null) revived.setEnv(resource.getEnv());
+                if (resource.getLogoUrl() != null) revived.setLogoUrl(resource.getLogoUrl());
+                if (resource.getRecommended() != null) revived.setRecommended(resource.getRecommended());
+                if (resource.getStatus() != null) revived.setStatus(resource.getStatus());
+                if (resource.getSortOrder() != null) revived.setSortOrder(resource.getSortOrder());
+                return repository.save(revived);
+            }
         }
         return repository.save(resource);
     }
@@ -452,11 +492,30 @@ public class ResourceLinkController {
         }
 
         try {
-            int size = 32;
+            int size = 64;
             BufferedImage image = new BufferedImage(size, size, BufferedImage.TYPE_INT_ARGB);
             Graphics2D g = image.createGraphics();
-            g.setColor(color);
-            g.fillRect(0, 0, size, size);
+            g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+
+            Color c1 = adjustBrightness(color, 1.15f);
+            GradientPaint gp = new GradientPaint(0, 0, c1, size, size, color, true);
+            g.setPaint(gp);
+            g.fillOval(0, 0, size, size);
+
+            g.setStroke(new BasicStroke(2f));
+            g.setColor(new Color(255, 255, 255, 60));
+            g.drawOval(1, 1, size - 2, size - 2);
+
+            String initials = computeInitials(url, name);
+            if (!initials.isEmpty()) {
+                g.setFont(new Font("SansSerif", Font.BOLD, size / 2));
+                int fmH = g.getFontMetrics().getAscent();
+                int textW = g.getFontMetrics().stringWidth(initials);
+                int tx = (size - textW) / 2;
+                int ty = (size + fmH) / 2 - 6;
+                g.setColor(new Color(255, 255, 255));
+                g.drawString(initials, tx, ty);
+            }
             g.dispose();
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -466,6 +525,59 @@ public class ResourceLinkController {
         } catch (Exception e) {
             return new FaviconData(new byte[0], "image/png");
         }
+    }
+
+    private static boolean isLowColor(BufferedImage img) {
+        int w = img.getWidth();
+        int h = img.getHeight();
+        int stepX = Math.max(1, w / 16);
+        int stepY = Math.max(1, h / 16);
+        java.util.HashSet<Integer> colors = new java.util.HashSet<>();
+        for (int y = 0; y < h; y += stepY) {
+            for (int x = 0; x < w; x += stepX) {
+                int argb = img.getRGB(x, y);
+                int a = (argb >>> 24) & 0xff;
+                if (a < 10) continue;
+                int rgb = argb & 0x00ffffff;
+                colors.add(rgb);
+                if (colors.size() > 3) return false;
+            }
+        }
+        return colors.size() <= 3;
+    }
+
+    private static Color adjustBrightness(Color base, float factor) {
+        float[] hsb = Color.RGBtoHSB(base.getRed(), base.getGreen(), base.getBlue(), null);
+        float b = Math.max(0f, Math.min(1f, hsb[2] * factor));
+        int rgb = Color.HSBtoRGB(hsb[0], hsb[1], b);
+        return new Color((rgb >> 16) & 0xff, (rgb >> 8) & 0xff, rgb & 0xff);
+    }
+
+    private static String computeInitials(String url, String name) {
+        String src = name == null ? "" : name.trim();
+        if (src.isEmpty()) {
+            try {
+                URL u = new URL(url);
+                src = u.getHost();
+            } catch (Exception e) {
+                src = "";
+            }
+        }
+        src = src.trim();
+        if (src.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < src.length(); i++) {
+            char ch = src.charAt(i);
+            if (Character.isLetterOrDigit(ch)) {
+                sb.append(Character.toUpperCase(ch));
+                if (sb.length() == 2) break;
+            }
+        }
+        String v = sb.toString();
+        if (v.isEmpty()) {
+            v = src.substring(0, Math.min(2, src.length()));
+        }
+        return v;
     }
 
     private static class FaviconData {
