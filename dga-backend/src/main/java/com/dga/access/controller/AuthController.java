@@ -36,8 +36,13 @@ public class AuthController {
         // Backdoor for admin/admin if no user exists or just for testing
         if ("admin".equals(username) && "admin".equals(password)) {
              Map<String, Object> response = new HashMap<>();
+             Map<String, Object> adminUser = new HashMap<>();
+             adminUser.put("username", "admin");
+             adminUser.put("isAdmin", 1);
+             adminUser.put("role", "Admin");
+             
             response.put("token", "mock-token-admin");
-            response.put("username", "admin");
+            response.put("user", adminUser);
             return ResponseEntity.ok(response);
         }
 

@@ -17,7 +17,7 @@
       </a-col>
       <a-col :span="6">
         <a-card>
-          <a-statistic title="存储总量" value="1.2" suffix="PB">
+          <a-statistic title="存储总量" :value="formatSize(stats.totalSize)">
             <template #prefix>
               <a-icon type="hdd" />
             </template>
@@ -26,7 +26,7 @@
       </a-col>
       <a-col :span="6">
         <a-card>
-          <a-statistic title="今日新增" :value="12" value-style="color: #cf1322">
+          <a-statistic title="今日更新" :value="stats.todaySyncCount" value-style="color: #cf1322">
             <template #prefix>
               <a-icon type="arrow-up" />
             </template>
@@ -35,7 +35,7 @@
       </a-col>
       <a-col :span="6">
         <a-card>
-          <a-statistic title="治理评分" :value="88.5" suffix="/ 100">
+          <a-statistic title="治理评分" :value="stats.avgScore" suffix="/ 100">
             <template #prefix>
               <a-icon type="safety-certificate" theme="twoTone" two-tone-color="#52c41a" />
             </template>
@@ -125,6 +125,12 @@ export default {
         dbName: '',
         keyword: ''
       },
+      stats: {
+        tableCount: 0,
+        totalSize: 0,
+        todaySyncCount: 0,
+        avgScore: 0
+      },
       pagination: {
         current: 1,
         pageSize: 10,
@@ -142,11 +148,22 @@ export default {
       ]
     };
   },
-  mounted() {
+  created() {
     this.fetchDataSources();
+    this.fetchStats();
     this.fetchMetadata(1, this.pagination.pageSize);
   },
   methods: {
+    async fetchStats() {
+      try {
+        const res = await axios.get('/api/metadata/stats');
+        this.stats = res.data;
+        // Sync pagination total
+        this.pagination.total = res.data.tableCount;
+      } catch (e) {
+        console.error('Failed to fetch stats', e);
+      }
+    },
     getFormatColor(format) {
       if (!format) return 'default';
       const f = format.toUpperCase();
@@ -205,7 +222,7 @@ export default {
       if (!bytes && bytes !== 0) return '-';
       if (bytes === 0) return '0 B';
       const k = 1024;
-      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     },

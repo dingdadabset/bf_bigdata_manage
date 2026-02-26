@@ -7,6 +7,9 @@
       :sub-title="tableInfo.dbName"
       :breadcrumb="{ props: { routes: breadcrumbRoutes } }"
     >
+      <template slot="extra">
+        <a-button key="1" type="primary" icon="sync" :loading="syncing" @click="syncMetadata">同步元数据</a-button>
+      </template>
       <template slot="tags">
         <a-tag color="blue">Hive</a-tag>
         <a-tag color="green">已上线</a-tag>
@@ -87,6 +90,7 @@ export default {
       taskData: [],
       loadingColumns: false,
       loadingTasks: false,
+      syncing: false,
       activeTabKey: 'schema',
       tabList: [
         {
@@ -181,6 +185,19 @@ export default {
       const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
       const i = Math.floor(Math.log(bytes) / Math.log(k));
       return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    },
+    async syncMetadata() {
+      this.syncing = true;
+      try {
+        await axios.post(`/api/metadata/table/${this.tableId}/sync`);
+        this.$message.success('同步成功');
+        this.fetchTableInfo();
+        this.fetchColumns();
+      } catch (e) {
+        this.$message.error('同步失败: ' + (e.response?.data?.message || e.message));
+      } finally {
+        this.syncing = false;
+      }
     },
   }
 };

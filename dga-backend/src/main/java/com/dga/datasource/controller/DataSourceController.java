@@ -73,4 +73,9 @@ public class DataSourceController {
         String key = "datasource-" + id;
         return syncStatusService.getFullStatus(key);
     }
+
+    @DeleteMapping("/{id}")
+    public void delete(@PathVariable Long id) {
+        repository.deleteById(id);
+    }
 }

@@ -73,6 +73,9 @@
                   <a-menu-item @click="showEditDrawer(item)">
                     <a-icon type="edit" /> 编辑配置
                   </a-menu-item>
+                  <a-menu-item @click="copyDataSource(item)">
+                    <a-icon type="copy" /> 复制配置
+                  </a-menu-item>
                   <a-menu-item @click="deleteDataSource(item)">
                     <a-icon type="delete" /> 删除数据源
                   </a-menu-item>
@@ -214,6 +217,20 @@ export default {
     },
     errorCount() {
       return this.dataSources.filter(ds => ds.status === 'ERROR').length;
+    },
+    isAdmin() {
+      try {
+        const userStr = localStorage.getItem('user');
+        if (!userStr) return false;
+        const data = JSON.parse(userStr);
+        // Handle nested user object structure from backend response
+        const user = data.user || data;
+        
+        // Check for various admin indicators based on backend/mock structure
+        return user.isAdmin === 1 || user.role === 'Admin' || user.username === 'admin';
+      } catch (e) {
+        return false;
+      }
     }
   },
   mounted() {
@@ -271,6 +288,17 @@ export default {
     showEditDrawer(item) {
       this.editingId = item.id;
       this.form = { ...item, password: '' }; // Don't fill password for security, or handle it properly
+      this.drawerVisible = true;
+    },
+
+    copyDataSource(item) {
+      this.editingId = null;
+      this.form = {
+        ...item,
+        id: undefined,
+        name: `${item.name}_copy`,
+        password: ''
+      };
       this.drawerVisible = true;
     },
 
@@ -354,8 +382,27 @@ export default {
     },
     
     async deleteDataSource(item) {
-        // Implement delete logic if backend supports it
-        this.$message.warning('删除功能暂未开放');
+      if (!this.isAdmin) {
+        this.$message.warning('只有管理员可以删除数据源');
+        return;
+      }
+      
+      this.$confirm({
+        title: '确认删除数据源?',
+        content: `将删除数据源 "${item.name}" 及其相关的元数据信息，此操作不可恢复。`,
+        okText: '确认删除',
+        okType: 'danger',
+        cancelText: '取消',
+        onOk: async () => {
+          try {
+            await axios.delete(`/api/datasource/${item.id}`);
+            this.$message.success('数据源已删除');
+            this.fetchDataSources();
+          } catch (e) {
+            this.$message.error('删除失败: ' + (e.response?.data?.message || '未知错误'));
+          }
+        }
+      });
     }
   }
 };
