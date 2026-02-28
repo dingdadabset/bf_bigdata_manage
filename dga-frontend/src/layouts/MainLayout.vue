@@ -19,18 +19,22 @@
             @change="onSearchChange"
           />
           
-          <a-select
-            v-model="selectedCluster"
-            placeholder="选择集群"
-            style="width: 150px; margin-right: 16px;"
-            @change="onClusterChange"
-            class="custom-header-select"
-          >
-            <a-select-option :value="''">全部集群</a-select-option>
-            <a-select-option v-for="cluster in clusters" :key="cluster" :value="cluster">
-              {{ cluster }}
-            </a-select-option>
-          </a-select>
+          <div class="cluster-selector-group" style="display: flex; align-items: center; margin-right: 16px;">
+            <a-select
+              v-model="selectedCluster"
+              placeholder="选择集群"
+              style="width: 150px; margin-right: 8px;"
+              @change="onClusterChange"
+              class="custom-header-select"
+            >
+              <a-select-option :value="''">全部集群</a-select-option>
+              <a-select-option v-for="cluster in clusters" :key="cluster.id" :value="cluster.clusterName">
+                {{ cluster.clusterName }}
+              </a-select-option>
+            </a-select>
+            <a-button type="primary" shape="circle" icon="plus" size="small" @click="showCreateClusterModal" style="margin-right: 4px" title="新建集群"></a-button>
+            <a-button type="danger" shape="circle" icon="minus" size="small" @click="handleDeleteCluster" :disabled="!selectedCluster" title="删除当前集群"></a-button>
+          </div>
 
           <a-button-group class="header-btn-group">
             <a-button icon="cloud-download" @click="triggerAction('import')" title="一键导入" class="rounded-btn-left">导入</a-button>
@@ -57,6 +61,20 @@
         </a-dropdown>
       </div>
     </a-layout-header>
+
+    <!-- Create Cluster Modal -->
+    <a-modal
+      title="新建集群"
+      :visible="createClusterVisible"
+      @ok="handleCreateCluster"
+      @cancel="createClusterVisible = false"
+    >
+      <a-form-model>
+        <a-form-model-item label="集群名称">
+          <a-input v-model="newClusterName" placeholder="请输入集群名称" />
+        </a-form-model-item>
+      </a-form-model>
+    </a-modal>
 
     <!-- BODY (Sider + Content) -->
     <a-layout>
@@ -154,7 +172,9 @@ export default {
       username: 'Admin',
       searchText: '',
       selectedCluster: '',
-      clusters: []
+      clusters: [],
+      createClusterVisible: false,
+      newClusterName: ''
     };
   },
   watch: {
@@ -170,13 +190,55 @@ export default {
   methods: {
     async fetchClusters() {
       try {
-        const res = await axios.get('/api/access/clusters');
+        const res = await axios.get('/api/clusters');
         if (res.data) {
           this.clusters = res.data;
         }
       } catch (e) {
         console.error("Failed to fetch clusters", e);
       }
+    },
+    showCreateClusterModal() {
+      this.createClusterVisible = true;
+      this.newClusterName = '';
+    },
+    async handleCreateCluster() {
+      if (!this.newClusterName) {
+        this.$message.warning('请输入集群名称');
+        return;
+      }
+      try {
+        await axios.post('/api/clusters', { clusterName: this.newClusterName, type: 'CDH' });
+        this.$message.success('集群创建成功');
+        this.createClusterVisible = false;
+        this.fetchClusters();
+      } catch (e) {
+        this.$message.error('创建失败: ' + (e.response?.data?.message || e.message));
+      }
+    },
+    handleDeleteCluster() {
+      if (!this.selectedCluster) return;
+      const cluster = this.clusters.find(c => c.clusterName === this.selectedCluster);
+      if (!cluster) return;
+      
+      this.$confirm({
+        title: '确定要删除该集群吗?',
+        content: `集群: ${cluster.clusterName}`,
+        okText: '确定',
+        okType: 'danger',
+        cancelText: '取消',
+        onOk: async () => {
+          try {
+            await axios.delete(`/api/clusters/${cluster.id}`);
+            this.$message.success('集群已删除');
+            this.selectedCluster = '';
+            this.onClusterChange('');
+            this.fetchClusters();
+          } catch (e) {
+            this.$message.error('删除失败: ' + (e.response?.data?.message || e.message));
+          }
+        }
+      });
     },
     onSearch(value) {
       mutations.setHeaderSearchText(value);

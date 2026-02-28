@@ -7,10 +7,10 @@
         </a-radio-group>
       </a-form-model-item>
       <a-form-model-item label="所属集群">
-        <a-select v-model="userForm.cluster">
-          <a-select-option value="CDH-Cluster-01">CDH-Cluster-01</a-select-option>
-          <a-select-option value="HDP-Production">HDP-Production</a-select-option>
-          <a-select-option value="StarRocks-Financial">StarRocks-Financial</a-select-option>
+        <a-select v-model="userForm.cluster" placeholder="请选择集群">
+          <a-select-option v-for="cluster in clusters" :key="cluster.id" :value="cluster.clusterName">
+            {{ cluster.clusterName }}
+          </a-select-option>
         </a-select>
       </a-form-model-item>
       <a-form-model-item label="用户名">
@@ -38,9 +38,10 @@ export default {
   data() {
     return {
       creatingUser: false,
+      clusters: [],
       userForm: {
         username: '',
-        cluster: 'CDH-Cluster-01',
+        cluster: '',
         creationStrategy: 'IPA_HTTP',
         firstName: '',
         lastName: '',
@@ -49,7 +50,22 @@ export default {
       }
     };
   },
+  mounted() {
+    this.fetchClusters();
+  },
   methods: {
+    async fetchClusters() {
+      try {
+        const res = await axios.get('/api/clusters');
+        this.clusters = res.data;
+        if (this.clusters.length > 0) {
+          this.userForm.cluster = this.clusters[0].clusterName;
+        }
+      } catch (e) {
+        console.error('Failed to fetch clusters', e);
+        // Fallback or empty
+      }
+    },
     autoSplitName(val) {
       this.userForm.firstName = val;
       this.userForm.lastName = 'User';

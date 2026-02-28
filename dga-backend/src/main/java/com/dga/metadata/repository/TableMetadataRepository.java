@@ -17,6 +17,7 @@ import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
 public interface TableMetadataRepository extends JpaRepository<TableMetadata, Long>, JpaSpecificationExecutor<TableMetadata> {
     List<TableMetadata> findByDataSourceId(Long dataSourceId);
     List<TableMetadata> findByDbName(String dbName);
+    List<TableMetadata> findByDbNameAndTableName(String dbName, String tableName);
 
     Page<TableMetadata> findByDataSourceId(Long dataSourceId, Pageable pageable);
 

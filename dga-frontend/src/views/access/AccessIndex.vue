@@ -31,6 +31,7 @@
     <grant-modal
       :visible="grantModalVisible"
       :username="currentGrantUser"
+      :cluster="currentGrantCluster"
       @cancel="grantModalVisible = false"
       @ok="onGrantSuccess"
     />
@@ -57,7 +58,8 @@ export default {
       selectedUser: null,
       createUserVisible: false,
       grantModalVisible: false,
-      currentGrantUser: ''
+      currentGrantUser: '',
+      currentGrantCluster: ''
     };
   },
   methods: {
@@ -68,8 +70,9 @@ export default {
       this.createUserVisible = false;
       this.$refs.userList.fetchUsers();
     },
-    onGrant(username) {
+    onGrant(username, cluster) {
       this.currentGrantUser = username;
+      this.currentGrantCluster = cluster;
       this.grantModalVisible = true;
     },
     onGrantSuccess() {

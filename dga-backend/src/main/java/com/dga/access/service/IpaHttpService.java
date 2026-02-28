@@ -106,6 +106,78 @@ public class IpaHttpService {
         }
     }
 
+    public void createGroup(String groupName, String description, String gid) {
+        if (!enabled) {
+            throw new IllegalStateException("IPA HTTP is disabled");
+        }
+
+        login();
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("method", "group_add");
+        payload.put("id", 0);
+
+        List<Object> params = new ArrayList<>();
+        List<String> positionalParams = Collections.singletonList(groupName);
+        params.add(positionalParams);
+
+        Map<String, Object> kwParams = new HashMap<>();
+        kwParams.put("description", description);
+        if (gid != null && !gid.isEmpty()) {
+            try {
+                kwParams.put("gidnumber", Integer.parseInt(gid));
+            } catch (NumberFormatException e) {
+                // Ignore if not a number, let IPA handle or auto-assign
+                System.err.println("Invalid GID format: " + gid);
+            }
+        }
+        params.add(kwParams);
+        payload.put("params", params);
+
+        try {
+            executeRpc(payload, "IPA Group created via HTTP: " + groupName);
+        } catch (RuntimeException e) {
+            String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+            if (msg.contains("already exists")) {
+                System.out.println("IPA Group " + groupName + " already exists. Treating as success.");
+                return;
+            }
+            throw e;
+        }
+    }
+
+    public void addUserToGroup(String username, String groupName) {
+        if (!enabled) {
+            throw new IllegalStateException("IPA HTTP is disabled");
+        }
+
+        login();
+
+        Map<String, Object> payload = new HashMap<>();
+        payload.put("method", "group_add_member");
+        payload.put("id", 0);
+
+        List<Object> params = new ArrayList<>();
+        List<String> positionalParams = Collections.singletonList(groupName);
+        params.add(positionalParams);
+
+        Map<String, Object> kwParams = new HashMap<>();
+        kwParams.put("user", Collections.singletonList(username));
+        params.add(kwParams);
+        payload.put("params", params);
+
+        try {
+            executeRpc(payload, "Added user " + username + " to group " + groupName);
+        } catch (RuntimeException e) {
+             String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+             if (msg.contains("already a member") || msg.contains("attribute \"member\" not allowed")) {
+                 System.out.println("User " + username + " is already in group " + groupName + " or cannot be added.");
+                 return;
+             }
+             throw e;
+        }
+    }
+
     public void deleteUser(String username) {
         if (!enabled) {
             throw new IllegalStateException("IPA HTTP is disabled");

@@ -66,9 +66,8 @@
         </a-table>
       </div>
       <div v-else-if="activeTabKey === 'lineage'">
-        <a-empty description="血缘图谱功能开发中..." image="https://gw.alipayobjects.com/zos/antfincdn/ZHrcdLPrvN/empty.svg">
-           <a-button type="primary">查看 Mock 示例</a-button>
-        </a-empty>
+        <div ref="lineageChart" style="width: 100%; height: 600px; margin-top: 16px;"></div>
+        <a-empty v-if="!lineageData || !lineageData.nodes || lineageData.nodes.length === 0" description="暂无血缘数据" />
       </div>
       <div v-else-if="activeTabKey === 'preview'">
         <a-alert message="数据预览需申请权限" type="info" show-icon style="margin-bottom: 16px" />
@@ -80,6 +79,7 @@
 
 <script>
 import axios from 'axios';
+import * as echarts from 'echarts';
 
 export default {
   data() {
@@ -88,6 +88,8 @@ export default {
       tableInfo: {},
       columnData: [],
       taskData: [],
+      lineageData: null,
+      lineageChart: null,
       loadingColumns: false,
       loadingTasks: false,
       syncing: false,
@@ -177,6 +179,82 @@ export default {
     },
     onTabChange(key, type) {
       this[type] = key;
+      if (key === 'lineage') {
+        if (!this.lineageData) {
+            this.fetchLineage();
+        } else {
+             this.$nextTick(() => {
+                if (this.lineageChart) {
+                    this.lineageChart.resize();
+                } else {
+                    this.initChart();
+                }
+            });
+        }
+      }
+    },
+    async fetchLineage() {
+        try {
+            const res = await axios.get(`/api/lineage/table/${this.tableId}`);
+            this.lineageData = res.data;
+            if (this.lineageData && this.lineageData.nodes && this.lineageData.nodes.length > 0) {
+                this.$nextTick(() => {
+                    this.initChart();
+                });
+            }
+        } catch (e) {
+            this.$message.error('获取血缘信息失败');
+        }
+    },
+    initChart() {
+        if (!this.$refs.lineageChart) return;
+        
+        // Dispose existing instance if any
+        if (this.lineageChart) {
+             this.lineageChart.dispose();
+        }
+
+        this.lineageChart = echarts.init(this.$refs.lineageChart);
+        const option = {
+            title: { text: '' },
+            tooltip: {},
+            legend: [{
+                data: this.lineageData.categories.map(function (a) {
+                    return a.name;
+                })
+            }],
+            series: [{
+                type: 'graph',
+                layout: 'force',
+                symbolSize: 50,
+                roam: true,
+                label: { show: true, position: 'right' },
+                edgeSymbol: ['circle', 'arrow'],
+                edgeSymbolSize: [4, 10],
+                data: this.lineageData.nodes.map(node => ({
+                    name: node.name,
+                    category: node.category,
+                    symbolSize: node.symbolSize || 50,
+                    itemStyle: node.itemStyle
+                })),
+                links: this.lineageData.links,
+                categories: this.lineageData.categories,
+                force: {
+                    repulsion: 2000,
+                    edgeLength: [100, 200]
+                },
+                lineStyle: {
+                    color: 'source',
+                    curveness: 0.3
+                }
+            }]
+        };
+        this.lineageChart.setOption(option);
+        
+        // Resize observer
+        window.addEventListener('resize', () => {
+             this.lineageChart && this.lineageChart.resize();
+        });
     },
     formatSize(bytes) {
       if (!bytes && bytes !== 0) return '-';

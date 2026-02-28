@@ -4,16 +4,58 @@
       <a-button type="link" icon="sync" @click="handleSync" :loading="syncing" style="margin-right: 8px;">同步权限</a-button>
       <a-button type="link" icon="edit" @click="$emit('edit')">编辑策略</a-button>
     </div>
-    <div v-if="dbList && dbList.length" class="db-list">
-      <div class="db-row" v-for="db in dbList" :key="db.key">
-        <div class="db-left">
-          <a-icon type="database" style="margin-right: 8px;" />
-          <span class="db-name">{{ db.title }}</span>
-          <a-tag color="blue" style="margin-left: 8px; font-size: 10px">库</a-tag>
-          <a-tag v-if="db.perms" color="orange" style="margin-left: 8px; font-size: 10px">{{ db.perms }}</a-tag>
+    <div v-if="(dbList && dbList.length) || (revokedDbList && revokedDbList.length)" class="access-sections">
+      <div class="section-title">当前授权</div>
+      <div v-if="dbList && dbList.length" class="db-list">
+        <div class="db-row" v-for="db in dbList" :key="db.key">
+          <div class="db-left">
+            <a-icon type="database" style="margin-right: 8px;" />
+            <span class="db-name">{{ db.title }}</span>
+            <a-tag color="blue" style="margin-left: 8px; font-size: 10px">库</a-tag>
+            <a-tag v-if="db.perms" color="orange" style="margin-left: 8px; font-size: 10px">{{ db.perms }}</a-tag>
+          </div>
+          <div class="db-actions">
+            <a-button class="db-action" type="link" icon="table" @click="openTables(db.title, db.perms)">查看表</a-button>
+            <a-button
+              v-if="db.children && db.children.length"
+              class="db-action"
+              type="link"
+              icon="bars"
+              @click="openGrantedTables(db)"
+            >
+              已授权表
+            </a-button>
+          </div>
         </div>
-        <a-button class="db-action" type="link" icon="table" @click="openTables(db.title, db.perms)">查看表</a-button>
       </div>
+      <a-empty v-else description="暂无当前授权" />
+
+      <a-divider style="margin: 12px 0" />
+
+      <div class="section-title">已回收</div>
+      <div v-if="revokedDbList && revokedDbList.length" class="db-list revoked-list">
+        <div class="db-row" v-for="db in revokedDbList" :key="db.key">
+          <div class="db-left">
+            <a-icon type="database" style="margin-right: 8px;" />
+            <span class="db-name">{{ db.title }}</span>
+            <a-tag style="margin-left: 8px; font-size: 10px">库</a-tag>
+            <a-tag v-if="db.perms" color="orange" style="margin-left: 8px; font-size: 10px">{{ db.perms }}</a-tag>
+            <a-tag color="red" style="margin-left: 8px; font-size: 10px">已回收</a-tag>
+          </div>
+          <div class="db-actions">
+            <a-button
+              v-if="db.children && db.children.length"
+              class="db-action"
+              type="link"
+              icon="bars"
+              @click="openGrantedTables(db)"
+            >
+              已授权表
+            </a-button>
+          </div>
+        </div>
+      </div>
+      <a-empty v-else description="暂无回收记录" />
     </div>
     <a-empty v-else description="暂无权限策略" />
     <a-modal :visible="tablesVisible" :title="`库 ${tablesDb} 的表`" @cancel="tablesVisible=false" @ok="tablesVisible=false" width="520px">
@@ -25,6 +67,23 @@
           <a-tag v-if="tablesPerm" color="orange" style="margin-left: 8px; font-size: 10px">{{ tablesPerm }}</a-tag>
         </a-list-item>
         <div slot="header">共 {{ tablesData.length }} 张表</div>
+      </a-list>
+    </a-modal>
+    <a-modal
+      :visible="grantedTablesVisible"
+      :title="`库 ${grantedTablesDb} 的已授权表`"
+      @cancel="grantedTablesVisible=false"
+      @ok="grantedTablesVisible=false"
+      width="520px"
+    >
+      <a-list :data-source="grantedTablesData" bordered size="small">
+        <a-list-item slot="renderItem" slot-scope="item">
+          <a-icon type="table" style="margin-right: 8px;" />
+          <span class="table-name">{{ item.tableName }}</span>
+          <a-tag color="blue" style="margin-left: 8px; font-size: 10px">表</a-tag>
+          <a-tag v-if="item.permission" color="orange" style="margin-left: 8px; font-size: 10px">{{ item.permission }}</a-tag>
+        </a-list-item>
+        <div slot="header">共 {{ grantedTablesData.length }} 张表</div>
       </a-list>
     </a-modal>
   </a-card>
@@ -50,11 +109,15 @@ export default {
   data() {
     return {
       treeData: [],
+      revokedTreeData: [],
       syncing: false,
       tablesVisible: false,
       tablesDb: '',
       tablesPerm: '',
-      tablesData: []
+      tablesData: [],
+      grantedTablesVisible: false,
+      grantedTablesDb: '',
+      grantedTablesData: []
     };
   },
   watch: {
@@ -84,52 +147,67 @@ export default {
     },
     dbList() {
       return this.treeData || [];
+    },
+    revokedDbList() {
+      return this.revokedTreeData || [];
     }
   },
   methods: {
     async loadUserAccess() {
       try {
-        const params = { username: this.username };
+        const buildTree = records => {
+          const byDb = {};
+          records.forEach(r => {
+            if (!byDb[r.databaseName]) {
+              byDb[r.databaseName] = {
+                title: r.databaseName,
+                key: `db-${r.databaseName}`,
+                slots: { icon: 'database' },
+                scopedSlots: { title: 'custom' },
+                levelTag: '库',
+                perms: null,
+                children: []
+              };
+            }
+            if (r.tableName) {
+              byDb[r.databaseName].children.push({
+                title: r.tableName,
+                key: `tbl-${r.databaseName}-${r.tableName}`,
+                slots: { icon: 'table' },
+                scopedSlots: { title: 'custom' },
+                levelTag: '表',
+                perms: r.permission
+              });
+            } else {
+              byDb[r.databaseName].perms = r.permission;
+            }
+          });
+          return Object.values(byDb).map(node => {
+            if (node.children && node.children.length === 0) {
+              delete node.children;
+            }
+            return node;
+          });
+        };
+
+        const activeParams = { username: this.username, status: 'ACTIVE' };
+        const revokedParams = { username: this.username, status: 'REVOKED', includeDeleted: true };
         if (this.effectiveCluster) {
-          params.cluster = this.effectiveCluster;
+          activeParams.cluster = this.effectiveCluster;
+          revokedParams.cluster = this.effectiveCluster;
         }
-        params.status = 'ACTIVE';
-        const res = await axios.get('/api/access/user/access', {
-          params
-        });
-        const records = res.data || [];
-        const byDb = {};
-        records.forEach(r => {
-          if (!byDb[r.databaseName]) {
-            byDb[r.databaseName] = {
-              title: r.databaseName,
-              key: `db-${r.databaseName}`,
-              slots: { icon: 'database' },
-              scopedSlots: { title: 'custom' },
-              levelTag: '库',
-              perms: null,
-              children: []
-            };
-          }
-          if (r.tableName) {
-            byDb[r.databaseName].children.push({
-              title: r.tableName,
-              key: `tbl-${r.databaseName}-${r.tableName}`,
-              slots: { icon: 'table' },
-              scopedSlots: { title: 'custom' },
-              levelTag: '表',
-              perms: r.permission
-            });
-          } else {
-            byDb[r.databaseName].perms = r.permission;
-          }
-        });
-        this.treeData = Object.values(byDb).map(node => {
-          if (node.children && node.children.length === 0) {
-            delete node.children;
-          }
-          return node;
-        });
+
+        const [activeRes, revokedRes] = await Promise.all([
+          axios.get('/api/access/user/access', { params: activeParams }),
+          axios.get('/api/access/user/access', { params: revokedParams })
+        ]);
+
+        const activeRecords = activeRes.data || [];
+        const revokedRecordsRaw = revokedRes.data || [];
+        const revokedRecords = revokedRecordsRaw.filter(r => r.deleted === true);
+
+        this.treeData = buildTree(activeRecords);
+        this.revokedTreeData = buildTree(revokedRecords);
       } catch (e) {
         const mock = store.permissions[this.username] || [];
         this.treeData = mock.map(db => ({
@@ -138,6 +216,7 @@ export default {
           levelTag: '库',
           children: (db.children || []).map(t => ({ ...t, levelTag: '表' }))
         }));
+        this.revokedTreeData = [];
       }
     },
     async openTables(dbName, perms) {
@@ -154,6 +233,14 @@ export default {
       } catch (e) {
         this.tablesData = [];
       }
+    },
+    openGrantedTables(db) {
+      this.grantedTablesVisible = true;
+      this.grantedTablesDb = db.title;
+      this.grantedTablesData = (db.children || []).map(t => ({
+        tableName: t.title,
+        permission: t.perms
+      }));
     },
     async handleSync() {
       this.syncing = true;
@@ -200,6 +287,21 @@ export default {
 }
 .db-action {
   margin-left: auto;
+}
+.db-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+.section-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin: 0 0 8px 8px;
+}
+.revoked-list .db-name {
+  color: rgba(0, 0, 0, 0.45);
 }
 .db-name, .table-name {
   min-width: 0;

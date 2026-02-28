@@ -10,6 +10,7 @@ import Quality from '../views/Quality.vue';
 import DataMap from '../views/DataMap.vue';
 import UserProfile from '../views/UserProfile.vue';
 import ResourceManagement from '../views/ResourceManagement.vue';
+import ClusterManagement from '../views/system/ClusterManagement.vue';
 
 Vue.use(VueRouter);
 
@@ -74,6 +75,12 @@ const routes = [
         name: 'ResourceManagement',
         component: ResourceManagement,
         meta: { title: '资源导航管理' }
+      },
+      {
+        path: 'cluster-management',
+        name: 'ClusterManagement',
+        component: ClusterManagement,
+        meta: { title: '集群管理' }
       }
     ]
   }

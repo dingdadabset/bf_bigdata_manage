@@ -38,7 +38,7 @@
           :username="user.username" 
           :cluster="effectiveCluster"
           :title="(effectiveCluster || '').includes('CDH') ? 'Hive 数据权限 (Sentry)' : 'Hive 数据权限 (Ranger)'"
-          @edit="$emit('grant', user.username)" 
+          @edit="$emit('grant', user.username, effectiveCluster)" 
         />
       </div>
     </div>

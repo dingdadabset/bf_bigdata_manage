@@ -62,12 +62,24 @@ public class AccessController {
     private UserHiveAccessRepository userHiveAccessRepository;
 
     @Autowired
+    private com.dga.cluster.repository.ClusterRepository clusterRepository;
+
+    @Autowired
     private JdbcTemplate jdbcTemplate;
 
     @PostMapping("/grant")
     public String grantAccess(@RequestBody AccessRequest request) {
-        ldapService.createUser(request.getUsername(), request.getPassword(), request.getEmail());
-        hiveAuthService.grantPermission(request.getUsername(), request.getDatabase(), request.getPermission());
+        try {
+            ldapService.createUser(request.getUsername(), request.getPassword(), request.getEmail());
+        } catch (Exception e) {
+            System.err.println("Warning: LDAP create user failed (might already exist): " + e.getMessage());
+        }
+        
+        try {
+            hiveAuthService.grantPermission(request.getUsername(), request.getDatabase(), request.getPermission(), request.getCluster());
+        } catch (Exception e) {
+            System.err.println("Warning: Hive/Ranger grant failed: " + e.getMessage());
+        }
         
         // Record Access
         UserHiveAccess access = new UserHiveAccess();
@@ -100,7 +112,37 @@ public class AccessController {
             if (!result.isEmpty()) return result; // Return error if any
             resultMsg = "User created via IPA(SSH): " + request.getUsername();
         } else if ("IPA_HTTP".equalsIgnoreCase(strategy)) {
+            // Ensure groups exist
+            try {
+                ipaHttpService.createGroup("new_cluster_users", "Users for New Cluster", "1485400045");
+                ipaHttpService.createGroup("old_cluster_users", "Users for Old Cluster", "1485400046");
+            } catch (Exception e) {
+                System.err.println("Warning: Failed to ensure IPA groups exist: " + e.getMessage());
+            }
+
             ipaHttpService.createUser(request.getUsername(), request.getFirstName(), request.getLastName(), request.getPassword());
+            
+            // Assign to group based on cluster
+            String cluster = request.getCluster();
+            if (cluster != null) {
+                String groupToAdd = null;
+                if (cluster.toLowerCase().contains("cdh")) {
+                    groupToAdd = "old_cluster_users";
+                } else if (cluster.toLowerCase().contains("hdp")) {
+                    groupToAdd = "new_cluster_users";
+                }
+                
+                if (groupToAdd != null) {
+                    try {
+                        ipaHttpService.addUserToGroup(request.getUsername(), groupToAdd);
+                        resultMsg += " and added to group " + groupToAdd;
+                    } catch (Exception e) {
+                        System.err.println("Failed to add user to group " + groupToAdd + ": " + e.getMessage());
+                        resultMsg += " (Warning: Failed to add to group " + groupToAdd + ")";
+                    }
+                }
+            }
+            
             resultMsg = "User created via IPA(HTTP): " + request.getUsername();
         } else {
             ldapService.createUser(request.getUsername(), request.getPassword(), request.getEmail());
@@ -150,8 +192,8 @@ public class AccessController {
                         if (!dgaUserRepository.existsByUsername(username)) {
                             DgaUser newUser = new DgaUser();
                             newUser.setUsername(username);
-                            newUser.setCreationStrategy("init_user");
-                            newUser.setClusterName("CDH-Cluster-01");
+                            newUser.setCreationStrategy("IPA_IMPORT");
+                            newUser.setClusterName("CDH");
                             
                             // Try to get name
                             Object givenName = u.get("givenname");
@@ -183,7 +225,7 @@ public class AccessController {
     public String syncUserPermissions(@PathVariable String username, @RequestParam(required = false) String cluster) {
         String targetCluster = (cluster != null && !cluster.isEmpty()) ? cluster : "CDH-Cluster-01";
         
-        List<Map<String, Object>> hivePermsRaw = hiveAuthService.getUserPermissions(username);
+        List<Map<String, Object>> hivePermsRaw = hiveAuthService.getUserPermissions(username, targetCluster);
         Set<String> hivePermKeys = new HashSet<>();
         List<UserHiveAccess> toSave = new ArrayList<>();
         
@@ -294,7 +336,24 @@ public class AccessController {
 
     @GetMapping("/clusters")
     public List<String> listClusters() {
-        return dgaUserRepository.findDistinctClusterNames();
+        // Migration: If no clusters in dga_cluster, populate from existing users
+        if (clusterRepository.count() == 0) {
+            List<String> existing = dgaUserRepository.findDistinctClusterNames();
+            if (existing == null || existing.isEmpty()) {
+                existing = java.util.Arrays.asList("CDH-Cluster-01", "HDP-Production");
+            }
+            for (String name : existing) {
+                if (name == null || name.trim().isEmpty()) continue;
+                com.dga.cluster.entity.Cluster c = new com.dga.cluster.entity.Cluster();
+                c.setClusterName(name);
+                c.setType("CDH"); // Default
+                c.setDescription("Auto-imported cluster");
+                clusterRepository.save(c);
+            }
+        }
+        return clusterRepository.findActiveClusters().stream()
+                .map(com.dga.cluster.entity.Cluster::getClusterName)
+                .collect(java.util.stream.Collectors.toList());
     }
 
     @GetMapping("/ldap/user")
@@ -310,13 +369,13 @@ public class AccessController {
     }
 
     @GetMapping("/hive/databases")
-    public List<String> listDatabases() {
-        return hiveAuthService.listDatabases();
+    public List<String> listDatabases(@RequestParam(required = false) String cluster) {
+        return hiveAuthService.listDatabases(cluster);
     }
 
     @GetMapping("/hive/tables")
-    public List<String> listTables(@RequestParam("database") String database) {
-        return hiveAuthService.listTables(database);
+    public List<String> listTables(@RequestParam("database") String database, @RequestParam(required = false) String cluster) {
+        return hiveAuthService.listTables(cluster, database);
     }
 
     @PostMapping("/grant/batch")
@@ -335,7 +394,7 @@ public class AccessController {
         if (databases != null) {
             for (String database : databases) {
                 try {
-                    hiveAuthService.grantPermission(username, database, permission);
+                    hiveAuthService.grantPermission(username, database, permission, clusterName);
                     
                     UserHiveAccess access = new UserHiveAccess();
                     access.setUsername(username);
@@ -357,7 +416,7 @@ public class AccessController {
         if (tables != null) {
             for (TableGrant tableGrant : tables) {
                 try {
-                    hiveAuthService.grantTablePermission(username, tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                    hiveAuthService.grantTablePermission(username, tableGrant.getDatabase(), tableGrant.getTable(), permission, clusterName);
                     
                     UserHiveAccess access = new UserHiveAccess();
                     access.setUsername(username);
@@ -382,21 +441,48 @@ public class AccessController {
     @GetMapping("/user/access")
     public List<UserHiveAccess> listUserAccess(@RequestParam("username") String username,
                                                @RequestParam(value = "status", required = false) String status,
-                                               @RequestParam(value = "cluster", required = false) String cluster) {
+                                               @RequestParam(value = "cluster", required = false) String cluster,
+                                               @RequestParam(value = "includeDeleted", required = false, defaultValue = "false") boolean includeDeleted) {
+        if (includeDeleted) {
+            if (status != null && cluster != null) {
+                return userHiveAccessRepository.findByUsernameAndClusterNameAndStatus(username, cluster, status);
+            } else if (status != null) {
+                return userHiveAccessRepository.findByUsernameAndStatus(username, status);
+            } else if (cluster != null) {
+                return userHiveAccessRepository.findByUsernameAndClusterName(username, cluster);
+            } else {
+                return userHiveAccessRepository.findByUsername(username);
+            }
+        }
         if (status != null && cluster != null) {
-            return userHiveAccessRepository.findByUsernameAndClusterNameAndStatus(username, cluster, status);
+            return userHiveAccessRepository.findByUsernameAndClusterNameAndStatusAndIsDeletedFalse(username, cluster, status);
         } else if (cluster != null) {
-            return userHiveAccessRepository.findByUsernameAndClusterName(username, cluster);
+            return userHiveAccessRepository.findByUsernameAndClusterNameAndIsDeletedFalse(username, cluster);
         } else if (status != null) {
-            return userHiveAccessRepository.findByUsernameAndStatus(username, status);
+            return userHiveAccessRepository.findByUsernameAndStatusAndIsDeletedFalse(username, status);
         } else {
-            return userHiveAccessRepository.findByUsername(username);
+            return userHiveAccessRepository.findByUsernameAndIsDeletedFalse(username);
         }
     }
 
     @PostMapping("/revoke")
     public String revokeAccess(@RequestBody AccessRequest request) {
-        hiveAuthService.revokePermission(request.getUsername(), request.getDatabase(), request.getPermission());
+        try {
+            hiveAuthService.revokePermission(request.getUsername(), request.getDatabase(), request.getPermission(), request.getCluster());
+        } catch (Exception e) {
+            System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
+        }
+        
+        // Soft delete from DB
+        try {
+            userHiveAccessRepository.softDeleteDatabaseAccess(request.getUsername(), 
+                request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01", 
+                request.getDatabase(), 
+                request.getPermission());
+        } catch (Exception e) {
+             System.err.println("Warning: DB revoke failed: " + e.getMessage());
+        }
+
         return "Access revoked successfully for user: " + request.getUsername();
     }
 
@@ -410,30 +496,30 @@ public class AccessController {
         List<String> databases = request.getDatabases();
         if (databases != null) {
             for (String database : databases) {
-                hiveAuthService.revokePermission(username, database, permission);
                 try {
-                    // userHiveAccessRepository.revokeDatabaseAccess(username, cluster, database, permission);
-                    String sql = String.format("DELETE FROM user_hive_access WHERE username = '%s' AND cluster_name = '%s' AND database_name = '%s' AND table_name IS NULL AND permission = '%s'",
-                            username, cluster, database, permission);
-                    System.out.println("Executing Access Delete SQL: " + sql);
-                    jdbcTemplate.execute(sql);
+                    hiveAuthService.revokePermission(username, database, permission, cluster);
                 } catch (Exception e) {
-                    System.err.println("Failed to update DB access status: " + e.getMessage());
+                    System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
+                }
+                try {
+                    userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                } catch (Exception e) {
+                    System.err.println("Failed to soft delete DB access: " + e.getMessage());
                 }
             }
         }
         List<TableGrant> tables = request.getTables();
         if (tables != null) {
             for (TableGrant tableGrant : tables) {
-                hiveAuthService.revokeTablePermission(username, tableGrant.getDatabase(), tableGrant.getTable(), permission);
                 try {
-                    // userHiveAccessRepository.revokeTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
-                    String sql = String.format("DELETE FROM user_hive_access WHERE username = '%s' AND cluster_name = '%s' AND database_name = '%s' AND table_name = '%s' AND permission = '%s'",
-                            username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
-                    System.out.println("Executing Access Delete SQL: " + sql);
-                    jdbcTemplate.execute(sql);
+                    hiveAuthService.revokeTablePermission(username, tableGrant.getDatabase(), tableGrant.getTable(), permission, cluster);
                 } catch (Exception e) {
-                    System.err.println("Failed to update Table access status: " + e.getMessage());
+                    System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
+                }
+                try {
+                    userHiveAccessRepository.softDeleteTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                } catch (Exception e) {
+                    System.err.println("Failed to soft delete Table access: " + e.getMessage());
                 }
             }
         }
@@ -447,7 +533,7 @@ public class AccessController {
         if (user != null) {
             // 1. Revoke Hive Permissions
             try {
-                hiveAuthService.revokeAll(username);
+                hiveAuthService.revokeAll(username, user.getClusterName());
             } catch (Throwable e) {
                  System.err.println("Failed to revoke Hive permissions: " + e.getMessage());
                  // Continue to delete user even if revoke fails? 
@@ -476,7 +562,7 @@ public class AccessController {
             
             // 4. Revoke Hive Access Records (Soft Delete)
             try {
-                userHiveAccessRepository.revokeAllAccessByUsername(username);
+                userHiveAccessRepository.softDeleteAllAccessByUsername(username);
             } catch (Exception e) {
                 System.err.println("Failed to update UserHiveAccess status: " + e.getMessage());
                 // Non-blocking, but logged

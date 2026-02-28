@@ -30,6 +30,7 @@
           style="width: 100%"
           placeholder="请选择一个或多个数据库"
           :loading="loadingHiveMeta"
+          @change="onDatabaseSelectChange"
         >
           <a-select-option v-for="db in databases" :key="db" :value="db">
             {{ db }}
@@ -58,6 +59,7 @@
             :disabled="!hiveForm.currentDatabase"
             placeholder="请选择一个或多个表"
             :loading="loadingHiveMeta"
+            @change="onTableSelectChange"
           >
             <a-select-option v-for="table in tables" :key="table" :value="table">
               {{ table }}
@@ -93,7 +95,8 @@ export default {
   name: 'GrantModal',
   props: {
     visible: Boolean,
-    username: String
+    username: String,
+    cluster: String
   },
   data() {
     return {
@@ -137,9 +140,11 @@ export default {
       this.loadingHiveMeta = true;
       try {
         const params = { username: this.username };
-        if (store.currentCluster) {
-          params.cluster = store.currentCluster;
+        const cluster = this.cluster || store.currentCluster || store.headerSelectedCluster;
+        if (cluster) {
+          params.cluster = cluster;
         }
+        params.status = 'ACTIVE';
         const res = await axios.get('/api/access/user/access', { params });
         const accessList = res.data;
         
@@ -152,6 +157,7 @@ export default {
         
         // Store access list for table filtering
         this.userAccessList = accessList;
+        console.log('Loaded userAccessList:', this.userAccessList);
         
       } catch (e) {
         this.databases = [];
@@ -165,8 +171,9 @@ export default {
       this.loadingHiveMeta = true;
       try {
         const params = {};
-        if (store.currentCluster) {
-          params.cluster = store.currentCluster;
+        const cluster = this.cluster || store.currentCluster || store.headerSelectedCluster;
+        if (cluster) {
+          params.cluster = cluster;
         }
         const res = await axios.get('/api/access/hive/databases', { params });
         this.databases = res.data;
@@ -179,6 +186,7 @@ export default {
     },
     async onTableDatabaseChange(val) {
       if(!val) return;
+      this.hiveForm.selectedTables = [];
       this.loadingHiveMeta = true;
       
       if (this.hiveForm.actionType === 'REVOKE') {
@@ -201,8 +209,9 @@ export default {
 
       try {
         const params = { database: val };
-        if (store.currentCluster) {
-          params.cluster = store.currentCluster;
+        const cluster = this.cluster || store.currentCluster || store.headerSelectedCluster;
+        if (cluster) {
+          params.cluster = cluster;
         }
         const res = await axios.get('/api/access/hive/tables', { params });
         this.tables = res.data;
@@ -213,6 +222,55 @@ export default {
         this.loadingHiveMeta = false;
       }
     },
+    onDatabaseSelectChange(val) {
+      console.log('Database selected:', val);
+      if (this.hiveForm.actionType === 'REVOKE' && val && val.length > 0) {
+        // Take the last selected database to infer permission
+        const targetDb = val[val.length - 1];
+        console.log('Target DB for permission check:', targetDb);
+        this.autoFillPermission(targetDb, null);
+      }
+    },
+    onTableSelectChange(val) {
+      console.log('Table selected:', val);
+      if (this.hiveForm.actionType === 'REVOKE' && val && val.length > 0) {
+        // Take the last selected table to infer permission
+        const targetTable = val[val.length - 1];
+        console.log('Target Table for permission check:', targetTable);
+        this.autoFillPermission(this.hiveForm.currentDatabase, targetTable);
+      }
+    },
+    autoFillPermission(db, table) {
+      if (!this.userAccessList) {
+        return;
+      }
+      
+      // Find the access record matching the selection
+      const access = this.userAccessList.find(item => {
+        const dbMatch = item.databaseName === db;
+        const tableMatch = table 
+          ? item.tableName === table 
+          : (!item.tableName || item.tableName === '');
+        return dbMatch && tableMatch;
+      });
+
+      if (access) {
+        const perm = access.privilege || access.permission;
+        if (perm) {
+          this.hiveForm.permission = perm.toUpperCase();
+          this.$message.success(`已自动填充权限: ${this.hiveForm.permission}`);
+        }
+      } else {
+        // If strict match failed, check if there are any permissions for this DB
+        // This helps user understand why permission is not filled
+        if (!table) { // Database level check
+          const hasAnyPerm = this.userAccessList.some(item => item.databaseName === db);
+          if (hasAnyPerm) {
+             this.$message.info('该库下未找到库级权限，可能仅存在表级权限，请切换到“表级授权”模式查看。');
+          }
+        }
+      }
+    },
     async submitGrant() {
       this.granting = true;
       try {
@@ -220,7 +278,7 @@ export default {
           username: this.username,
           permission: this.hiveForm.permission,
           level: this.hiveForm.level,
-          cluster: store.currentCluster || 'CDH-Cluster-01'
+          cluster: this.cluster || store.currentCluster || store.headerSelectedCluster || 'CDH-Cluster-01'
         };
         if (this.hiveForm.level === 'DATABASE') {
           payload.databases = this.hiveForm.selectedDatabases && this.hiveForm.selectedDatabases.length
