@@ -53,6 +53,7 @@
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/metadata/service/MetadataCollector.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/access/controller/AuthController.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/quality/controller/QualityController.java
+/Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/config/SpaController.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/DgaApplication.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/lineage/repository/DataLineageRepository.java
 /Users/dingquan/Desktop/work/bf_bigdata_manage/dga-backend/src/main/java/com/dga/metadata/repository/ColumnMetadataRepository.java

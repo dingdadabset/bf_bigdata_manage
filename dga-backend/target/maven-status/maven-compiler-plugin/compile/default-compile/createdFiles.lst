@@ -51,6 +51,7 @@ com/dga/access/config/OAuth2LoginSuccessHandler.class
 com/dga/metadata/repository/ColumnMetadataRepository.class
 com/dga/cluster/repository/ClusterRepository.class
 com/dga/quality/repository/QualityRuleRepository.class
+com/dga/config/SpaController.class
 com/dga/lineage/service/AzkabanLineageService.class
 com/dga/cluster/entity/Cluster.class
 com/dga/controller/TestController.class

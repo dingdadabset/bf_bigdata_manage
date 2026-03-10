@@ -5,6 +5,20 @@
     <link rel="icon" href="/favicon.ico" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>DGA Frontend</title>
+    <script>
+      window.global = window;
+      window.process = { env: {} };
+      // Safety shim for require
+      window.require = function(mod) {
+        console.warn('Polyfill require called for:', mod);
+        if (mod === 'util') return { inherits: function(){}, inspect: function(){}, promisify: function(){} };
+        return {};
+      };
+      window.onerror = function(message, source, lineno, colno, error) {
+        console.error('Global Error:', message, 'at', source, ':', lineno, ':', colno);
+        document.body.innerHTML += '<div style="color:red;padding:20px;z-index:9999;position:fixed;top:0;left:0;background:white;border:1px solid red;">JS Error: ' + message + '</div>';
+      };
+    </script>
   </head>
   <body>
     <div id="app"></div>
