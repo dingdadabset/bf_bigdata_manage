@@ -1,8 +1,14 @@
 package com.dga.access.service;
 
+import com.dga.cluster.entity.Cluster;
+import com.dga.cluster.entity.ClusterEndpoint;
+import com.dga.cluster.repository.ClusterEndpointRepository;
+import com.dga.cluster.repository.ClusterRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.ldap.core.AttributesMapper;
 import org.springframework.ldap.core.LdapTemplate;
+import org.springframework.ldap.core.support.LdapContextSource;
 import org.springframework.ldap.support.LdapNameBuilder;
 import org.springframework.stereotype.Service;
 
@@ -17,12 +23,27 @@ import java.util.Map;
 public class LdapService {
 
     @Autowired
-    private LdapTemplate ldapTemplate;
+    private LdapTemplate defaultLdapTemplate;
+
+    @Autowired
+    private ClusterRepository clusterRepository;
+
+    @Autowired
+    private ClusterEndpointRepository endpointRepository;
+
+    @Value("${spring.ldap.user-base:cn=users,cn=accounts}")
+    private String defaultUserBaseDn;
 
     public void createUser(String username, String password, String email) {
-        Name dn = buildUserDn(username);
+        createUser((String) null, username, password, email);
+    }
 
-        if (checkUserExists(dn)) {
+    public void createUser(String clusterIdentifier, String username, String password, String email) {
+        Cluster cluster = resolveCluster(clusterIdentifier);
+        LdapTemplate ldapTemplate = getLdapTemplate(cluster);
+        Name dn = buildUserDn(cluster, username);
+
+        if (checkUserExists(ldapTemplate, dn)) {
              System.out.println("User " + username + " already exists in LDAP.");
              return;
         }
@@ -51,9 +72,14 @@ public class LdapService {
     }
 
     public void deleteUser(String username) {
-        Name dn = buildUserDn(username);
+        deleteUser(null, username);
+    }
+
+    public void deleteUser(String clusterIdentifier, String username) {
+        Cluster cluster = resolveCluster(clusterIdentifier);
+        Name dn = buildUserDn(cluster, username);
         try {
-            ldapTemplate.unbind(dn);
+            getLdapTemplate(cluster).unbind(dn);
             System.out.println("LDAP user deleted: " + username);
         } catch (Exception e) {
             throw new RuntimeException("LDAP Delete Error: " + e.getMessage());
@@ -61,6 +87,10 @@ public class LdapService {
     }
 
     public boolean checkUserExists(Name dn) {
+        return checkUserExists(defaultLdapTemplate, dn);
+    }
+
+    public boolean checkUserExists(LdapTemplate ldapTemplate, Name dn) {
         try {
             ldapTemplate.lookup(dn);
             return true;
@@ -70,25 +100,50 @@ public class LdapService {
     }
 
     public boolean userExists(String username) {
-        return checkUserExists(buildUserDn(username));
+        return userExists(null, username);
+    }
+
+    public boolean userExists(String clusterIdentifier, String username) {
+        Cluster cluster = resolveCluster(clusterIdentifier);
+        return checkUserExists(getLdapTemplate(cluster), buildUserDn(cluster, username));
     }
 
     public Name buildUserDn(String username) {
-        return LdapNameBuilder.newInstance()
-                .add("cn", "accounts")
-                .add("cn", "users")
-                .add("uid", username)
-                .build();
+        return buildUserDn(null, username);
+    }
+
+    public Name buildUserDn(Cluster cluster, String username) {
+        String userBaseDn = resolveUserBaseDn(cluster);
+        try {
+            javax.naming.ldap.LdapName builder = new javax.naming.ldap.LdapName(userBaseDn);
+            builder.add(new javax.naming.ldap.Rdn("uid", username));
+            return builder;
+        } catch (Exception e) {
+            return LdapNameBuilder.newInstance()
+                    .add("cn", "accounts")
+                    .add("cn", "users")
+                    .add("uid", username)
+                    .build();
+        }
     }
 
     public String getUserDnString(String username) {
         return buildUserDn(username).toString();
     }
 
+    public String getUserDnString(String clusterIdentifier, String username) {
+        return buildUserDn(resolveCluster(clusterIdentifier), username).toString();
+    }
+
     public Map<String, Object> getUserInfo(String username) {
-        Name dn = buildUserDn(username);
+        return getUserInfo(null, username);
+    }
+
+    public Map<String, Object> getUserInfo(String clusterIdentifier, String username) {
+        Cluster cluster = resolveCluster(clusterIdentifier);
+        Name dn = buildUserDn(cluster, username);
         try {
-            Attributes attrs = ldapTemplate.lookup(dn, (AttributesMapper<Attributes>) a -> a);
+            Attributes attrs = getLdapTemplate(cluster).lookup(dn, (AttributesMapper<Attributes>) a -> a);
             Map<String, Object> map = new HashMap<>();
             if (attrs.get("uid") != null) map.put("uid", attrs.get("uid").get());
             if (attrs.get("cn") != null) map.put("cn", attrs.get("cn").get());
@@ -98,5 +153,47 @@ public class LdapService {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private LdapTemplate getLdapTemplate(Cluster cluster) {
+        ClusterEndpoint endpoint = getLdapEndpoint(cluster);
+        if (endpoint == null || endpoint.getUrl() == null || endpoint.getUrl().isEmpty()) {
+            return defaultLdapTemplate;
+        }
+        LdapContextSource contextSource = new LdapContextSource();
+        contextSource.setUrl(endpoint.getUrl());
+        contextSource.setBase(endpoint.getBaseDn());
+        contextSource.setUserDn(endpoint.getUsername());
+        contextSource.setPassword(endpoint.getPassword());
+        contextSource.afterPropertiesSet();
+        return new LdapTemplate(contextSource);
+    }
+
+    private Cluster resolveCluster(String clusterIdentifier) {
+        if (clusterIdentifier == null || clusterIdentifier.isEmpty()) {
+            return null;
+        }
+        Cluster cluster = clusterRepository.findByClusterCode(clusterIdentifier);
+        if (cluster == null) {
+            cluster = clusterRepository.findByClusterName(clusterIdentifier);
+        }
+        return cluster;
+    }
+
+    private ClusterEndpoint getLdapEndpoint(Cluster cluster) {
+        if (cluster == null || cluster.getClusterCode() == null) {
+            return null;
+        }
+        java.util.List<ClusterEndpoint> endpoints = endpointRepository.findByClusterCodeAndEndpointTypeAndStatus(
+                cluster.getClusterCode(), ClusterEndpoint.TYPE_LDAP, "ACTIVE");
+        return endpoints.isEmpty() ? null : endpoints.get(0);
+    }
+
+    private String resolveUserBaseDn(Cluster cluster) {
+        ClusterEndpoint endpoint = getLdapEndpoint(cluster);
+        if (endpoint != null && endpoint.getUserBaseDn() != null && !endpoint.getUserBaseDn().isEmpty()) {
+            return endpoint.getUserBaseDn();
+        }
+        return defaultUserBaseDn;
     }
 }

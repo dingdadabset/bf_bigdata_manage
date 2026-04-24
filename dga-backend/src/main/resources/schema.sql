@@ -153,6 +153,63 @@ CREATE TABLE IF NOT EXISTS `dga_datamap_stats_cache` (
 
 -- For additional Data Map tables (categories, lineage, etc.), see schema-datamap.sql
 
+-- 12. Cluster Registry
+CREATE TABLE IF NOT EXISTS `dga_cluster` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `cluster_name` VARCHAR(255) NOT NULL,
+  `cluster_code` VARCHAR(100) UNIQUE COMMENT 'Stable API identifier, e.g. CDH_PROD_01',
+  `type` VARCHAR(50) COMMENT 'CDH, HDP, EMR, StarRocks, K8s, Other',
+  `description` VARCHAR(500),
+  `status` VARCHAR(20) DEFAULT 'ACTIVE',
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_cluster_name` (`cluster_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Environment and cluster registry';
+
+-- 13. Cluster Endpoints
+CREATE TABLE IF NOT EXISTS `dga_cluster_endpoint` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `cluster_code` VARCHAR(100) NOT NULL,
+  `endpoint_type` VARCHAR(50) NOT NULL COMMENT 'HIVE_SERVER2, STARROCKS_JDBC, LDAP, RANGER',
+  `auth_backend` VARCHAR(50) COMMENT 'SENTRY, STARROCKS_SQL, RANGER',
+  `url` VARCHAR(1000),
+  `username` VARCHAR(255),
+  `password` VARCHAR(255),
+  `service_name` VARCHAR(255),
+  `base_dn` VARCHAR(500),
+  `user_base_dn` VARCHAR(500),
+  `status` VARCHAR(20) DEFAULT 'ACTIVE',
+  `description` VARCHAR(500),
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_cluster_endpoint` (`cluster_code`, `endpoint_type`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Connection endpoints for cluster resources';
+
+-- 14. General Resource Access Records
+CREATE TABLE IF NOT EXISTS `user_resource_access` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `username` VARCHAR(100) NOT NULL,
+  `cluster_code` VARCHAR(100),
+  `cluster_name` VARCHAR(255),
+  `engine_type` VARCHAR(50) COMMENT 'HIVE, STARROCKS',
+  `resource_type` VARCHAR(50) COMMENT 'DATABASE, TABLE',
+  `database_name` VARCHAR(255),
+  `table_name` VARCHAR(255),
+  `permission` VARCHAR(50) NOT NULL,
+  `auth_backend` VARCHAR(50),
+  `source` VARCHAR(50) COMMENT 'DGA_GRANT, SYNC',
+  `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+  `granted_by` VARCHAR(100),
+  `grant_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `revoke_time` DATETIME,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `is_deleted` BOOLEAN DEFAULT FALSE,
+  PRIMARY KEY (`id`),
+  INDEX `idx_user_resource_access` (`username`, `cluster_code`, `database_name`, `table_name`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Generalized access records across engines';
+
 
 CREATE TABLE `users` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '主键ID',

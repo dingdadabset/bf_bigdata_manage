@@ -15,13 +15,14 @@
       >
         <a-list-item-meta>
           <div slot="description">
-            <a-tag :color="getStrategyColor(item.creationStrategy)" style="font-size: 10px; line-height: 18px; height: 20px;">
-              {{ item.creationStrategy }}
-            </a-tag>
+            <span :class="['source-badge', getStrategyClass(item.creationStrategy)]">
+              {{ getStrategyLabel(item.creationStrategy) }}
+            </span>
           </div>
           <span slot="title" class="user-list-title">
             {{ item.username }}
             <a-tag v-if="item.role" color="blue" style="margin-left: 8px; font-size: 10px; line-height: 18px; height: 20px;">{{ item.role }}</a-tag>
+            <a-tag v-if="isProtectedBigDataUser(item)" color="orange" style="margin-left: 8px; font-size: 10px; line-height: 18px; height: 20px;">保护</a-tag>
           </span>
           <a-avatar slot="avatar" icon="user" :style="{ backgroundColor: getAvatarColor(item.username) }" />
         </a-list-item-meta>
@@ -43,6 +44,21 @@
 <script>
 import axios from 'axios';
 import { store, mutations } from '../../../store';
+
+const PROTECTED_BIGDATA_USERS = [
+  'alading',
+  'bf_hpt',
+  'bf_hpt1',
+  'md_bf',
+  'hdfs',
+  'hive',
+  'yarn',
+  'spark',
+  'hbase',
+  'impala',
+  'sentry',
+  'ranger'
+];
 
 export default {
   name: 'UserList',
@@ -122,6 +138,36 @@ export default {
         default: return 'default';
       }
     },
+    getStrategyLabel(strategy) {
+      const s = (strategy || '').toUpperCase();
+      const labels = {
+        OPENLDAP: 'OpenLDAP 创建',
+        LDAP: 'LDAP 创建',
+        LDAP_IMPORT: 'LDAP 导入',
+        IPA_HTTP: 'IPA 创建',
+        IPA_IMPORT: 'IPA 导入',
+        IPA_SSH: 'IPA SSH',
+        INIT_USER: '初始化用户'
+      };
+      return labels[s] || (strategy || '未知来源');
+    },
+    getStrategyClass(strategy) {
+      const s = (strategy || '').toUpperCase();
+      if (s.includes('LDAP')) return 'source-ldap';
+      if (s.includes('IPA')) return 'source-ipa';
+      if (s.includes('SELF')) return 'source-self';
+      if (s.includes('INIT')) return 'source-init';
+      return 'source-default';
+    },
+    isProtectedBigDataUser(user) {
+      if (!user || !user.username) return false;
+      const username = String(user.username).toLowerCase();
+      const role = String(user.role || user.userRole || '').toLowerCase();
+      return PROTECTED_BIGDATA_USERS.includes(username)
+        || role.includes('important')
+        || role.includes('protected')
+        || role.includes('bigdata');
+    },
     async fetchUsers(params = {}) {
       this.loadingUsers = true;
       try {
@@ -188,5 +234,42 @@ export default {
 }
 .user-list-item.active {
   background-color: #e6f7ff;
+}
+.source-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: .2px;
+  line-height: 22px;
+  border: 1px solid transparent;
+}
+.source-ldap {
+  color: #067647;
+  background: #ecfdf3;
+  border-color: #abefc6;
+}
+.source-ipa {
+  color: #6941c6;
+  background: #f4f3ff;
+  border-color: #d9d6fe;
+}
+.source-self {
+  color: #175cd3;
+  background: #eff8ff;
+  border-color: #b2ddff;
+}
+.source-init {
+  color: #b54708;
+  background: #fffaeb;
+  border-color: #fedf89;
+}
+.source-default {
+  color: #344054;
+  background: #f2f4f7;
+  border-color: #d0d5dd;
 }
 </style>

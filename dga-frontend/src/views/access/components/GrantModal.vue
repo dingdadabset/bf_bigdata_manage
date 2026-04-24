@@ -1,7 +1,7 @@
 <template>
   <a-modal
     :visible="visible"
-    title="Hive 权限管理"
+    :title="modalTitle"
     width="800px"
     :footer="null"
     :destroyOnClose="true"
@@ -19,8 +19,13 @@
       </a-form-model-item>
       <a-form-model-item label="授权维度">
           <a-radio-group v-model="hiveForm.level">
-          <a-radio-button value="DATABASE">库级授权</a-radio-button>
-          <a-radio-button value="TABLE">表级授权</a-radio-button>
+          <a-radio-button
+            v-for="type in resourceTypes"
+            :key="type"
+            :value="type"
+          >
+            {{ type === 'DATABASE' ? '库级授权' : '表级授权' }}
+          </a-radio-button>
         </a-radio-group>
       </a-form-model-item>
       <a-form-model-item label="选择数据库" v-if="hiveForm.level === 'DATABASE'">
@@ -69,11 +74,19 @@
       </template>
       <a-form-model-item label="权限类型">
         <a-select v-model="hiveForm.permission" style="width: 100%">
-          <a-select-option value="ALL">ALL</a-select-option>
-          <a-select-option value="SELECT">SELECT</a-select-option>
-          <a-select-option value="INSERT">INSERT</a-select-option>
-          <a-select-option value="CREATE">CREATE</a-select-option>
+          <a-select-option v-for="permission in permissions" :key="permission" :value="permission">
+            {{ permission }}
+          </a-select-option>
         </a-select>
+      </a-form-model-item>
+      <a-form-model-item v-if="capability" label="授权适配器">
+        <a-space>
+          <a-tag color="blue">{{ capability.engineType || '-' }}</a-tag>
+          <a-tag color="green">{{ capability.authBackend || '-' }}</a-tag>
+          <a-tag :color="capability.requiresLdap ? 'orange' : 'cyan'">
+            {{ capability.requiresLdap ? '依赖 LDAP' : '不依赖 LDAP' }}
+          </a-tag>
+        </a-space>
       </a-form-model-item>
       <a-form-model-item :wrapper-col="{ span: 14, offset: 6 }">
         <a-button @click="$emit('cancel')" style="margin-right: 8px">
@@ -102,6 +115,7 @@ export default {
     return {
       loadingHiveMeta: false,
       granting: false,
+      capability: null,
       databases: [],
       tables: [],
       hiveForm: {
@@ -114,14 +128,29 @@ export default {
       }
     };
   },
+  computed: {
+    modalTitle() {
+      const cluster = this.cluster || store.currentCluster || store.headerSelectedCluster || '';
+      if (this.capability && this.capability.engineType) {
+        return `${this.capability.engineType} 权限管理 (${this.capability.authBackend || 'UNKNOWN'})`;
+      }
+      return cluster ? `${cluster} 权限管理` : '资源权限管理';
+    },
+    permissions() {
+      return this.capability && this.capability.permissions && this.capability.permissions.length
+        ? this.capability.permissions
+        : ['SELECT', 'INSERT', 'CREATE', 'ALL'];
+    },
+    resourceTypes() {
+      return this.capability && this.capability.resourceTypes && this.capability.resourceTypes.length
+        ? this.capability.resourceTypes
+        : ['DATABASE', 'TABLE'];
+    }
+  },
   watch: {
     visible(val) {
       if (val) {
-        if (this.hiveForm.actionType === 'REVOKE') {
-          this.loadUserAccess();
-        } else {
-          this.loadDatabases();
-        }
+        this.prepareModal();
       }
     },
     'hiveForm.actionType'(val) {
@@ -136,6 +165,34 @@ export default {
     }
   },
   methods: {
+    async prepareModal() {
+      await this.loadCapability();
+      if (this.permissions.length) {
+        this.hiveForm.permission = this.permissions[0];
+      }
+      if (!this.resourceTypes.includes(this.hiveForm.level)) {
+        this.hiveForm.level = this.resourceTypes[0] || 'DATABASE';
+      }
+      if (this.hiveForm.actionType === 'REVOKE') {
+        this.loadUserAccess();
+      } else {
+        this.loadDatabases();
+      }
+    },
+    async loadCapability() {
+      try {
+        const cluster = this.cluster || store.currentCluster || store.headerSelectedCluster;
+        const params = {};
+        if (cluster) params.cluster = cluster;
+        const res = await axios.get('/api/access/capabilities', { params });
+        this.capability = res.data || null;
+        if (this.capability && this.capability.status !== 'READY') {
+          this.$message.warning((this.capability.warnings || []).join('；') || '当前环境授权能力未就绪');
+        }
+      } catch (e) {
+        this.capability = null;
+      }
+    },
     async loadUserAccess() {
       this.loadingHiveMeta = true;
       try {
@@ -175,7 +232,7 @@ export default {
         if (cluster) {
           params.cluster = cluster;
         }
-        const res = await axios.get('/api/access/hive/databases', { params });
+        const res = await axios.get('/api/access/resources/databases', { params });
         this.databases = res.data;
       } catch (e) {
         // Mock
@@ -213,7 +270,7 @@ export default {
         if (cluster) {
           params.cluster = cluster;
         }
-        const res = await axios.get('/api/access/hive/tables', { params });
+        const res = await axios.get('/api/access/resources/tables', { params });
         this.tables = res.data;
       } catch (e) {
         // Mock
@@ -274,6 +331,10 @@ export default {
     async submitGrant() {
       this.granting = true;
       try {
+        if (this.capability && this.capability.status !== 'READY') {
+          this.$message.error('当前环境授权能力未就绪，不能执行授权/回收');
+          return;
+        }
         const payload = {
           username: this.username,
           permission: this.hiveForm.permission,
@@ -289,8 +350,8 @@ export default {
         }
         
         const apiUrl = this.hiveForm.actionType === 'REVOKE' 
-          ? '/api/access/revoke/batch' 
-          : '/api/access/grant/batch';
+          ? '/api/access/revokes/batch'
+          : '/api/access/grants/batch';
           
         await axios.post(apiUrl, payload);
         

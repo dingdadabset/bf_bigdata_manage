@@ -28,8 +28,8 @@
               class="custom-header-select"
             >
               <a-select-option :value="''">全部集群</a-select-option>
-              <a-select-option v-for="cluster in clusters" :key="cluster.id" :value="cluster.clusterName">
-                {{ cluster.clusterName }}
+              <a-select-option v-for="cluster in clusters" :key="cluster.id" :value="cluster.clusterCode || cluster.clusterName">
+                {{ cluster.clusterName }}{{ cluster.clusterCode ? ` (${cluster.clusterCode})` : '' }}
               </a-select-option>
             </a-select>
             <a-button type="primary" shape="circle" icon="plus" size="small" @click="showCreateClusterModal" style="margin-right: 4px" title="新建集群"></a-button>
@@ -104,9 +104,17 @@
               <a-icon type="database" />
               <span>数据源管理</span>
             </a-menu-item>
+            <a-menu-item key="/environment-resources">
+              <a-icon type="apartment" />
+              <span>环境资源</span>
+            </a-menu-item>
             <a-menu-item key="/access">
               <a-icon type="user" />
               <span>权限管理</span>
+            </a-menu-item>
+            <a-menu-item key="/authorization-center">
+              <a-icon type="safety-certificate" />
+              <span>授权中心</span>
             </a-menu-item>
             <a-menu-item key="/metadata">
               <a-icon type="table" />
@@ -218,7 +226,7 @@ export default {
     },
     handleDeleteCluster() {
       if (!this.selectedCluster) return;
-      const cluster = this.clusters.find(c => c.clusterName === this.selectedCluster);
+      const cluster = this.clusters.find(c => (c.clusterCode || c.clusterName) === this.selectedCluster);
       if (!cluster) return;
       
       this.$confirm({

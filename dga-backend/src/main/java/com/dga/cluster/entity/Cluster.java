@@ -2,6 +2,7 @@ package com.dga.cluster.entity;
 
 import javax.persistence.*;
 import java.time.LocalDateTime;
+import java.util.List;
 
 @Entity
 @Table(name = "dga_cluster")
@@ -13,6 +14,9 @@ public class Cluster {
 
     @Column(name = "cluster_name", nullable = false, unique = true)
     private String clusterName;
+
+    @Column(name = "cluster_code", unique = true)
+    private String clusterCode;
 
     @Column(name = "type")
     private String type; // e.g., CDH, HDP, EMR
@@ -28,6 +32,9 @@ public class Cluster {
 
     @Column(name = "update_time")
     private LocalDateTime updateTime;
+
+    @Transient
+    private List<ClusterEndpoint> endpoints;
 
     @PrePersist
     public void prePersist() {
@@ -59,6 +66,14 @@ public class Cluster {
 
     public void setClusterName(String clusterName) {
         this.clusterName = clusterName;
+    }
+
+    public String getClusterCode() {
+        return clusterCode;
+    }
+
+    public void setClusterCode(String clusterCode) {
+        this.clusterCode = clusterCode;
     }
 
     public String getType() {
@@ -99,5 +114,13 @@ public class Cluster {
 
     public void setUpdateTime(LocalDateTime updateTime) {
         this.updateTime = updateTime;
+    }
+
+    public List<ClusterEndpoint> getEndpoints() {
+        return endpoints;
+    }
+
+    public void setEndpoints(List<ClusterEndpoint> endpoints) {
+        this.endpoints = endpoints;
     }
 }

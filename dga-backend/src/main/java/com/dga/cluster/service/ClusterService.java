@@ -1,12 +1,31 @@
 package com.dga.cluster.service;
 
 import com.dga.cluster.entity.Cluster;
+import com.dga.cluster.entity.ClusterEndpoint;
 import com.dga.cluster.repository.ClusterRepository;
+import com.dga.cluster.repository.ClusterEndpointRepository;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.ldap.core.LdapTemplate;
+import org.springframework.ldap.core.support.LdapContextSource;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.client.RestTemplate;
 
+import java.nio.charset.StandardCharsets;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.util.Base64;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
 import java.util.Optional;
+import java.util.regex.Pattern;
 
 @Service
 public class ClusterService {
@@ -14,8 +33,17 @@ public class ClusterService {
     @Autowired
     private ClusterRepository clusterRepository;
 
+    @Autowired
+    private ClusterEndpointRepository endpointRepository;
+
+    private static final Pattern NON_CODE_CHARS = Pattern.compile("[^A-Z0-9_]+");
+
     public List<Cluster> getAllClusters() {
-        return clusterRepository.findActiveClusters();
+        List<Cluster> clusters = clusterRepository.findActiveClusters();
+        for (Cluster cluster : clusters) {
+            attachEndpoints(cluster);
+        }
+        return clusters;
     }
 
     public List<Cluster> getActiveClusters() {
@@ -23,10 +51,14 @@ public class ClusterService {
     }
 
     public Cluster getClusterById(Long id) {
-        return clusterRepository.findById(id).orElse(null);
+        Cluster cluster = clusterRepository.findById(id).orElse(null);
+        attachEndpoints(cluster);
+        return cluster;
     }
 
+    @Transactional
     public Cluster createCluster(Cluster cluster) {
+        normalizeClusterCode(cluster);
         // Ensure clusterName is unique
         Cluster existing = clusterRepository.findByClusterName(cluster.getClusterName());
         if (existing != null) {
@@ -35,22 +67,39 @@ public class ClusterService {
                 existing.setStatus("ACTIVE");
                 existing.setType(cluster.getType());
                 existing.setDescription(cluster.getDescription());
-                return clusterRepository.save(existing);
+                Cluster saved = clusterRepository.save(existing);
+                saveEndpoints(saved.getClusterCode(), cluster.getEndpoints());
+                attachEndpoints(saved);
+                return saved;
             }
             throw new RuntimeException("Cluster name already exists");
         }
-        return clusterRepository.save(cluster);
+        if (clusterRepository.findByClusterCode(cluster.getClusterCode()) != null) {
+            throw new RuntimeException("Cluster code already exists");
+        }
+        Cluster saved = clusterRepository.save(cluster);
+        saveEndpoints(saved.getClusterCode(), cluster.getEndpoints());
+        attachEndpoints(saved);
+        return saved;
     }
 
+    @Transactional
     public Cluster updateCluster(Long id, Cluster cluster) {
         Optional<Cluster> existing = clusterRepository.findById(id);
         if (existing.isPresent()) {
             Cluster c = existing.get();
             c.setClusterName(cluster.getClusterName());
+            if (c.getClusterCode() == null || c.getClusterCode().trim().isEmpty()) {
+                c.setClusterCode(cluster.getClusterCode());
+                normalizeClusterCode(c);
+            }
             c.setType(cluster.getType());
             c.setDescription(cluster.getDescription());
             c.setStatus(cluster.getStatus());
-            return clusterRepository.save(c);
+            Cluster saved = clusterRepository.save(c);
+            saveEndpoints(saved.getClusterCode(), cluster.getEndpoints());
+            attachEndpoints(saved);
+            return saved;
         }
         return null;
     }
@@ -62,5 +111,213 @@ public class ClusterService {
             c.setStatus("DELETED");
             clusterRepository.save(c);
         }
+    }
+
+    public Cluster resolveCluster(String identifier) {
+        if (identifier == null || identifier.trim().isEmpty()) {
+            return null;
+        }
+        Cluster cluster = clusterRepository.findByClusterCode(identifier);
+        if (cluster == null) {
+            cluster = clusterRepository.findByClusterName(identifier);
+        }
+        attachEndpoints(cluster);
+        return cluster;
+    }
+
+    public List<ClusterEndpoint> getEndpoints(String clusterCode) {
+        return endpointRepository.findByClusterCodeAndStatusNot(clusterCode, "DELETED");
+    }
+
+    public Map<String, Object> testEndpoint(String clusterCode, ClusterEndpoint endpoint) {
+        long start = System.currentTimeMillis();
+        Map<String, Object> result = new HashMap<>();
+        try {
+            ClusterEndpoint testEndpoint = mergeEndpointSecret(clusterCode, endpoint);
+            if (isBlank(testEndpoint.getEndpointType())) {
+                throw new IllegalArgumentException("请选择端点类型");
+            }
+            if (isBlank(testEndpoint.getUrl())) {
+                throw new IllegalArgumentException("请填写连接地址");
+            }
+
+            switch (testEndpoint.getEndpointType()) {
+                case ClusterEndpoint.TYPE_HIVE_SERVER2:
+                    testJdbc("org.apache.hive.jdbc.HiveDriver", testEndpoint);
+                    break;
+                case ClusterEndpoint.TYPE_STARROCKS_JDBC:
+                    testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
+                    break;
+                case ClusterEndpoint.TYPE_DORIS_JDBC:
+                    testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
+                    break;
+                case ClusterEndpoint.TYPE_LDAP:
+                    testLdap(testEndpoint);
+                    break;
+                case ClusterEndpoint.TYPE_RANGER:
+                    testHttp(testEndpoint);
+                    break;
+                default:
+                    throw new IllegalArgumentException("不支持的端点类型: " + testEndpoint.getEndpointType());
+            }
+            result.put("success", true);
+            result.put("message", "连接成功");
+        } catch (Exception e) {
+            result.put("success", false);
+            result.put("message", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+        }
+        result.put("elapsedMs", System.currentTimeMillis() - start);
+        return result;
+    }
+
+    @Transactional
+    public ClusterEndpoint saveEndpoint(String clusterCode, ClusterEndpoint endpoint) {
+        endpoint.setClusterCode(clusterCode);
+        if (endpoint.getId() != null) {
+            ClusterEndpoint existing = endpointRepository.findById(endpoint.getId())
+                    .orElseThrow(() -> new RuntimeException("Endpoint not found"));
+            existing.setEndpointType(endpoint.getEndpointType());
+            existing.setAuthBackend(endpoint.getAuthBackend());
+            existing.setUrl(endpoint.getUrl());
+            existing.setUsername(endpoint.getUsername());
+            if (endpoint.getPassword() != null && !endpoint.getPassword().isEmpty()) {
+                existing.setPassword(endpoint.getPassword());
+            }
+            existing.setServiceName(endpoint.getServiceName());
+            existing.setBaseDn(endpoint.getBaseDn());
+            existing.setUserBaseDn(endpoint.getUserBaseDn());
+            existing.setStatus(endpoint.getStatus());
+            existing.setDescription(endpoint.getDescription());
+            return endpointRepository.save(existing);
+        }
+        return endpointRepository.save(endpoint);
+    }
+
+    @Transactional
+    public void deleteEndpoint(Long endpointId) {
+        ClusterEndpoint endpoint = endpointRepository.findById(endpointId)
+                .orElseThrow(() -> new RuntimeException("Endpoint not found"));
+        endpoint.setStatus("DELETED");
+        endpointRepository.save(endpoint);
+    }
+
+    private void saveEndpoints(String clusterCode, List<ClusterEndpoint> endpoints) {
+        if (endpoints == null) {
+            return;
+        }
+        for (ClusterEndpoint endpoint : endpoints) {
+            saveEndpoint(clusterCode, endpoint);
+        }
+    }
+
+    private void attachEndpoints(Cluster cluster) {
+        if (cluster == null || cluster.getClusterCode() == null) {
+            return;
+        }
+        cluster.setEndpoints(getEndpoints(cluster.getClusterCode()));
+    }
+
+    private void normalizeClusterCode(Cluster cluster) {
+        if (cluster.getClusterCode() != null && !cluster.getClusterCode().trim().isEmpty()) {
+            cluster.setClusterCode(cluster.getClusterCode().trim().toUpperCase(Locale.ROOT));
+            return;
+        }
+        String source = cluster.getClusterName() != null ? cluster.getClusterName() : "CLUSTER";
+        String code = NON_CODE_CHARS.matcher(source.trim().toUpperCase(Locale.ROOT)).replaceAll("_");
+        code = code.replaceAll("_+", "_");
+        if (code.startsWith("_")) {
+            code = code.substring(1);
+        }
+        if (code.endsWith("_")) {
+            code = code.substring(0, code.length() - 1);
+        }
+        cluster.setClusterCode(code.isEmpty() ? "CLUSTER" : code);
+    }
+
+    private ClusterEndpoint mergeEndpointSecret(String clusterCode, ClusterEndpoint endpoint) {
+        endpoint.setClusterCode(clusterCode);
+        if (endpoint.getId() == null) {
+            return endpoint;
+        }
+        Optional<ClusterEndpoint> existing = endpointRepository.findById(endpoint.getId());
+        if (!existing.isPresent()) {
+            return endpoint;
+        }
+        ClusterEndpoint stored = existing.get();
+        if (isBlank(endpoint.getPassword())) {
+            endpoint.setPassword(stored.getPassword());
+        }
+        if (isBlank(endpoint.getUrl())) {
+            endpoint.setUrl(stored.getUrl());
+        }
+        if (isBlank(endpoint.getUsername())) {
+            endpoint.setUsername(stored.getUsername());
+        }
+        if (isBlank(endpoint.getBaseDn())) {
+            endpoint.setBaseDn(stored.getBaseDn());
+        }
+        if (isBlank(endpoint.getUserBaseDn())) {
+            endpoint.setUserBaseDn(stored.getUserBaseDn());
+        }
+        if (isBlank(endpoint.getServiceName())) {
+            endpoint.setServiceName(stored.getServiceName());
+        }
+        return endpoint;
+    }
+
+    private void testJdbc(String driverClassName, ClusterEndpoint endpoint) throws Exception {
+        Class.forName(driverClassName);
+        DriverManager.setLoginTimeout(5);
+        try (Connection ignored = DriverManager.getConnection(
+                endpoint.getUrl(),
+                nullToEmpty(endpoint.getUsername()),
+                nullToEmpty(endpoint.getPassword()))) {
+            // Opening and closing a connection is enough for endpoint reachability.
+        }
+    }
+
+    private void testLdap(ClusterEndpoint endpoint) {
+        LdapContextSource source = new LdapContextSource();
+        source.setUrl(endpoint.getUrl());
+        if (!isBlank(endpoint.getBaseDn())) {
+            source.setBase(endpoint.getBaseDn());
+        }
+        if (!isBlank(endpoint.getUsername())) {
+            source.setUserDn(endpoint.getUsername());
+        }
+        if (!isBlank(endpoint.getPassword())) {
+            source.setPassword(endpoint.getPassword());
+        }
+        source.afterPropertiesSet();
+        new LdapTemplate(source).lookup("");
+    }
+
+    private void testHttp(ClusterEndpoint endpoint) {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(5000);
+        requestFactory.setReadTimeout(5000);
+        RestTemplate restTemplate = new RestTemplate(requestFactory);
+        HttpHeaders headers = new HttpHeaders();
+        if (!isBlank(endpoint.getUsername())) {
+            String token = endpoint.getUsername() + ":" + nullToEmpty(endpoint.getPassword());
+            String encoded = Base64.getEncoder().encodeToString(token.getBytes(StandardCharsets.UTF_8));
+            headers.set(HttpHeaders.AUTHORIZATION, "Basic " + encoded);
+        }
+        ResponseEntity<String> response = restTemplate.exchange(
+                endpoint.getUrl(),
+                HttpMethod.GET,
+                new HttpEntity<>(headers),
+                String.class);
+        if (!response.getStatusCode().is2xxSuccessful() && !response.getStatusCode().is3xxRedirection()) {
+            throw new IllegalStateException("HTTP 状态码: " + response.getStatusCodeValue());
+        }
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
     }
 }

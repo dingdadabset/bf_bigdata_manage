@@ -45,6 +45,21 @@ import CreateUserModal from './components/CreateUserModal.vue';
 import GrantModal from './components/GrantModal.vue';
 import axios from 'axios';
 
+const PROTECTED_BIGDATA_USERS = [
+  'alading',
+  'bf_hpt',
+  'bf_hpt1',
+  'md_bf',
+  'hdfs',
+  'hive',
+  'yarn',
+  'spark',
+  'hbase',
+  'impala',
+  'sentry',
+  'ranger'
+];
+
 export default {
   name: 'AccessIndex',
   components: {
@@ -82,6 +97,10 @@ export default {
       }
     },
     handleDeleteUser(username) {
+      if (this.isProtectedBigDataUser(this.selectedUser || { username })) {
+        this.$message.warning('大数据重要角色禁止删除');
+        return;
+      }
       const that = this;
       this.$confirm({
         title: '确认删除用户?',
@@ -96,12 +115,19 @@ export default {
             that.selectedUser = null;
             that.$refs.userList.fetchUsers();
           } catch (e) {
-            that.$message.error('删除失败 (Mock)');
-            that.selectedUser = null;
-             // that.$refs.userList.fetchUsers();
+            that.$message.error(e.response?.data?.message || '删除失败');
           }
         },
       });
+    },
+    isProtectedBigDataUser(user) {
+      if (!user || !user.username) return false;
+      const userName = String(user.username).toLowerCase();
+      const role = String(user.role || user.userRole || '').toLowerCase();
+      return PROTECTED_BIGDATA_USERS.includes(userName)
+        || role.includes('important')
+        || role.includes('protected')
+        || role.includes('bigdata');
     }
   }
 };

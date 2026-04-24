@@ -5,13 +5,19 @@ import com.dga.access.dto.BatchGrantRequest;
 import com.dga.access.dto.CreateUserRequest;
 import com.dga.access.dto.TableGrant;
 import com.dga.access.entity.DgaUser;
+import com.dga.access.entity.UserResourceAccess;
 import com.dga.access.repository.DgaUserRepository;
 import com.dga.access.service.HiveAuthService;
 import com.dga.access.service.IpaHttpService;
 import com.dga.access.service.IpaService;
 import com.dga.access.service.LdapService;
+import com.dga.access.service.authorization.AuthorizationService;
+import com.dga.access.service.authorization.AuthorizationCapability;
+import com.dga.access.service.authorization.GrantCommand;
+import com.dga.access.service.authorization.RevokeCommand;
 import com.dga.access.entity.UserHiveAccess;
 import com.dga.access.repository.UserHiveAccessRepository;
+import com.dga.access.repository.UserResourceAccessRepository;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -40,6 +46,21 @@ import java.util.ArrayList;
 @CrossOrigin
 public class AccessController {
 
+    private static final Set<String> PROTECTED_BIGDATA_USERS = new HashSet<>(java.util.Arrays.asList(
+            "alading",
+            "bf_hpt",
+            "bf_hpt1",
+            "md_bf",
+            "hdfs",
+            "hive",
+            "yarn",
+            "spark",
+            "hbase",
+            "impala",
+            "sentry",
+            "ranger"
+    ));
+
     @Autowired
     private LdapService ldapService;
 
@@ -62,6 +83,12 @@ public class AccessController {
     private UserHiveAccessRepository userHiveAccessRepository;
 
     @Autowired
+    private UserResourceAccessRepository userResourceAccessRepository;
+
+    @Autowired
+    private AuthorizationService authorizationService;
+
+    @Autowired
     private com.dga.cluster.repository.ClusterRepository clusterRepository;
 
     @Autowired
@@ -70,7 +97,7 @@ public class AccessController {
     @PostMapping("/grant")
     public String grantAccess(@RequestBody AccessRequest request) {
         try {
-            ldapService.createUser(request.getUsername(), request.getPassword(), request.getEmail());
+            ldapService.createUser(request.getCluster(), request.getUsername(), request.getPassword(), request.getEmail());
         } catch (Exception e) {
             System.err.println("Warning: LDAP create user failed (might already exist): " + e.getMessage());
         }
@@ -90,6 +117,8 @@ public class AccessController {
         access.setGrantedBy("admin"); // TODO: get from security context
         access.setStatus("ACTIVE");
         userHiveAccessRepository.save(access);
+        saveResourceAccess(request.getUsername(), request.getCluster(), request.getDatabase(), null,
+                request.getPermission(), "admin", "DGA_GRANT");
 
         return "Access granted successfully for user: " + request.getUsername();
     }
@@ -104,7 +133,7 @@ public class AccessController {
         String strategy = request.getCreationStrategy();
         String resultMsg = "User created: " + request.getUsername();
         if (strategy == null || strategy.isEmpty() || strategy.toUpperCase().startsWith("SELF")) {
-            strategy = "IPA_HTTP";
+            strategy = "OPENLDAP";
         }
         
         if ("IPA_SSH".equalsIgnoreCase(strategy)) {
@@ -145,7 +174,9 @@ public class AccessController {
             
             resultMsg = "User created via IPA(HTTP): " + request.getUsername();
         } else {
-            ldapService.createUser(request.getUsername(), request.getPassword(), request.getEmail());
+            ldapService.createUser(request.getCluster(), request.getUsername(), request.getPassword(), request.getEmail());
+            strategy = "OPENLDAP";
+            resultMsg = "User created via OpenLDAP: " + request.getUsername();
         }
 
         // Persist to MySQL
@@ -357,13 +388,14 @@ public class AccessController {
     }
 
     @GetMapping("/ldap/user")
-    public Map<String, Object> ldapUser(@RequestParam("username") String username) {
+    public Map<String, Object> ldapUser(@RequestParam("username") String username,
+                                        @RequestParam(value = "cluster", required = false) String cluster) {
         Map<String, Object> res = new HashMap<>();
-        res.put("dn", ldapService.getUserDnString(username));
-        boolean exists = ldapService.userExists(username);
+        res.put("dn", ldapService.getUserDnString(cluster, username));
+        boolean exists = ldapService.userExists(cluster, username);
         res.put("exists", exists);
         if (exists) {
-            res.put("attributes", ldapService.getUserInfo(username));
+            res.put("attributes", ldapService.getUserInfo(cluster, username));
         }
         return res;
     }
@@ -373,9 +405,53 @@ public class AccessController {
         return hiveAuthService.listDatabases(cluster);
     }
 
+    @GetMapping("/resources/databases")
+    public List<String> listResourceDatabases(@RequestParam(required = false) String cluster) {
+        return authorizationService.listDatabases(cluster);
+    }
+
+    @GetMapping("/capabilities")
+    public AuthorizationCapability authorizationCapability(@RequestParam(required = false) String cluster) {
+        return authorizationService.capability(cluster);
+    }
+
     @GetMapping("/hive/tables")
     public List<String> listTables(@RequestParam("database") String database, @RequestParam(required = false) String cluster) {
         return hiveAuthService.listTables(cluster, database);
+    }
+
+    @GetMapping("/resources/tables")
+    public List<String> listResourceTables(@RequestParam("database") String database,
+                                           @RequestParam(required = false) String cluster) {
+        return authorizationService.listTables(cluster, database);
+    }
+
+    @GetMapping("/resources/principals")
+    public List<String> listResourcePrincipals(@RequestParam(required = false) String cluster) {
+        List<String> principals;
+        try {
+            principals = authorizationService.listPrincipals(cluster);
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? "加载授权用户失败" : e.getMessage();
+            if (message.contains("Access denied") && message.contains("GRANT")) {
+                message = "StarRocks 端点账号缺少 SYSTEM 上的 GRANT 权限，无法执行 SHOW USERS 查询授权用户";
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message, e);
+        }
+        if (principals != null && !principals.isEmpty()) {
+            return principals;
+        }
+        Pageable pageable = PageRequest.of(0, 200, Sort.by(Sort.Direction.DESC, "createTime"));
+        List<String> excludedStrategies = java.util.Arrays.asList("SELF_REGISTER", "SELF_REG");
+        Page<DgaUser> users;
+        if (cluster != null && !cluster.isEmpty()) {
+            users = dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(cluster, excludedStrategies, pageable);
+        } else {
+            users = dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(excludedStrategies, pageable);
+        }
+        return users.getContent().stream()
+                .map(DgaUser::getUsername)
+                .collect(Collectors.toList());
     }
 
     @PostMapping("/grant/batch")
@@ -405,6 +481,7 @@ public class AccessController {
                     access.setGrantTime(LocalDateTime.now());
                     access.setStatus("ACTIVE");
                     userHiveAccessRepository.save(access);
+                    saveResourceAccess(username, clusterName, database, null, permission, "admin", "DGA_GRANT");
                     System.out.println("Saved DB access: " + database);
                 } catch (Exception e) {
                     System.err.println("Failed to grant/save DB access: " + e.getMessage());
@@ -428,6 +505,8 @@ public class AccessController {
                     access.setGrantTime(LocalDateTime.now());
                     access.setStatus("ACTIVE");
                     userHiveAccessRepository.save(access);
+                    saveResourceAccess(username, clusterName, tableGrant.getDatabase(), tableGrant.getTable(),
+                            permission, "admin", "DGA_GRANT");
                     System.out.println("Saved Table access: " + tableGrant.getTable());
                 } catch (Exception e) {
                     System.err.println("Failed to grant/save Table access: " + e.getMessage());
@@ -436,6 +515,36 @@ public class AccessController {
             }
         }
         return "Batch access granted for user: " + username;
+    }
+
+    @PostMapping("/grants/batch")
+    public String batchGrantResource(@RequestBody BatchGrantRequest request) {
+        String username = request.getUsername();
+        String permission = request.getPermission();
+        String cluster = request.getCluster() != null && !request.getCluster().isEmpty()
+                ? request.getCluster() : "CDH-Cluster-01";
+
+        try {
+            if (request.getDatabases() != null) {
+                for (String database : request.getDatabases()) {
+                    GrantCommand command = buildGrantCommand(username, cluster, database, null, permission);
+                    authorizationService.grant(command);
+                    saveResourceAccess(username, cluster, database, null, permission, "admin", "AUTHORIZATION_CENTER");
+                }
+            }
+            if (request.getTables() != null) {
+                for (TableGrant tableGrant : request.getTables()) {
+                    GrantCommand command = buildGrantCommand(username, cluster, tableGrant.getDatabase(),
+                            tableGrant.getTable(), permission);
+                    authorizationService.grant(command);
+                    saveResourceAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(),
+                            permission, "admin", "AUTHORIZATION_CENTER");
+                }
+            }
+            return "Resource access granted for user: " + username;
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readableAuthorizationError(e), e);
+        }
     }
     
     @GetMapping("/user/access")
@@ -479,6 +588,10 @@ public class AccessController {
                 request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01", 
                 request.getDatabase(), 
                 request.getPermission());
+            userResourceAccessRepository.softDeleteDatabaseAccess(request.getUsername(),
+                request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01",
+                request.getDatabase(),
+                request.getPermission());
         } catch (Exception e) {
              System.err.println("Warning: DB revoke failed: " + e.getMessage());
         }
@@ -503,6 +616,7 @@ public class AccessController {
                 }
                 try {
                     userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                    userResourceAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
                 } catch (Exception e) {
                     System.err.println("Failed to soft delete DB access: " + e.getMessage());
                 }
@@ -518,6 +632,7 @@ public class AccessController {
                 }
                 try {
                     userHiveAccessRepository.softDeleteTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                    userResourceAccessRepository.softDeleteTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
                 } catch (Exception e) {
                     System.err.println("Failed to soft delete Table access: " + e.getMessage());
                 }
@@ -525,10 +640,46 @@ public class AccessController {
         }
         return "Batch access revoked for user: " + username;
     }
+
+    @PostMapping("/revokes/batch")
+    public String batchRevokeResource(@RequestBody BatchGrantRequest request) {
+        String username = request.getUsername();
+        String permission = request.getPermission();
+        String cluster = request.getCluster() != null && !request.getCluster().isEmpty()
+                ? request.getCluster() : "CDH-Cluster-01";
+
+        try {
+            if (request.getDatabases() != null) {
+                for (String database : request.getDatabases()) {
+                    RevokeCommand command = buildRevokeCommand(username, cluster, database, null, permission);
+                    authorizationService.revoke(command);
+                    userResourceAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                    userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                }
+            }
+            if (request.getTables() != null) {
+                for (TableGrant tableGrant : request.getTables()) {
+                    RevokeCommand command = buildRevokeCommand(username, cluster, tableGrant.getDatabase(),
+                            tableGrant.getTable(), permission);
+                    authorizationService.revoke(command);
+                    userResourceAccessRepository.softDeleteTableAccess(username, cluster,
+                            tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                    userHiveAccessRepository.softDeleteTableAccess(username, cluster,
+                            tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                }
+            }
+            return "Resource access revoked for user: " + username;
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readableAuthorizationError(e), e);
+        }
+    }
     
     @DeleteMapping("/user/{username}")
     @org.springframework.transaction.annotation.Transactional
     public String deleteUser(@PathVariable String username) {
+        if (isProtectedBigDataUser(username)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "大数据重要角色禁止删除: " + username);
+        }
         DgaUser user = dgaUserRepository.findByUsername(username);
         if (user != null) {
             // 1. Revoke Hive Permissions
@@ -563,6 +714,7 @@ public class AccessController {
             // 4. Revoke Hive Access Records (Soft Delete)
             try {
                 userHiveAccessRepository.softDeleteAllAccessByUsername(username);
+                userResourceAccessRepository.softDeleteAllByUsername(username);
             } catch (Exception e) {
                 System.err.println("Failed to update UserHiveAccess status: " + e.getMessage());
                 // Non-blocking, but logged
@@ -572,5 +724,62 @@ public class AccessController {
         } else {
             throw new RuntimeException("User not found: " + username);
         }
+    }
+
+    private boolean isProtectedBigDataUser(String username) {
+        return username != null && PROTECTED_BIGDATA_USERS.contains(username.trim().toLowerCase());
+    }
+
+    private GrantCommand buildGrantCommand(String username, String cluster, String database,
+                                           String table, String permission) {
+        GrantCommand command = new GrantCommand();
+        command.setUsername(username);
+        command.setCluster(cluster);
+        command.setDatabase(database);
+        command.setTable(table);
+        command.setPermission(permission);
+        return command;
+    }
+
+    private RevokeCommand buildRevokeCommand(String username, String cluster, String database,
+                                             String table, String permission) {
+        RevokeCommand command = new RevokeCommand();
+        command.setUsername(username);
+        command.setCluster(cluster);
+        command.setDatabase(database);
+        command.setTable(table);
+        command.setPermission(permission);
+        return command;
+    }
+
+    private String readableAuthorizationError(Exception e) {
+        String message = e.getMessage() == null ? "授权执行失败" : e.getMessage();
+        if (message.contains("Access denied") || message.toLowerCase().contains("denied")) {
+            return "授权端点账号权限不足: " + message;
+        }
+        if (message.toLowerCase().contains("syntax") || message.toLowerCase().contains("sql")) {
+            return "授权 SQL 执行失败: " + message;
+        }
+        return message;
+    }
+
+    private void saveResourceAccess(String username, String cluster, String database, String table,
+                                    String permission, String grantedBy, String source) {
+        String clusterIdentifier = cluster != null && !cluster.isEmpty() ? cluster : "CDH-Cluster-01";
+        UserResourceAccess access = new UserResourceAccess();
+        access.setUsername(username);
+        access.setClusterName(clusterIdentifier);
+        access.setClusterCode(authorizationService.resolveClusterCodeOrName(clusterIdentifier));
+        access.setEngineType(authorizationService.engineType(clusterIdentifier));
+        access.setAuthBackend(authorizationService.authBackend(clusterIdentifier));
+        access.setResourceType(table == null || table.isEmpty() ? "DATABASE" : "TABLE");
+        access.setDatabaseName(database);
+        access.setTableName(table);
+        access.setPermission(permission);
+        access.setGrantedBy(grantedBy);
+        access.setSource(source);
+        access.setStatus("ACTIVE");
+        access.setGrantTime(LocalDateTime.now());
+        userResourceAccessRepository.save(access);
     }
 }

@@ -24,17 +24,6 @@
                   登录
                 </a-button>
               </a-form-model-item>
-              <a-divider>其他登录方式</a-divider>
-              <div class="social-login">
-                <div class="social-icon-wrapper" @click="handleSocialLogin('wechat')">
-                  <a-icon type="wechat" class="social-icon" />
-                  <span class="social-text">微信</span>
-                </div>
-                <div class="social-icon-wrapper" @click="handleSocialLogin('alipay')">
-                  <a-icon type="alipay-circle" class="social-icon" />
-                  <span class="social-text">支付宝</span>
-                </div>
-              </div>
             </a-form-model>
           </a-tab-pane>
           <a-tab-pane key="2" tab="注册账号">
@@ -106,10 +95,6 @@ export default {
     }
   },
   methods: {
-    handleSocialLogin(provider) {
-      this.$message.info('功能还在开发中');
-      // window.location.href = `http://localhost:8080/oauth2/authorization/${provider}`;
-    },
     validateConfirmPassword(rule, value, callback) {
       if (value && value !== this.regForm.password) {
         callback(new Error('两次输入的密码不一致'));
@@ -250,37 +235,4 @@ export default {
   letter-spacing: 0.5px;
 }
 
-.social-login {
-  display: flex;
-  justify-content: center;
-  gap: 48px;
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid #f0f0f0;
-}
-
-.social-icon-wrapper {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  cursor: pointer;
-  color: #9ca3af;
-  transition: all 0.3s ease;
-}
-
-.social-icon-wrapper:hover {
-  color: #1890ff;
-  transform: translateY(-3px);
-}
-
-.social-icon {
-  font-size: 32px;
-  margin-bottom: 8px;
-  filter: drop-shadow(0 2px 4px rgba(0,0,0,0.05));
-}
-
-.social-text {
-  font-size: 13px;
-  font-weight: 500;
-}
 </style>

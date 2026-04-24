@@ -228,7 +228,7 @@ export default {
         if (this.effectiveCluster) {
           params.cluster = this.effectiveCluster;
         }
-        const res = await axios.get('/api/access/hive/tables', { params });
+        const res = await axios.get('/api/access/resources/tables', { params });
         this.tablesData = res.data || [];
       } catch (e) {
         this.tablesData = [];

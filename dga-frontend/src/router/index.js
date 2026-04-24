@@ -11,6 +11,7 @@ import DataMap from '../views/DataMap.vue';
 import UserProfile from '../views/UserProfile.vue';
 import ResourceManagement from '../views/ResourceManagement.vue';
 import ClusterManagement from '../views/system/ClusterManagement.vue';
+import AuthorizationCenter from '../views/access/AuthorizationCenter.vue';
 
 Vue.use(VueRouter);
 
@@ -53,6 +54,12 @@ const routes = [
         meta: { title: '用户与权限管理' }
       },
       {
+        path: 'authorization-center',
+        name: 'AuthorizationCenter',
+        component: AuthorizationCenter,
+        meta: { title: '授权中心' }
+      },
+      {
         path: 'metadata',
         name: 'Metadata',
         component: Metadata,
@@ -75,6 +82,12 @@ const routes = [
         name: 'ResourceManagement',
         component: ResourceManagement,
         meta: { title: '资源导航管理' }
+      },
+      {
+        path: 'environment-resources',
+        name: 'EnvironmentResources',
+        component: ClusterManagement,
+        meta: { title: '环境资源注册' }
       },
       {
         path: 'cluster-management',
