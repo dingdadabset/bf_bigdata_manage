@@ -33,7 +33,16 @@
               </a-select-option>
             </a-select>
             <a-button type="primary" shape="circle" icon="plus" size="small" @click="showCreateClusterModal" style="margin-right: 4px" title="新建集群"></a-button>
-            <a-button type="danger" shape="circle" icon="minus" size="small" @click="handleDeleteCluster" :disabled="!selectedCluster" title="删除当前集群"></a-button>
+            <a-button
+              v-if="canDeleteCluster"
+              type="danger"
+              shape="circle"
+              icon="minus"
+              size="small"
+              @click="handleDeleteCluster"
+              :disabled="!selectedCluster"
+              title="删除当前集群"
+            ></a-button>
           </div>
 
           <a-button-group class="header-btn-group">
@@ -92,6 +101,7 @@
           <a-menu
             theme="light"
             :default-selected-keys="[$route.path]"
+            :default-open-keys="defaultOpenKeys"
             mode="inline"
             @click="handleMenuClick"
             class="custom-menu"
@@ -104,18 +114,24 @@
               <a-icon type="database" />
               <span>数据源管理</span>
             </a-menu-item>
-            <a-menu-item key="/environment-resources">
-              <a-icon type="apartment" />
-              <span>环境资源</span>
-            </a-menu-item>
-            <a-menu-item key="/access">
-              <a-icon type="user" />
-              <span>权限管理</span>
-            </a-menu-item>
-            <a-menu-item key="/authorization-center">
-              <a-icon type="safety-certificate" />
-              <span>授权中心</span>
-            </a-menu-item>
+            <a-sub-menu key="bigdata-auth">
+              <span slot="title">
+                <a-icon type="cluster" />
+                <span>大数据授权</span>
+              </span>
+              <a-menu-item key="/environment-resources">
+                <a-icon type="apartment" />
+                <span>环境资源</span>
+              </a-menu-item>
+              <a-menu-item key="/access">
+                <a-icon type="user" />
+                <span>权限管理</span>
+              </a-menu-item>
+              <a-menu-item key="/authorization-center">
+                <a-icon type="safety-certificate" />
+                <span>授权中心</span>
+              </a-menu-item>
+            </a-sub-menu>
             <a-menu-item key="/metadata">
               <a-icon type="table" />
               <span>元数据管理</span>
@@ -127,6 +143,10 @@
             <a-menu-item key="/resources">
               <a-icon type="link" />
               <span>资源导航</span>
+            </a-menu-item>
+            <a-menu-item v-if="canManagePlatformUsers" key="/platform-users">
+              <a-icon type="team" />
+              <span>平台用户</span>
             </a-menu-item>
           </a-menu>
 
@@ -172,6 +192,7 @@
 <script>
 import { store, mutations } from '../store';
 import axios from 'axios';
+import { canDelete, deleteForbiddenMessage, isRootAdmin } from '../utils/currentUser';
 
 export default {
   data() {
@@ -193,6 +214,18 @@ export default {
         }
       },
       immediate: true
+    }
+  },
+  computed: {
+    canDeleteCluster() {
+      return canDelete();
+    },
+    canManagePlatformUsers() {
+      return isRootAdmin();
+    },
+    defaultOpenKeys() {
+      const authPaths = ['/environment-resources', '/access', '/authorization-center'];
+      return authPaths.includes(this.$route.path) ? ['bigdata-auth'] : [];
     }
   },
   methods: {
@@ -225,6 +258,10 @@ export default {
       }
     },
     handleDeleteCluster() {
+      if (!this.canDeleteCluster) {
+        this.$message.warning(deleteForbiddenMessage());
+        return;
+      }
       if (!this.selectedCluster) return;
       const cluster = this.clusters.find(c => (c.clusterCode || c.clusterName) === this.selectedCluster);
       if (!cluster) return;

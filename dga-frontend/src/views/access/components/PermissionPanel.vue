@@ -27,7 +27,7 @@
             </div>
           </div>
         </div>
-        <div class="header-actions">
+        <div v-if="canDeleteUser" class="header-actions">
           <a-tooltip :title="isProtectedBigDataUser(user) ? '大数据重要角色禁止删除' : '删除用户'">
             <a-button
               type="danger"
@@ -82,6 +82,7 @@ import moment from 'moment';
 import { store } from '../../../store';
 import RangerCard from './RangerCard.vue';
 import axios from 'axios';
+import { canDelete } from '../../../utils/currentUser';
 
 const PROTECTED_BIGDATA_USERS = [
   'alading',
@@ -138,6 +139,9 @@ export default {
         return `${this.capability.engineType} 数据权限 (${this.capability.authBackend || 'UNKNOWN'})`;
       }
       return '数据权限';
+    },
+    canDeleteUser() {
+      return canDelete();
     }
   },
   methods: {

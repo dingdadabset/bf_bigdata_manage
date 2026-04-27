@@ -7,6 +7,7 @@ import com.dga.access.dto.TableGrant;
 import com.dga.access.entity.DgaUser;
 import com.dga.access.entity.UserResourceAccess;
 import com.dga.access.repository.DgaUserRepository;
+import com.dga.access.service.AdminGuard;
 import com.dga.access.service.HiveAuthService;
 import com.dga.access.service.IpaHttpService;
 import com.dga.access.service.IpaService;
@@ -29,6 +30,7 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.http.HttpStatus;
 
+import javax.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
@@ -95,6 +97,9 @@ public class AccessController {
 
     @Autowired
     private JdbcTemplate jdbcTemplate;
+
+    @Autowired
+    private AdminGuard adminGuard;
 
     @PostMapping("/grant")
     public String grantAccess(@RequestBody AccessRequest request) {
@@ -741,7 +746,10 @@ public class AccessController {
     
     @DeleteMapping("/user/{username}")
     @org.springframework.transaction.annotation.Transactional
-    public String deleteUser(@PathVariable String username, @RequestParam(required = false) String cluster) {
+    public String deleteUser(@PathVariable String username,
+                             @RequestParam(required = false) String cluster,
+                             HttpServletRequest request) {
+        adminGuard.requireDeletePrivilege(request);
         if (isProtectedBigDataUser(username)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "大数据重要角色禁止删除: " + username);
         }

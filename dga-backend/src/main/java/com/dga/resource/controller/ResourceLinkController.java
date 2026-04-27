@@ -1,5 +1,6 @@
 package com.dga.resource.controller;
 
+import com.dga.access.service.AdminGuard;
 import com.dga.resource.entity.ResourceLink;
 import com.dga.resource.repository.ResourceLinkRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,6 +33,7 @@ import java.awt.Font;
 import java.awt.BasicStroke;
 import java.awt.image.BufferedImage;
 import javax.imageio.ImageIO;
+import javax.servlet.http.HttpServletRequest;
 
 @RestController
 @RequestMapping("/api/resources")
@@ -40,6 +42,9 @@ public class ResourceLinkController {
 
     @Autowired
     private ResourceLinkRepository repository;
+
+    @Autowired
+    private AdminGuard adminGuard;
 
     public static class QuickAddRequest {
         private String url;
@@ -280,7 +285,8 @@ public class ResourceLinkController {
     }
 
     @DeleteMapping("/{id}")
-    public void delete(@PathVariable("id") Long id) {
+    public void delete(@PathVariable("id") Long id, HttpServletRequest request) {
+        adminGuard.requireDeletePrivilege(request);
         ResourceLink existing = repository.findById(id).orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Not found"));
         existing.setDeleted(true);
         repository.save(existing);

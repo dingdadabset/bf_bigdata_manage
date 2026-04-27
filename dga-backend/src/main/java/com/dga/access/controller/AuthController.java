@@ -3,12 +3,18 @@ package com.dga.access.controller;
 import com.dga.access.entity.User;
 import com.dga.access.repository.UserRepository;
 import com.dga.access.dto.CreateUserRequest;
+import com.dga.access.service.AdminGuard;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.server.ResponseStatusException;
 
+import javax.servlet.http.HttpServletRequest;
+import java.util.List;
 import java.util.Map;
 import java.util.HashMap;
+import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/auth")
@@ -16,6 +22,9 @@ public class AuthController {
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private AdminGuard adminGuard;
 
     @PostMapping("/login")
     public ResponseEntity<?> login(@RequestBody Map<String, String> loginRequest) {
@@ -78,5 +87,45 @@ public class AuthController {
         userRepository.save(user);
 
         return ResponseEntity.ok("User registered successfully");
+    }
+
+    @GetMapping("/platform-users")
+    public List<Map<String, Object>> listPlatformUsers(HttpServletRequest request) {
+        adminGuard.requireRootAdmin(request);
+        return userRepository.findAll().stream()
+                .map(this::platformUserResponse)
+                .collect(Collectors.toList());
+    }
+
+    @PutMapping("/platform-users/{username}/super-admin")
+    public Map<String, Object> setSuperAdmin(@PathVariable String username,
+                                             @RequestParam(defaultValue = "true") boolean enabled,
+                                             HttpServletRequest request) {
+        adminGuard.requireRootAdmin(request);
+        if ("admin".equals(username)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "admin 用户默认拥有超级管理员权限，无需修改");
+        }
+        User user = userRepository.findByUsername(username);
+        if (user == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "登录账号不存在: " + username);
+        }
+        user.setIsAdmin(enabled ? 1 : 0);
+        userRepository.save(user);
+
+        return platformUserResponse(user);
+    }
+
+    private Map<String, Object> platformUserResponse(User user) {
+        Map<String, Object> response = new HashMap<>();
+        response.put("id", user.getId());
+        response.put("username", user.getUsername());
+        response.put("nickname", user.getNickname());
+        response.put("email", user.getEmail());
+        response.put("authType", user.getAuthType());
+        response.put("status", user.getStatus());
+        response.put("isAdmin", user.getIsAdmin());
+        response.put("createTime", user.getCreateTime());
+        response.put("lastLoginTime", user.getLastLoginTime());
+        return response;
     }
 }

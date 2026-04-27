@@ -44,6 +44,7 @@ import PermissionPanel from './components/PermissionPanel.vue';
 import CreateUserModal from './components/CreateUserModal.vue';
 import GrantModal from './components/GrantModal.vue';
 import axios from 'axios';
+import { canDelete, deleteForbiddenMessage } from '../../utils/currentUser';
 
 const PROTECTED_BIGDATA_USERS = [
   'alading',
@@ -97,6 +98,10 @@ export default {
       }
     },
     handleDeleteUser(userOrUsername) {
+      if (!canDelete()) {
+        this.$message.warning(deleteForbiddenMessage());
+        return;
+      }
       const user = typeof userOrUsername === 'object'
         ? userOrUsername
         : (this.selectedUser || { username: userOrUsername });

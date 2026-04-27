@@ -1,5 +1,6 @@
 package com.dga.cluster.controller;
 
+import com.dga.access.service.AdminGuard;
 import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
 import com.dga.cluster.service.ClusterService;
@@ -7,6 +8,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.Map;
 
@@ -17,6 +19,9 @@ public class ClusterController {
 
     @Autowired
     private ClusterService clusterService;
+
+    @Autowired
+    private AdminGuard adminGuard;
 
     @GetMapping
     public List<Cluster> getAllClusters() {
@@ -49,7 +54,8 @@ public class ClusterController {
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<Void> deleteCluster(@PathVariable Long id) {
+    public ResponseEntity<Void> deleteCluster(@PathVariable Long id, HttpServletRequest request) {
+        adminGuard.requireDeletePrivilege(request);
         clusterService.deleteCluster(id);
         return ResponseEntity.ok().build();
     }
@@ -78,7 +84,10 @@ public class ClusterController {
     }
 
     @DeleteMapping("/{clusterCode}/endpoints/{endpointId}")
-    public ResponseEntity<Void> deleteEndpoint(@PathVariable String clusterCode, @PathVariable Long endpointId) {
+    public ResponseEntity<Void> deleteEndpoint(@PathVariable String clusterCode,
+                                               @PathVariable Long endpointId,
+                                               HttpServletRequest request) {
+        adminGuard.requireDeletePrivilege(request);
         clusterService.deleteEndpoint(endpointId);
         return ResponseEntity.ok().build();
     }

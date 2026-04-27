@@ -65,7 +65,7 @@
         <a-space>
           <a-button type="link" @click="editCluster(record)">编辑</a-button>
           <a-button type="link" @click="editEndpoints(record)">端点配置</a-button>
-          <a-popconfirm title="确定要删除这个集群吗?" @confirm="deleteCluster(record.id)">
+          <a-popconfirm v-if="canDeleteEnvironment" title="确定要删除这个集群吗?" @confirm="deleteCluster(record.id)">
             <a-button type="link" style="color: red">删除</a-button>
           </a-popconfirm>
         </a-space>
@@ -238,7 +238,7 @@
               </a-form-model>
 
               <div class="editor-footer">
-                <a-popconfirm title="确定删除这个端点吗?" @confirm="removeEndpoint(activeEndpoint, activeEndpointIndex)">
+                <a-popconfirm v-if="canDeleteEnvironment" title="确定删除这个端点吗?" @confirm="removeEndpoint(activeEndpoint, activeEndpointIndex)">
                   <a-button type="danger" ghost>删除</a-button>
                 </a-popconfirm>
                 <a-button icon="thunderbolt" :loading="activeEndpoint._testing" @click="testEndpoint(activeEndpoint)">测试连通性</a-button>
@@ -255,6 +255,7 @@
 
 <script>
 import axios from 'axios';
+import { canDelete, deleteForbiddenMessage } from '../../utils/currentUser';
 
 export default {
   name: 'ClusterManagement',
@@ -326,6 +327,9 @@ export default {
         case 'RANGER': return 'http://host:6080';
         default: return '请输入连接地址';
       }
+    },
+    canDeleteEnvironment() {
+      return canDelete();
     }
   },
   methods: {
@@ -517,6 +521,10 @@ export default {
       }
     },
     async removeEndpoint(record, index) {
+      if (!this.canDeleteEnvironment) {
+        this.$message.warning(deleteForbiddenMessage());
+        return;
+      }
       if (!record.id) {
         this.endpointForm.splice(index, 1);
         this.activeEndpointIndex = this.endpointForm.length ? Math.min(index, this.endpointForm.length - 1) : -1;
@@ -530,7 +538,7 @@ export default {
         this.activeEndpointIndex = this.endpointForm.length ? Math.min(index, this.endpointForm.length - 1) : -1;
         this.fetchClusters();
       } catch (e) {
-        this.$message.error('端点删除失败');
+        this.$message.error(e.response?.data?.message || '端点删除失败');
       }
     },
     handleSubmit() {
@@ -556,12 +564,16 @@ export default {
       });
     },
     async deleteCluster(id) {
+      if (!this.canDeleteEnvironment) {
+        this.$message.warning(deleteForbiddenMessage());
+        return;
+      }
       try {
         await axios.delete(`/api/clusters/${id}`);
         this.$message.success('删除成功');
         this.fetchClusters();
       } catch (e) {
-        this.$message.error('删除失败');
+        this.$message.error(e.response?.data?.message || '删除失败');
       }
     },
     getEndpointColor(type) {

@@ -100,7 +100,7 @@
                             <a-menu-item @click="editResource(item)">
                               <a-icon type="edit" /> 编辑
                             </a-menu-item>
-                            <a-menu-item @click="deleteResource(item.id)" class="danger-text">
+                            <a-menu-item v-if="canDeleteResource" @click="deleteResource(item.id)" class="danger-text">
                               <a-icon type="delete" /> 删除
                             </a-menu-item>
                           </a-menu>
@@ -214,6 +214,7 @@
 
 <script>
 import axios from 'axios';
+import { canDelete, deleteForbiddenMessage } from '../utils/currentUser';
 
 export default {
   data() {
@@ -299,6 +300,9 @@ export default {
           title: key,
           items: groups[key]
         }));
+    },
+    canDeleteResource() {
+      return canDelete();
     }
   },
   mounted() {
@@ -374,6 +378,10 @@ export default {
     },
     
     async deleteResource(id) {
+      if (!this.canDeleteResource) {
+        this.$message.warning(deleteForbiddenMessage());
+        return;
+      }
       this.$confirm({
         title: '确定要删除这个资源吗?',
         content: '删除后无法恢复',
@@ -386,7 +394,7 @@ export default {
             this.$message.success('删除成功');
             this.fetchResources();
           } catch (e) {
-            this.$message.error('删除失败');
+            this.$message.error(e.response?.data?.message || '删除失败');
           }
         }
       });

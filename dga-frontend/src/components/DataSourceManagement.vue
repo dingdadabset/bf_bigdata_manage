@@ -76,7 +76,7 @@
                   <a-menu-item @click="copyDataSource(item)">
                     <a-icon type="copy" /> 复制配置
                   </a-menu-item>
-                  <a-menu-item @click="deleteDataSource(item)">
+                  <a-menu-item v-if="isAdmin" @click="deleteDataSource(item)">
                     <a-icon type="delete" /> 删除数据源
                   </a-menu-item>
                 </a-menu>
@@ -172,6 +172,7 @@
 
 <script>
 import axios from 'axios';
+import { canDelete, deleteForbiddenMessage } from '../utils/currentUser';
 
 export default {
   name: 'DataSourceManagement',
@@ -219,18 +220,7 @@ export default {
       return this.dataSources.filter(ds => ds.status === 'ERROR').length;
     },
     isAdmin() {
-      try {
-        const userStr = localStorage.getItem('user');
-        if (!userStr) return false;
-        const data = JSON.parse(userStr);
-        // Handle nested user object structure from backend response
-        const user = data.user || data;
-        
-        // Check for various admin indicators based on backend/mock structure
-        return user.isAdmin === 1 || user.role === 'Admin' || user.username === 'admin';
-      } catch (e) {
-        return false;
-      }
+      return canDelete();
     }
   },
   mounted() {
@@ -383,7 +373,7 @@ export default {
     
     async deleteDataSource(item) {
       if (!this.isAdmin) {
-        this.$message.warning('只有管理员可以删除数据源');
+        this.$message.warning(deleteForbiddenMessage());
         return;
       }
       

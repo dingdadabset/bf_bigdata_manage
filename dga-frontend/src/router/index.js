@@ -11,6 +11,7 @@ import DataMap from '../views/DataMap.vue';
 import UserProfile from '../views/UserProfile.vue';
 import ResourceManagement from '../views/ResourceManagement.vue';
 import ClusterManagement from '../views/system/ClusterManagement.vue';
+import PlatformUsers from '../views/system/PlatformUsers.vue';
 import AuthorizationCenter from '../views/access/AuthorizationCenter.vue';
 
 Vue.use(VueRouter);
@@ -94,6 +95,12 @@ const routes = [
         name: 'ClusterManagement',
         component: ClusterManagement,
         meta: { title: '集群管理' }
+      },
+      {
+        path: 'platform-users',
+        name: 'PlatformUsers',
+        component: PlatformUsers,
+        meta: { title: '平台用户' }
       }
     ]
   }

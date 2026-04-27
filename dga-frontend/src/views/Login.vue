@@ -1,54 +1,99 @@
 <template>
   <div class="login-container">
+    <div class="login-shell-bg"></div>
     <div class="login-content">
-      <div class="login-header">
-        <h1 class="login-title">DGA 数据治理平台</h1>
-        <p class="login-subtitle">Data Governance & Analytics Platform</p>
-      </div>
-      <a-card :bordered="false" class="login-card">
-        <a-tabs v-model="activeTab" :tab-bar-style="{ textAlign: 'center' }">
-          <a-tab-pane key="1" tab="账号登录">
-            <a-form-model ref="loginForm" :model="form" :rules="rules">
-              <a-form-model-item prop="username">
-                <a-input v-model="form.username" size="large" placeholder="用户名">
-                  <a-icon slot="prefix" type="user" />
-                </a-input>
-              </a-form-model-item>
-              <a-form-model-item prop="password">
-                <a-input-password v-model="form.password" size="large" placeholder="密码">
-                  <a-icon slot="prefix" type="lock" />
-                </a-input-password>
-              </a-form-model-item>
-              <a-form-model-item>
-                <a-button type="primary" size="large" block @click="handleSubmit" :loading="loading">
-                  登录
-                </a-button>
-              </a-form-model-item>
-            </a-form-model>
-          </a-tab-pane>
-          <a-tab-pane key="2" tab="注册账号">
-            <a-form-model ref="registerForm" :model="regForm" :rules="regRules">
-              <a-form-model-item prop="username">
-                <a-input v-model="regForm.username" size="large" placeholder="用户名" />
-              </a-form-model-item>
-              <a-form-model-item prop="email">
-                <a-input v-model="regForm.email" size="large" placeholder="邮箱" />
-              </a-form-model-item>
-              <a-form-model-item prop="password">
-                <a-input-password v-model="regForm.password" size="large" placeholder="密码" />
-              </a-form-model-item>
-              <a-form-model-item prop="confirmPassword">
-                <a-input-password v-model="regForm.confirmPassword" size="large" placeholder="确认密码" />
-              </a-form-model-item>
-              <a-form-model-item>
-                <a-button type="primary" size="large" block @click="handleRegister" :loading="registering">
-                  注册
-                </a-button>
-              </a-form-model-item>
-            </a-form-model>
-          </a-tab-pane>
-        </a-tabs>
-      </a-card>
+      <section class="brand-panel">
+        <div class="brand-mark">
+          <span class="mark-node"><a-icon type="cluster" /></span>
+          <span>DGA</span>
+        </div>
+        <div class="brand-copy">
+          <h1 class="login-title">DGA 数据治理平台</h1>
+          <p class="login-subtitle">面向数据地图、元数据治理与统一授权的企业级工作台</p>
+        </div>
+        <div class="signal-board" aria-hidden="true">
+          <div class="signal-row strong">
+            <span>Metadata</span>
+            <i></i>
+            <b>Synced</b>
+          </div>
+          <div class="signal-row">
+            <span>OpenLDAP</span>
+            <i></i>
+            <b>Ready</b>
+          </div>
+          <div class="signal-row">
+            <span>Hive / Sentry</span>
+            <i></i>
+            <b>Active</b>
+          </div>
+          <div class="signal-row">
+            <span>StarRocks</span>
+            <i></i>
+            <b>Online</b>
+          </div>
+        </div>
+        <div class="brand-footer">
+          <div>
+            <strong>统一入口</strong>
+            <span>权限、资产、质量一站管理</span>
+          </div>
+          <div>
+            <strong>安全可控</strong>
+            <span>按集群隔离身份与授权</span>
+          </div>
+        </div>
+      </section>
+      <section class="login-panel">
+        <div class="panel-header">
+          <span class="panel-kicker">Secure Workspace</span>
+          <h2>欢迎回来</h2>
+        </div>
+        <a-card :bordered="false" class="login-card">
+          <a-tabs v-model="activeTab" :tab-bar-style="{ textAlign: 'center' }">
+            <a-tab-pane key="1" tab="账号登录">
+              <a-form-model ref="loginForm" :model="form" :rules="rules">
+                <a-form-model-item prop="username">
+                  <a-input v-model="form.username" size="large" placeholder="用户名">
+                    <a-icon slot="prefix" type="user" />
+                  </a-input>
+                </a-form-model-item>
+                <a-form-model-item prop="password">
+                  <a-input-password v-model="form.password" size="large" placeholder="密码">
+                    <a-icon slot="prefix" type="lock" />
+                  </a-input-password>
+                </a-form-model-item>
+                <a-form-model-item>
+                  <a-button type="primary" size="large" block @click="handleSubmit" :loading="loading">
+                    登录
+                  </a-button>
+                </a-form-model-item>
+              </a-form-model>
+            </a-tab-pane>
+            <a-tab-pane key="2" tab="注册账号">
+              <a-form-model ref="registerForm" :model="regForm" :rules="regRules">
+                <a-form-model-item prop="username">
+                  <a-input v-model="regForm.username" size="large" placeholder="用户名" />
+                </a-form-model-item>
+                <a-form-model-item prop="email">
+                  <a-input v-model="regForm.email" size="large" placeholder="邮箱" />
+                </a-form-model-item>
+                <a-form-model-item prop="password">
+                  <a-input-password v-model="regForm.password" size="large" placeholder="密码" />
+                </a-form-model-item>
+                <a-form-model-item prop="confirmPassword">
+                  <a-input-password v-model="regForm.confirmPassword" size="large" placeholder="确认密码" />
+                </a-form-model-item>
+                <a-form-model-item>
+                  <a-button type="primary" size="large" block @click="handleRegister" :loading="registering">
+                    注册
+                  </a-button>
+                </a-form-model-item>
+              </a-form-model>
+            </a-tab-pane>
+          </a-tabs>
+        </a-card>
+      </section>
     </div>
   </div>
 </template>
@@ -156,58 +201,243 @@ export default {
 
 <style scoped>
 .login-container {
-  height: 100vh;
-  /* Light gray gradient as base */
-  background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-  /* If image exists, it overlays */
-  background-image: url('../assets/login-bg.png'), linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
-  background-repeat: no-repeat;
-  background-position: center;
-  background-size: cover;
+  min-height: 100vh;
+  background: #eef3f8;
   display: flex;
   justify-content: center;
   align-items: center;
-  flex-direction: column;
+  padding: 48px;
+  position: relative;
+  overflow: hidden;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
 }
 
+.login-shell-bg {
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(31, 54, 82, 0.06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(31, 54, 82, 0.06) 1px, transparent 1px),
+    linear-gradient(110deg, #f7fafc 0%, #edf4fa 45%, #e9f1ed 100%);
+  background-size: 44px 44px, 44px 44px, cover;
+}
+
 .login-content {
-  width: 420px;
-  margin-bottom: 60px;
-  animation: fadeIn 0.8s ease-out;
+  width: min(1100px, 100%);
+  min-height: 620px;
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) 430px;
+  align-items: stretch;
+  background: #ffffff;
+  border: 1px solid #dce5ee;
+  border-radius: 8px;
+  box-shadow: 0 24px 70px rgba(32, 52, 74, 0.16);
+  overflow: hidden;
+  position: relative;
+  z-index: 1;
+  animation: fadeIn 0.5s ease-out;
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(20px); }
+  from { opacity: 0; transform: translateY(14px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
-.login-header {
-  text-align: center;
-  margin-bottom: 40px;
+.brand-panel {
+  background:
+    linear-gradient(135deg, rgba(13, 35, 58, 0.92), rgba(21, 72, 96, 0.9)),
+    url('../assets/login-bg.png');
+  background-size: cover;
+  background-position: center;
+  color: #f7fbff;
+  padding: 54px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  position: relative;
+}
+
+.brand-panel::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.07) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+  background-size: 36px 36px;
+  pointer-events: none;
+}
+
+.brand-mark,
+.brand-copy,
+.signal-board,
+.brand-footer {
+  position: relative;
+  z-index: 1;
+}
+
+.brand-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.mark-node {
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: #0f8f91;
+  color: #fff;
 }
 
 .login-title {
-  font-size: 32px;
-  color: #1f2937; /* Darker, sharper text */
+  font-size: 40px;
+  line-height: 1.2;
+  color: #ffffff;
   font-weight: 700;
-  letter-spacing: -0.5px;
-  margin-bottom: 8px;
+  letter-spacing: 0;
+  margin: 86px 0 14px;
 }
 
 .login-subtitle {
-  font-size: 16px;
-  color: #6b7280; /* Muted tech gray */
-  margin-top: 8px;
+  font-size: 17px;
+  line-height: 1.8;
+  color: rgba(240, 247, 255, 0.78);
+  max-width: 460px;
+  margin: 0;
   font-weight: 400;
+}
+
+.signal-board {
+  width: min(430px, 100%);
+  margin-top: 46px;
+  border: 1px solid rgba(225, 239, 247, 0.2);
+  border-radius: 8px;
+  background: rgba(7, 20, 34, 0.38);
+  backdrop-filter: blur(8px);
+  padding: 12px;
+}
+
+.signal-row {
+  display: grid;
+  grid-template-columns: 130px 1fr 68px;
+  gap: 12px;
+  align-items: center;
+  min-height: 40px;
+  color: rgba(240, 247, 255, 0.72);
+  font-size: 13px;
+}
+
+.signal-row + .signal-row {
+  border-top: 1px solid rgba(229, 239, 247, 0.12);
+}
+
+.signal-row i {
+  height: 2px;
+  background: linear-gradient(90deg, #2db7b5, rgba(145, 213, 255, 0.2));
+}
+
+.signal-row b {
+  color: #cbf3e2;
+  font-weight: 600;
+}
+
+.signal-row.strong span,
+.signal-row.strong b {
+  color: #fff;
+}
+
+.brand-footer {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  margin-top: 46px;
+}
+
+.brand-footer div {
+  border-top: 1px solid rgba(224, 241, 247, 0.22);
+  padding-top: 14px;
+}
+
+.brand-footer strong,
+.brand-footer span {
+  display: block;
+}
+
+.brand-footer strong {
+  color: #ffffff;
+  font-size: 15px;
+  margin-bottom: 6px;
+}
+
+.brand-footer span {
+  color: rgba(240, 247, 255, 0.62);
+  font-size: 13px;
+}
+
+.login-panel {
+  background: #f8fafc;
+  padding: 74px 46px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.panel-header {
+  margin-bottom: 26px;
+}
+
+.panel-kicker {
+  color: #0f8f91;
+  display: block;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
+  margin-bottom: 10px;
+}
+
+.panel-header h2 {
+  margin: 0;
+  font-size: 28px;
+  color: #172033;
+  font-weight: 700;
 }
 
 .login-card {
   background: #ffffff;
-  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.08); /* Soft diffused shadow */
-  border-radius: 16px; /* Modern rounded corners */
-  padding: 24px;
-  border: 1px solid rgba(255, 255, 255, 0.6);
+  box-shadow: 0 14px 34px rgba(30, 50, 72, 0.08);
+  border-radius: 8px;
+  border: 1px solid #e6edf5;
+}
+
+::v-deep .login-card .ant-card-body {
+  padding: 30px;
+}
+
+::v-deep .ant-tabs-nav {
+  width: 100%;
+}
+
+::v-deep .ant-tabs-nav .ant-tabs-tab {
+  width: 50%;
+  margin: 0;
+  text-align: center;
+  color: #667085;
+}
+
+::v-deep .ant-tabs-nav .ant-tabs-tab-active {
+  color: #1677c8;
+  font-weight: 600;
+}
+
+::v-deep .ant-tabs-bar {
+  margin-bottom: 24px;
 }
 
 /* Enhancing Input Styles */
@@ -215,15 +445,19 @@ export default {
   font-size: 16px;
   padding: 12px 11px;
   border-radius: 8px;
-  background-color: #f9fafb;
-  border: 1px solid #e5e7eb;
-  transition: all 0.3s;
+  background-color: #f7f9fc;
+  border: 1px solid #dce5ee;
+  transition: all 0.2s;
 }
 
 ::v-deep .ant-input-lg:focus {
   background-color: #fff;
-  border-color: #1890ff;
-  box-shadow: 0 0 0 2px rgba(24, 144, 255, 0.1);
+  border-color: #1677c8;
+  box-shadow: 0 0 0 2px rgba(22, 119, 200, 0.1);
+}
+
+::v-deep .ant-input-prefix {
+  color: #7b8794;
 }
 
 ::v-deep .ant-btn-lg {
@@ -231,8 +465,76 @@ export default {
   font-size: 16px;
   font-weight: 600;
   border-radius: 8px;
-  box-shadow: 0 4px 14px rgba(24, 144, 255, 0.3);
-  letter-spacing: 0.5px;
+  box-shadow: 0 10px 18px rgba(22, 119, 200, 0.22);
+  letter-spacing: 0;
+}
+
+::v-deep .ant-btn-primary {
+  background: #1677c8;
+  border-color: #1677c8;
+}
+
+@media (max-width: 960px) {
+  .login-container {
+    padding: 24px;
+  }
+
+  .login-content {
+    grid-template-columns: 1fr;
+    min-height: auto;
+  }
+
+  .brand-panel {
+    padding: 34px;
+  }
+
+  .login-title {
+    margin-top: 48px;
+    font-size: 32px;
+  }
+
+  .signal-board {
+    display: none;
+  }
+
+  .brand-footer {
+    margin-top: 32px;
+  }
+
+  .login-panel {
+    padding: 34px;
+  }
+}
+
+@media (max-width: 560px) {
+  .login-container {
+    padding: 14px;
+    align-items: flex-start;
+  }
+
+  .brand-panel {
+    padding: 26px;
+  }
+
+  .login-title {
+    font-size: 27px;
+  }
+
+  .login-subtitle {
+    font-size: 14px;
+  }
+
+  .brand-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .login-panel {
+    padding: 24px;
+  }
+
+  ::v-deep .login-card .ant-card-body {
+    padding: 22px;
+  }
 }
 
 </style>

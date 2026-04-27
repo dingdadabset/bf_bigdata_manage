@@ -1,5 +1,6 @@
 package com.dga.datasource.controller;
 
+import com.dga.access.service.AdminGuard;
 import com.dga.datasource.entity.DataSourceConfig;
 import com.dga.datasource.repository.DataSourceConfigRepository;
 import com.dga.metadata.service.MetadataCollector;
@@ -9,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.Map;
 
@@ -25,6 +27,9 @@ public class DataSourceController {
 
     @Autowired
     private SyncStatusService syncStatusService;
+
+    @Autowired
+    private AdminGuard adminGuard;
 
     @GetMapping
     public List<DataSourceConfig> list() {
@@ -75,7 +80,8 @@ public class DataSourceController {
     }
 
     @DeleteMapping("/{id}")
-    public void delete(@PathVariable Long id) {
+    public void delete(@PathVariable Long id, HttpServletRequest request) {
+        adminGuard.requireDeletePrivilege(request);
         repository.deleteById(id);
     }
 }
