@@ -52,33 +52,35 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
 
     @Override
     public List<String> listDatabases(AuthorizationContext context) {
-        return hdpJdbcTemplate().queryForList("SHOW DATABASES", String.class);
+        return hdpJdbcTemplate(context).queryForList("SHOW DATABASES", String.class);
     }
 
     @Override
     public List<String> listTables(AuthorizationContext context, String database) {
         AuthorizationSupport.validateName(database);
-        return hdpJdbcTemplate().queryForList("SHOW TABLES IN " + database, String.class);
+        return hdpJdbcTemplate(context).queryForList("SHOW TABLES IN " + database, String.class);
     }
 
     @Override
     public List<String> listPrincipals(AuthorizationContext context) {
-        return new ArrayList<>();
+        return rangerService.listPolicyUsers(rangerEndpoint(context));
     }
 
     @Override
     public List<Map<String, Object>> getUserPermissions(AuthorizationContext context, String username) {
-        return rangerService.getUserPermissions(username);
+        return rangerService.getUserPermissions(username, rangerEndpoint(context));
     }
 
     @Override
     public void grant(AuthorizationContext context, GrantCommand command) {
-        rangerService.grantPermission(command.getUsername(), command.getDatabase(), command.getTable(), command.getPermission());
+        rangerService.grantPermission(command.getUsername(), command.getDatabase(), command.getTable(),
+                command.getPermission(), rangerEndpoint(context));
     }
 
     @Override
     public void revoke(AuthorizationContext context, RevokeCommand command) {
-        rangerService.revokePermission(command.getUsername(), command.getDatabase(), command.getTable(), command.getPermission());
+        rangerService.revokePermission(command.getUsername(), command.getDatabase(), command.getTable(),
+                command.getPermission(), rangerEndpoint(context));
     }
 
     @Override
@@ -86,13 +88,18 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
         System.out.println("Ranger revokeAll is not implemented because Ranger policies are resource scoped.");
     }
 
-    private org.springframework.jdbc.core.JdbcTemplate hdpJdbcTemplate() {
+    private org.springframework.jdbc.core.JdbcTemplate hdpJdbcTemplate(AuthorizationContext context) {
+        ClusterEndpoint endpoint = AuthorizationSupport.firstEndpoint(context, ClusterEndpoint.TYPE_HIVE_SERVER2);
         org.springframework.jdbc.datasource.DriverManagerDataSource dataSource =
                 new org.springframework.jdbc.datasource.DriverManagerDataSource();
         dataSource.setDriverClassName("org.apache.hive.jdbc.HiveDriver");
-        dataSource.setUrl(hdpHiveUrl);
-        dataSource.setUsername(hdpHiveUser);
-        dataSource.setPassword(hdpHivePassword);
+        dataSource.setUrl(endpoint != null && endpoint.getUrl() != null ? endpoint.getUrl() : hdpHiveUrl);
+        dataSource.setUsername(endpoint != null && endpoint.getUsername() != null ? endpoint.getUsername() : hdpHiveUser);
+        dataSource.setPassword(endpoint != null && endpoint.getPassword() != null ? endpoint.getPassword() : hdpHivePassword);
         return new org.springframework.jdbc.core.JdbcTemplate(dataSource);
+    }
+
+    private ClusterEndpoint rangerEndpoint(AuthorizationContext context) {
+        return AuthorizationSupport.firstEndpoint(context, ClusterEndpoint.TYPE_RANGER);
     }
 }

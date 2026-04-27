@@ -40,6 +40,8 @@ import java.util.TreeMap;
 import java.util.stream.Collectors;
 import java.util.Objects;
 import java.util.ArrayList;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @RestController
 @RequestMapping("/api/access")
@@ -445,13 +447,40 @@ public class AccessController {
         List<String> excludedStrategies = java.util.Arrays.asList("SELF_REGISTER", "SELF_REG");
         Page<DgaUser> users;
         if (cluster != null && !cluster.isEmpty()) {
-            users = dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(cluster, excludedStrategies, pageable);
+            String targetCluster = cluster;
+            com.dga.cluster.entity.Cluster resolvedCluster = clusterRepository.findByClusterCode(cluster);
+            if (resolvedCluster != null && resolvedCluster.getClusterName() != null) {
+                targetCluster = resolvedCluster.getClusterName();
+            }
+            users = dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(targetCluster, excludedStrategies, pageable);
+            if (users.isEmpty()) {
+                users = dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(excludedStrategies, pageable);
+            }
         } else {
             users = dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(excludedStrategies, pageable);
         }
         return users.getContent().stream()
                 .map(DgaUser::getUsername)
                 .collect(Collectors.toList());
+    }
+
+    @GetMapping("/resources/permissions")
+    public Map<String, Object> listResourcePermissions(@RequestParam("username") String username,
+                                                       @RequestParam(required = false) String cluster) {
+        try {
+            List<Map<String, Object>> rawPermissions = authorizationService.getUserPermissions(username, cluster);
+            Map<String, Object> res = new HashMap<>();
+            res.put("username", username);
+            res.put("cluster", authorizationService.resolveClusterCodeOrName(cluster));
+            res.put("engineType", authorizationService.engineType(cluster));
+            res.put("authBackend", authorizationService.authBackend(cluster));
+            res.put("source", "LIVE_AUTH_BACKEND");
+            res.put("grants", normalizePermissionRows(rawPermissions));
+            res.put("raw", rawPermissions);
+            return res;
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readableAuthorizationError(e), e);
+        }
     }
 
     @PostMapping("/grant/batch")
@@ -693,17 +722,16 @@ public class AccessController {
                  // We logged it, let's proceed but maybe warn in return message.
             }
 
-            // 2. Delete Linux user via FreeIPA (HTTP)
+            // 2. Delete user from the identity backend selected by creation strategy.
             String strategy = user.getCreationStrategy();
             try {
-                if (ipaHttpService.userExists(username)) {
-                    ipaHttpService.deleteUser(username);
-                }
+                deleteFromIdentityBackend(user, username);
             } catch (Exception e) {
                 System.err.println("Failed to delete from backend: " + e.getMessage());
                 String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
                 if (!(msg.contains("not found") || msg.contains("doesn't exist") || msg.contains("does not exist") || msg.contains("no such"))) {
-                    throw new RuntimeException("Failed to delete user from backend (" + strategy + "): " + e.getMessage());
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "身份后端删除失败 (" + strategy + "): " + e.getMessage(), e);
                 }
             }
 
@@ -722,7 +750,21 @@ public class AccessController {
             
             return "User permissions revoked, deleted from backend, and soft deleted from DGA system: " + username;
         } else {
-            throw new RuntimeException("User not found: " + username);
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在: " + username);
+        }
+    }
+
+    private void deleteFromIdentityBackend(DgaUser user, String username) {
+        String strategy = user.getCreationStrategy() == null ? "" : user.getCreationStrategy().toUpperCase();
+        String cluster = user.getClusterName();
+        if (strategy.contains("LDAP") || strategy.contains("OPENLDAP")) {
+            if (ldapService.userExists(cluster, username)) {
+                ldapService.deleteUser(cluster, username);
+            }
+            return;
+        }
+        if (ipaHttpService.userExists(username)) {
+            ipaHttpService.deleteUser(username);
         }
     }
 
@@ -761,6 +803,159 @@ public class AccessController {
             return "授权 SQL 执行失败: " + message;
         }
         return message;
+    }
+
+    private List<Map<String, Object>> normalizePermissionRows(List<Map<String, Object>> rawPermissions) {
+        List<Map<String, Object>> grants = new ArrayList<>();
+        if (rawPermissions == null) {
+            return grants;
+        }
+        int index = 1;
+        for (Map<String, Object> row : rawPermissions) {
+            Map<String, Object> grant = normalizePermissionRow(row);
+            grant.put("id", index++);
+            grants.add(grant);
+        }
+        return grants;
+    }
+
+    private Map<String, Object> normalizePermissionRow(Map<String, Object> row) {
+        Map<String, Object> lowerRow = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        if (row != null) {
+            lowerRow.putAll(row);
+        }
+
+        String grantText = pickString(lowerRow, "grants", "grant", "grant_stmt", "grant_statement", "privilege");
+        if (grantText == null) {
+            grantText = firstStringValue(row);
+        }
+        String database = pickString(lowerRow, "database", "database_name", "db", "db_name");
+        String table = pickString(lowerRow, "table", "table_name", "tbl", "tableName");
+        String permission = pickString(lowerRow, "privilege", "permission", "action");
+        String resourceType = table == null || table.isEmpty() ? "DATABASE" : "TABLE";
+
+        if (grantText != null && grantText.toUpperCase().startsWith("GRANT ")) {
+            Map<String, String> parsed = parseGrantText(grantText);
+            database = database != null ? database : parsed.get("database");
+            table = table != null ? table : parsed.get("table");
+            permission = permission != null ? permission : parsed.get("permission");
+            resourceType = parsed.get("resourceType") != null ? parsed.get("resourceType") : resourceType;
+        }
+
+        Map<String, Object> grant = new HashMap<>();
+        grant.put("resourceType", resourceType);
+        grant.put("databaseName", database);
+        grant.put("tableName", table);
+        grant.put("permission", permission != null ? permission.toUpperCase() : "-");
+        grant.put("grantText", grantText);
+        grant.put("raw", row);
+        return grant;
+    }
+
+    private Map<String, String> parseGrantText(String grantText) {
+        Map<String, String> parsed = new HashMap<>();
+        Matcher privilegeMatcher = Pattern.compile("(?i)^GRANT\\s+(.+?)\\s+ON\\s+").matcher(grantText);
+        if (privilegeMatcher.find()) {
+            parsed.put("permission", privilegeMatcher.group(1).trim().replace("_PRIV", ""));
+        }
+
+        if (Pattern.compile("(?i)ON\\s+ALL\\s+TABLES\\s+IN\\s+ALL\\s+DATABASES").matcher(grantText).find()) {
+            parsed.put("resourceType", "GLOBAL");
+            parsed.put("database", "ALL DATABASES");
+            return parsed;
+        }
+
+        Matcher allTablesMatcher = Pattern.compile("(?i)ON\\s+ALL\\s+TABLES\\s+IN\\s+DATABASE\\s+`?([^`\\s]+)`?").matcher(grantText);
+        if (allTablesMatcher.find()) {
+            parsed.put("resourceType", "DATABASE");
+            parsed.put("database", allTablesMatcher.group(1));
+            return parsed;
+        }
+
+        Matcher allViewsMatcher = Pattern.compile("(?i)ON\\s+ALL\\s+VIEWS\\s+IN\\s+DATABASE\\s+`?([^`\\s]+)`?").matcher(grantText);
+        if (allViewsMatcher.find()) {
+            parsed.put("resourceType", "VIEW");
+            parsed.put("database", allViewsMatcher.group(1));
+            parsed.put("table", "ALL VIEWS");
+            return parsed;
+        }
+
+        if (Pattern.compile("(?i)ON\\s+ALL\\s+VIEWS\\s+IN\\s+ALL\\s+DATABASES").matcher(grantText).find()) {
+            parsed.put("resourceType", "VIEW");
+            parsed.put("database", "ALL DATABASES");
+            parsed.put("table", "ALL VIEWS");
+            return parsed;
+        }
+
+        Matcher allMaterializedViewsMatcher = Pattern.compile("(?i)ON\\s+ALL\\s+MATERIALIZED\\s+VIEWS\\s+IN\\s+DATABASE\\s+`?([^`\\s]+)`?").matcher(grantText);
+        if (allMaterializedViewsMatcher.find()) {
+            parsed.put("resourceType", "MATERIALIZED_VIEW");
+            parsed.put("database", allMaterializedViewsMatcher.group(1));
+            parsed.put("table", "ALL MATERIALIZED VIEWS");
+            return parsed;
+        }
+
+        if (Pattern.compile("(?i)ON\\s+ALL\\s+MATERIALIZED\\s+VIEWS\\s+IN\\s+ALL\\s+DATABASES").matcher(grantText).find()) {
+            parsed.put("resourceType", "MATERIALIZED_VIEW");
+            parsed.put("database", "ALL DATABASES");
+            parsed.put("table", "ALL MATERIALIZED VIEWS");
+            return parsed;
+        }
+
+        Matcher allFunctionsMatcher = Pattern.compile("(?i)ON\\s+ALL\\s+FUNCTIONS\\s+IN\\s+DATABASE\\s+`?([^`\\s]+)`?").matcher(grantText);
+        if (allFunctionsMatcher.find()) {
+            parsed.put("resourceType", "FUNCTION");
+            parsed.put("database", allFunctionsMatcher.group(1));
+            parsed.put("table", "ALL FUNCTIONS");
+            return parsed;
+        }
+
+        if (Pattern.compile("(?i)ON\\s+ALL\\s+FUNCTIONS\\s+IN\\s+ALL\\s+DATABASES").matcher(grantText).find()) {
+            parsed.put("resourceType", "FUNCTION");
+            parsed.put("database", "ALL DATABASES");
+            parsed.put("table", "ALL FUNCTIONS");
+            return parsed;
+        }
+
+        Matcher tableMatcher = Pattern.compile("(?i)ON\\s+TABLE\\s+`?([^`\\.\\s]+)`?\\.`?([^`\\s]+)`?").matcher(grantText);
+        if (tableMatcher.find()) {
+            parsed.put("resourceType", "TABLE");
+            parsed.put("database", tableMatcher.group(1));
+            parsed.put("table", tableMatcher.group(2));
+            return parsed;
+        }
+
+        Matcher databaseMatcher = Pattern.compile("(?i)ON\\s+DATABASE\\s+`?([^`\\s]+)`?").matcher(grantText);
+        if (databaseMatcher.find()) {
+            parsed.put("resourceType", "DATABASE");
+            parsed.put("database", databaseMatcher.group(1));
+        }
+        return parsed;
+    }
+
+    private String firstStringValue(Map<String, Object> row) {
+        if (row == null) {
+            return null;
+        }
+        for (Object value : row.values()) {
+            if (value != null) {
+                String text = value.toString().trim();
+                if (!text.isEmpty()) {
+                    return text;
+                }
+            }
+        }
+        return null;
+    }
+
+    private String pickString(Map<String, Object> row, String... keys) {
+        for (String key : keys) {
+            Object value = row.get(key);
+            if (value != null && !value.toString().trim().isEmpty()) {
+                return value.toString().trim();
+            }
+        }
+        return null;
     }
 
     private void saveResourceAccess(String username, String cluster, String database, String table,

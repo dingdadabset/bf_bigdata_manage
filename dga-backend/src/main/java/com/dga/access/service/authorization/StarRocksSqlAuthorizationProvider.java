@@ -116,8 +116,13 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
         String resourceType;
         String resource;
         if (command.getTable() == null || command.getTable().isEmpty()) {
-            resourceType = "DATABASE";
-            resource = quoteIdentifier(command.getDatabase());
+            if ("CREATE TABLE".equals(privilege)) {
+                resourceType = "DATABASE";
+                resource = quoteIdentifier(command.getDatabase());
+            } else {
+                resourceType = "ALL TABLES IN DATABASE";
+                resource = quoteIdentifier(command.getDatabase());
+            }
         } else {
             resourceType = "TABLE";
             resource = quoteIdentifier(command.getDatabase()) + "." + quoteIdentifier(command.getTable());
@@ -129,6 +134,9 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
     private String toStarRocksPrivilege(String permission) {
         if ("ALL".equalsIgnoreCase(permission)) {
             return "ALL";
+        }
+        if ("CREATE".equalsIgnoreCase(permission)) {
+            return "CREATE TABLE";
         }
         return permission.toUpperCase();
     }

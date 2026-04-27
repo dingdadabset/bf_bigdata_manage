@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
+import com.dga.cluster.entity.ClusterEndpoint;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -26,33 +27,48 @@ public class RangerService {
     private final RestTemplate restTemplate = new RestTemplate();
 
     public void grantPermission(String user, String database, String table, String permission) {
+        grantPermission(user, database, table, permission, null);
+    }
+
+    public void grantPermission(String user, String database, String table, String permission, ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
         String finalTable = (table == null || table.isEmpty()) ? "*" : table;
-        Map<String, Object> policy = findPolicy(database, finalTable);
+        Map<String, Object> policy = findPolicy(config, database, finalTable);
 
         if (policy == null) {
-            createPolicy(user, database, finalTable, permission);
+            createPolicy(config, user, database, finalTable, permission);
         } else {
-            updatePolicyGrant(policy, user, permission);
+            updatePolicyGrant(config, policy, user, permission);
         }
     }
 
     public void revokePermission(String user, String database, String table, String permission) {
+        revokePermission(user, database, table, permission, null);
+    }
+
+    public void revokePermission(String user, String database, String table, String permission, ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
         String finalTable = (table == null || table.isEmpty()) ? "*" : table;
-        Map<String, Object> policy = findPolicy(database, finalTable);
+        Map<String, Object> policy = findPolicy(config, database, finalTable);
 
         if (policy != null) {
-            updatePolicyRevoke(policy, user);
+            updatePolicyRevoke(config, policy, user);
         } else {
             System.out.println("Ranger policy not found for revoke: " + database + "." + finalTable);
         }
     }
 
     public List<Map<String, Object>> getUserPermissions(String user) {
+        return getUserPermissions(user, null);
+    }
+
+    public List<Map<String, Object>> getUserPermissions(String user, ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
         List<Map<String, Object>> result = new ArrayList<>();
         try {
-            String url = String.format("%s/service/public/v2/api/policy?serviceName=%s", rangerUrl, serviceName);
+            String url = String.format("%s/service/public/v2/api/policy?serviceName=%s", config.url, config.serviceName);
             
-            HttpHeaders headers = createHeaders();
+            HttpHeaders headers = createHeaders(config);
             HttpEntity<String> entity = new HttpEntity<>(headers);
 
             ResponseEntity<List> response = restTemplate.exchange(url, HttpMethod.GET, entity, List.class);
@@ -97,6 +113,45 @@ public class RangerService {
         return result;
     }
 
+    public List<String> listPolicyUsers(ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
+        Set<String> users = new TreeSet<>();
+        try {
+            String url = String.format("%s/service/public/v2/api/policy?serviceName=%s", config.url, config.serviceName);
+            ResponseEntity<List> response = restTemplate.exchange(url, HttpMethod.GET,
+                    new HttpEntity<>(createHeaders(config)), List.class);
+            List<Map<String, Object>> policies = response.getBody();
+            if (policies == null) {
+                return new ArrayList<>();
+            }
+            for (Map<String, Object> policy : policies) {
+                collectUsers(users, (List<Map<String, Object>>) policy.get("policyItems"));
+                collectUsers(users, (List<Map<String, Object>>) policy.get("denyPolicyItems"));
+                collectUsers(users, (List<Map<String, Object>>) policy.get("allowExceptions"));
+                collectUsers(users, (List<Map<String, Object>>) policy.get("denyExceptions"));
+            }
+        } catch (Exception e) {
+            System.err.println("Error listing Ranger policy users: " + e.getMessage());
+        }
+        return new ArrayList<>(users);
+    }
+
+    private void collectUsers(Set<String> result, List<Map<String, Object>> policyItems) {
+        if (policyItems == null) {
+            return;
+        }
+        for (Map<String, Object> item : policyItems) {
+            List<String> itemUsers = (List<String>) item.get("users");
+            if (itemUsers != null) {
+                for (String user : itemUsers) {
+                    if (user != null && !user.trim().isEmpty() && !user.trim().startsWith("{")) {
+                        result.add(user.trim());
+                    }
+                }
+            }
+        }
+    }
+
     private String getResourceValue(Map<String, Object> resources, String key) {
         if (resources == null) return null;
         Map<String, Object> res = (Map<String, Object>) resources.get(key);
@@ -106,14 +161,14 @@ public class RangerService {
         return null;
     }
 
-    private Map<String, Object> findPolicy(String database, String table) {
+    private Map<String, Object> findPolicy(RangerConfig config, String database, String table) {
         try {
             // Ranger API search by resource is partial/contains match.
             // We must filter results to find EXACT match.
             String url = String.format("%s/service/public/v2/api/policy?serviceName=%s&resource:database=%s&resource:table=%s",
-                    rangerUrl, serviceName, database, table);
+                    config.url, config.serviceName, database, table);
             
-            HttpHeaders headers = createHeaders();
+            HttpHeaders headers = createHeaders(config);
             HttpEntity<String> entity = new HttpEntity<>(headers);
 
             ResponseEntity<List> response = restTemplate.exchange(url, HttpMethod.GET, entity, List.class);
@@ -141,10 +196,10 @@ public class RangerService {
         return null;
     }
 
-    private void createPolicy(String user, String database, String table, String permission) {
+    private void createPolicy(RangerConfig config, String user, String database, String table, String permission) {
         try {
             Map<String, Object> policy = new HashMap<>();
-            policy.put("service", serviceName);
+            policy.put("service", config.serviceName);
             policy.put("name", "dga_auto_" + database + "_" + table.replace("*", "all") + "_" + System.currentTimeMillis());
             policy.put("isEnabled", true);
 
@@ -174,8 +229,8 @@ public class RangerService {
             policyItems.add(createPolicyItem(user, permission));
             policy.put("policyItems", policyItems);
 
-            String url = rangerUrl + "/service/public/v2/api/policy";
-            HttpHeaders headers = createHeaders();
+            String url = config.url + "/service/public/v2/api/policy";
+            HttpHeaders headers = createHeaders(config);
             HttpEntity<Map<String, Object>> entity = new HttpEntity<>(policy, headers);
 
             System.out.println("Creating Ranger Policy. URL: " + url);
@@ -195,7 +250,7 @@ public class RangerService {
         }
     }
 
-    private void updatePolicyGrant(Map<String, Object> policy, String user, String permission) {
+    private void updatePolicyGrant(RangerConfig config, Map<String, Object> policy, String user, String permission) {
         try {
             List<Map<String, Object>> policyItems = (List<Map<String, Object>>) policy.get("policyItems");
             if (policyItems == null) {
@@ -234,7 +289,7 @@ public class RangerService {
                 policyItems.add(createPolicyItem(user, permission));
             }
 
-            submitUpdate(policy);
+            submitUpdate(config, policy);
             System.out.println("Granted Ranger policy for " + user);
 
         } catch (Exception e) {
@@ -242,7 +297,7 @@ public class RangerService {
         }
     }
 
-    private void updatePolicyRevoke(Map<String, Object> policy, String user) {
+    private void updatePolicyRevoke(RangerConfig config, Map<String, Object> policy, String user) {
         try {
             List<Map<String, Object>> policyItems = (List<Map<String, Object>>) policy.get("policyItems");
             if (policyItems == null) return;
@@ -265,7 +320,7 @@ public class RangerService {
             }
 
             if (changed) {
-                submitUpdate(policy);
+                submitUpdate(config, policy);
                 System.out.println("Revoked Ranger policy for " + user);
             }
 
@@ -274,9 +329,9 @@ public class RangerService {
         }
     }
 
-    private void submitUpdate(Map<String, Object> policy) {
-        String url = rangerUrl + "/service/public/v2/api/policy/" + policy.get("id");
-        HttpHeaders headers = createHeaders();
+    private void submitUpdate(RangerConfig config, Map<String, Object> policy) {
+        String url = config.url + "/service/public/v2/api/policy/" + policy.get("id");
+        HttpHeaders headers = createHeaders(config);
         HttpEntity<Map<String, Object>> entity = new HttpEntity<>(policy, headers);
         restTemplate.exchange(url, HttpMethod.PUT, entity, Map.class);
     }
@@ -324,14 +379,43 @@ public class RangerService {
     }
 
     private HttpHeaders createHeaders() {
+        return createHeaders(config(null));
+    }
+
+    private HttpHeaders createHeaders(RangerConfig config) {
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_JSON);
         headers.set("User-Agent", "curl/7.64.1"); // Mock curl
         headers.set("Accept", "*/*");
         headers.set("Connection", "close"); // Avoid keep-alive issues
-        String auth = username + ":" + password;
+        String auth = config.username + ":" + config.password;
         String encodedAuth = Base64.getEncoder().encodeToString(auth.getBytes());
         headers.set("Authorization", "Basic " + encodedAuth);
         return headers;
+    }
+
+    private RangerConfig config(ClusterEndpoint endpoint) {
+        RangerConfig config = new RangerConfig();
+        config.url = trimTrailingSlash(endpoint != null && endpoint.getUrl() != null ? endpoint.getUrl() : rangerUrl);
+        config.username = endpoint != null && endpoint.getUsername() != null ? endpoint.getUsername() : username;
+        config.password = endpoint != null && endpoint.getPassword() != null ? endpoint.getPassword() : password;
+        config.serviceName = endpoint != null && endpoint.getServiceName() != null && !endpoint.getServiceName().trim().isEmpty()
+                ? endpoint.getServiceName().trim() : serviceName;
+        return config;
+    }
+
+    private String trimTrailingSlash(String url) {
+        String value = url == null ? "" : url.trim();
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+        return value;
+    }
+
+    private static class RangerConfig {
+        private String url;
+        private String username;
+        private String password;
+        private String serviceName;
     }
 }

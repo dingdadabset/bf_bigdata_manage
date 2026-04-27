@@ -15,6 +15,7 @@ import org.springframework.ldap.core.support.LdapContextSource;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.client.HttpStatusCodeException;
 
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
@@ -155,7 +156,7 @@ public class ClusterService {
                     testLdap(testEndpoint);
                     break;
                 case ClusterEndpoint.TYPE_RANGER:
-                    testHttp(testEndpoint);
+                    testRanger(testEndpoint);
                     break;
                 default:
                     throw new IllegalArgumentException("不支持的端点类型: " + testEndpoint.getEndpointType());
@@ -292,25 +293,43 @@ public class ClusterService {
         new LdapTemplate(source).lookup("");
     }
 
-    private void testHttp(ClusterEndpoint endpoint) {
+    private void testRanger(ClusterEndpoint endpoint) {
         SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
         requestFactory.setConnectTimeout(5000);
         requestFactory.setReadTimeout(5000);
         RestTemplate restTemplate = new RestTemplate(requestFactory);
         HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.ACCEPT, "application/json,*/*");
         if (!isBlank(endpoint.getUsername())) {
             String token = endpoint.getUsername() + ":" + nullToEmpty(endpoint.getPassword());
             String encoded = Base64.getEncoder().encodeToString(token.getBytes(StandardCharsets.UTF_8));
             headers.set(HttpHeaders.AUTHORIZATION, "Basic " + encoded);
         }
-        ResponseEntity<String> response = restTemplate.exchange(
-                endpoint.getUrl(),
-                HttpMethod.GET,
-                new HttpEntity<>(headers),
-                String.class);
-        if (!response.getStatusCode().is2xxSuccessful() && !response.getStatusCode().is3xxRedirection()) {
-            throw new IllegalStateException("HTTP 状态码: " + response.getStatusCodeValue());
+        String baseUrl = trimTrailingSlash(endpoint.getUrl());
+        String testUrl = isBlank(endpoint.getServiceName())
+                ? baseUrl + "/service/public/v2/api/service"
+                : baseUrl + "/service/public/v2/api/policy?serviceName=" + endpoint.getServiceName();
+        try {
+            ResponseEntity<String> response = restTemplate.exchange(
+                    testUrl,
+                    HttpMethod.GET,
+                    new HttpEntity<>(headers),
+                    String.class);
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                throw new IllegalStateException("Ranger API 状态码: " + response.getStatusCodeValue());
+            }
+        } catch (HttpStatusCodeException e) {
+            throw new IllegalStateException("Ranger API 访问失败: HTTP " + e.getRawStatusCode()
+                    + "，请检查账号密码、Ranger 地址和 serviceName。响应: " + e.getResponseBodyAsString(), e);
         }
+    }
+
+    private String trimTrailingSlash(String url) {
+        String value = url == null ? "" : url.trim();
+        while (value.endsWith("/")) {
+            value = value.substring(0, value.length() - 1);
+        }
+        return value;
     }
 
     private boolean isBlank(String value) {
