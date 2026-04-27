@@ -1,8 +1,11 @@
 #!/bin/bash
 
 # 部署脚本 - 上传 JAR 包并启动
-# 用法: ./upload_and_deploy.sh [服务器IP] [服务器用户] [目标路径]
-# 示例: ./upload_and_deploy.sh 10.0.20.107 root /opt/dga
+# 用法: ./scripts/deploy/upload_and_deploy.sh [服务器IP] [服务器用户] [目标路径]
+# 示例: ./scripts/deploy/upload_and_deploy.sh 10.0.20.107 root /opt/dga
+
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$ROOT_DIR" || exit 1
 
 SERVER_IP=${1:-"10.0.20.107"}
 SERVER_USER=${2:-"root"}
@@ -17,7 +20,7 @@ echo "========================================="
 
 # 1. 本地构建
 echo "[1/3] 本地构建项目..."
-./deploy.sh
+./scripts/deploy/deploy.sh
 if [ $? -ne 0 ]; then
     echo "本地构建失败！"
     exit 1

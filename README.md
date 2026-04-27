@@ -6,8 +6,23 @@
 
 *   `dga-backend`: 后端项目 (Spring Boot 2.7.x, Java 8+)
 *   `dga-frontend`: 前端项目 (Vue 2.7.x + Vite)
+*   `docs`: 设计文档、功能实现总结和规划文档
+*   `scripts/deploy`: 构建与远程部署脚本
+*   `runtime`: 本地运行日志、临时凭据等运行产物
 
 ## 快速开始
+
+也可以直接使用根目录脚本一键启动本地前后端：
+
+```bash
+./run-local.sh
+```
+
+停止本地服务：
+
+```bash
+./stop-local.sh
+```
 
 ### 1. 启动后端 (dga-backend)
 
@@ -54,3 +69,19 @@ npm run dev
 3. 打开浏览器访问前端页面。
 4. 点击页面上的 **"Check Backend Health"** 按钮。
 5. 如果显示 "DGA Backend is running successfully!"，则说明前后端连通正常。
+
+## 脚本与文档
+
+部署构建脚本：
+
+```bash
+./scripts/deploy/deploy.sh
+```
+
+上传并远程启动：
+
+```bash
+./scripts/deploy/upload_and_deploy.sh 10.0.20.107 root /opt/dga
+```
+
+更多设计与功能说明见 `docs/README.md`。

@@ -127,9 +127,10 @@ public class AccessController {
 
     @PostMapping("/user")
     public String createUser(@RequestBody CreateUserRequest request) {
+        String clusterName = resolveClusterName(request.getCluster());
         // Check if user exists in DB first
-        if (dgaUserRepository.existsByUsername(request.getUsername())) {
-             throw new ResponseStatusException(HttpStatus.CONFLICT, "User " + request.getUsername() + " already exists in system.");
+        if (dgaUserRepository.existsByUsernameAndClusterName(request.getUsername(), clusterName)) {
+             throw new ResponseStatusException(HttpStatus.CONFLICT, "User " + request.getUsername() + " already exists in cluster " + clusterName + ".");
         }
 
         String strategy = request.getCreationStrategy();
@@ -182,7 +183,7 @@ public class AccessController {
         }
 
         // Persist to MySQL
-        if (!dgaUserRepository.existsByUsername(request.getUsername())) {
+        if (!dgaUserRepository.existsByUsernameAndClusterName(request.getUsername(), clusterName)) {
             DgaUser user = new DgaUser();
             user.setUsername(request.getUsername());
             user.setFirstName(request.getFirstName());
@@ -193,17 +194,17 @@ public class AccessController {
                 user.setPassword(passwordEncoder.encode(request.getPassword()));
             }
             user.setCreationStrategy(strategy);
-            user.setClusterName(request.getCluster());
+            user.setClusterName(clusterName);
             dgaUserRepository.save(user);
         } else {
              // If user exists (e.g. re-registering or different strategy), update it?
              // For now, let's just ignore or maybe update the strategy/password if needed.
              // But requirement says "IPA registered account, password not saved". 
              // So if it exists, we might want to ensure password is saved if it wasn't before.
-             DgaUser user = dgaUserRepository.findByUsername(request.getUsername());
+             DgaUser user = dgaUserRepository.findByUsernameAndClusterName(request.getUsername(), clusterName);
              if (user.getPassword() == null && request.getPassword() != null) {
                  user.setPassword(passwordEncoder.encode(request.getPassword()));
-                 user.setClusterName(request.getCluster());
+                 user.setClusterName(clusterName);
                  dgaUserRepository.save(user);
              }
         }
@@ -212,45 +213,76 @@ public class AccessController {
     }
     
     @PostMapping("/import")
-    public String importUsers() {
+    public Map<String, Object> importUsers(@RequestParam(required = false) String cluster) {
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请先选择具体集群后再导入 OpenLDAP 用户");
+        }
+
+        com.dga.cluster.entity.Cluster targetCluster = resolveCluster(cluster);
+        String clusterName = targetCluster != null && targetCluster.getClusterName() != null
+                ? targetCluster.getClusterName()
+                : resolveClusterName(cluster);
         try {
-            List<Map<String, Object>> ipaUsers = ipaHttpService.listUsers();
-            int count = 0;
+            List<Map<String, Object>> ldapUsers = ldapService.listUsers(cluster);
+            int inserted = 0;
+            int updated = 0;
+            int repaired = 0;
             int failed = 0;
-            for (Map<String, Object> u : ipaUsers) {
+            List<Map<String, Object>> failures = new ArrayList<>();
+
+            for (Map<String, Object> u : ldapUsers) {
                 try {
-                    Object uidObj = u.get("uid");
-                    if (uidObj instanceof List && !((List<?>) uidObj).isEmpty()) {
-                        String username = (String) ((List<?>) uidObj).get(0);
-                        if (!dgaUserRepository.existsByUsername(username)) {
-                            DgaUser newUser = new DgaUser();
-                            newUser.setUsername(username);
-                            newUser.setCreationStrategy("IPA_IMPORT");
-                            newUser.setClusterName("CDH");
-                            
-                            // Try to get name
-                            Object givenName = u.get("givenname");
-                            if (givenName instanceof List && !((List<?>) givenName).isEmpty()) {
-                                newUser.setFirstName((String)((List<?>) givenName).get(0));
-                            }
-                            Object sn = u.get("sn");
-                            if (sn instanceof List && !((List<?>) sn).isEmpty()) {
-                                newUser.setLastName((String)((List<?>) sn).get(0));
-                            }
-                            
-                            dgaUserRepository.save(newUser);
-                            count++;
+                    String username = ldapValue(u, "uid");
+                    if (username == null || username.trim().isEmpty()) {
+                        throw new IllegalArgumentException("LDAP 用户缺少 uid");
+                    }
+                    username = username.trim();
+                    DgaUser user = findImportTargetUser(username, targetCluster, clusterName);
+                    boolean isInsert = user == null;
+                    boolean isLegacyRepair = false;
+                    if (isInsert) {
+                        user = new DgaUser();
+                        user.setUsername(username);
+                    } else if (!clusterName.equals(user.getClusterName())) {
+                        isLegacyRepair = true;
+                    }
+                    user.setFirstName(firstNonBlank(ldapValue(u, "givenName"), ldapValue(u, "cn"), username));
+                    user.setLastName(firstNonBlank(ldapValue(u, "sn"), username));
+                    user.setEmail(ldapValue(u, "mail"));
+                    user.setCreationStrategy("LDAP_IMPORT");
+                    user.setClusterName(clusterName);
+                    user.setDeleted(false);
+                    dgaUserRepository.save(user);
+                    if (isInsert) {
+                        inserted++;
+                    } else {
+                        updated++;
+                        if (isLegacyRepair) {
+                            repaired++;
                         }
                     }
                 } catch (Exception e) {
                     System.err.println("Failed to import user entry: " + u + " Error: " + e.getMessage());
                     failed++;
+                    Map<String, Object> failure = new HashMap<>();
+                    failure.put("entry", u);
+                    failure.put("message", e.getMessage());
+                    failures.add(failure);
                 }
             }
-            return "Import complete. Success: " + count + ", Failed: " + failed;
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("cluster", clusterName);
+            result.put("total", ldapUsers.size());
+            result.put("inserted", inserted);
+            result.put("updated", updated);
+            result.put("repaired", repaired);
+            result.put("failed", failed);
+            result.put("failures", failures);
+            return result;
         } catch (Exception e) {
-            e.printStackTrace();
-            return "Import failed: " + e.getMessage();
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    e.getMessage() == null ? "OpenLDAP 导入失败" : e.getMessage(), e);
         }
     }
 
@@ -352,6 +384,7 @@ public class AccessController {
         List<String> excludedStrategies = java.util.Arrays.asList("SELF_REGISTER", "SELF_REG");
         
         if (cluster != null && !cluster.isEmpty()) {
+            cluster = resolveClusterName(cluster);
             if (query != null && !query.isEmpty()) {
                 return dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
                         cluster, excludedStrategies, query, pageable);
@@ -490,8 +523,11 @@ public class AccessController {
         List<String> databases = request.getDatabases();
         String clusterName = request.getCluster();
         if (clusterName == null || clusterName.isEmpty()) {
-            DgaUser u = dgaUserRepository.findByUsername(username);
+            List<DgaUser> users = dgaUserRepository.findByUsernameAndIsDeletedFalse(username);
+            DgaUser u = users != null && users.size() == 1 ? users.get(0) : null;
             clusterName = u != null && u.getClusterName() != null ? u.getClusterName() : "CDH-Cluster-01";
+        } else {
+            clusterName = resolveClusterName(clusterName);
         }
 
         System.out.println("Batch grant start. User: " + username + ", Cluster: " + clusterName);
@@ -705,15 +741,19 @@ public class AccessController {
     
     @DeleteMapping("/user/{username}")
     @org.springframework.transaction.annotation.Transactional
-    public String deleteUser(@PathVariable String username) {
+    public String deleteUser(@PathVariable String username, @RequestParam(required = false) String cluster) {
         if (isProtectedBigDataUser(username)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "大数据重要角色禁止删除: " + username);
         }
-        DgaUser user = dgaUserRepository.findByUsername(username);
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "删除用户必须指定所属集群");
+        }
+        String clusterName = resolveClusterName(cluster);
+        DgaUser user = dgaUserRepository.findByUsernameAndClusterName(username, clusterName);
         if (user != null) {
             // 1. Revoke Hive Permissions
             try {
-                hiveAuthService.revokeAll(username, user.getClusterName());
+                hiveAuthService.revokeAll(username, clusterName);
             } catch (Throwable e) {
                  System.err.println("Failed to revoke Hive permissions: " + e.getMessage());
                  // Continue to delete user even if revoke fails? 
@@ -723,15 +763,14 @@ public class AccessController {
             }
 
             // 2. Delete user from the identity backend selected by creation strategy.
-            String strategy = user.getCreationStrategy();
             try {
-                deleteFromIdentityBackend(user, username);
+                ldapService.deleteUser(clusterName, username);
             } catch (Exception e) {
-                System.err.println("Failed to delete from backend: " + e.getMessage());
+                System.err.println("Failed to delete from OpenLDAP: " + e.getMessage());
                 String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
                 if (!(msg.contains("not found") || msg.contains("doesn't exist") || msg.contains("does not exist") || msg.contains("no such"))) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                            "身份后端删除失败 (" + strategy + "): " + e.getMessage(), e);
+                            "OpenLDAP 删除失败 (" + clusterName + "): " + e.getMessage(), e);
                 }
             }
 
@@ -741,8 +780,8 @@ public class AccessController {
             
             // 4. Revoke Hive Access Records (Soft Delete)
             try {
-                userHiveAccessRepository.softDeleteAllAccessByUsername(username);
-                userResourceAccessRepository.softDeleteAllByUsername(username);
+                userHiveAccessRepository.softDeleteAllAccessByUsernameAndClusterName(username, clusterName);
+                userResourceAccessRepository.softDeleteAllByUsernameAndCluster(username, clusterName);
             } catch (Exception e) {
                 System.err.println("Failed to update UserHiveAccess status: " + e.getMessage());
                 // Non-blocking, but logged
@@ -750,26 +789,98 @@ public class AccessController {
             
             return "User permissions revoked, deleted from backend, and soft deleted from DGA system: " + username;
         } else {
-            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在: " + username);
-        }
-    }
-
-    private void deleteFromIdentityBackend(DgaUser user, String username) {
-        String strategy = user.getCreationStrategy() == null ? "" : user.getCreationStrategy().toUpperCase();
-        String cluster = user.getClusterName();
-        if (strategy.contains("LDAP") || strategy.contains("OPENLDAP")) {
-            if (ldapService.userExists(cluster, username)) {
-                ldapService.deleteUser(cluster, username);
-            }
-            return;
-        }
-        if (ipaHttpService.userExists(username)) {
-            ipaHttpService.deleteUser(username);
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在: " + username + " (" + clusterName + ")");
         }
     }
 
     private boolean isProtectedBigDataUser(String username) {
         return username != null && PROTECTED_BIGDATA_USERS.contains(username.trim().toLowerCase());
+    }
+
+    private com.dga.cluster.entity.Cluster resolveCluster(String clusterIdentifier) {
+        if (clusterIdentifier == null || clusterIdentifier.trim().isEmpty()) {
+            return null;
+        }
+        String identifier = clusterIdentifier.trim();
+        com.dga.cluster.entity.Cluster cluster = clusterRepository.findByClusterCode(identifier);
+        if (cluster == null) {
+            cluster = clusterRepository.findByClusterName(identifier);
+        }
+        return cluster;
+    }
+
+    private String resolveClusterName(String clusterIdentifier) {
+        com.dga.cluster.entity.Cluster cluster = resolveCluster(clusterIdentifier);
+        if (cluster != null && cluster.getClusterName() != null) {
+            return cluster.getClusterName();
+        }
+        if (clusterIdentifier == null || clusterIdentifier.trim().isEmpty()) {
+            return "CDH-Cluster-01";
+        }
+        return clusterIdentifier.trim();
+    }
+
+    private DgaUser findImportTargetUser(String username,
+                                         com.dga.cluster.entity.Cluster targetCluster,
+                                         String clusterName) {
+        DgaUser exact = dgaUserRepository.findByUsernameAndClusterName(username, clusterName);
+        if (exact != null) {
+            return exact;
+        }
+
+        List<DgaUser> sameName = dgaUserRepository.findAllByUsername(username);
+        if (sameName == null || sameName.isEmpty()) {
+            return null;
+        }
+        if (sameName.size() == 1 && isLegacyClusterMatch(sameName.get(0).getClusterName(), targetCluster, clusterName)) {
+            return sameName.get(0);
+        }
+        return null;
+    }
+
+    private boolean isLegacyClusterMatch(String existingCluster,
+                                         com.dga.cluster.entity.Cluster targetCluster,
+                                         String clusterName) {
+        if (existingCluster == null || existingCluster.trim().isEmpty()) {
+            return true;
+        }
+        String existing = existingCluster.trim();
+        if (existing.equalsIgnoreCase(clusterName)) {
+            return true;
+        }
+        if (targetCluster != null) {
+            if (targetCluster.getClusterCode() != null && existing.equalsIgnoreCase(targetCluster.getClusterCode())) {
+                return true;
+            }
+            if (targetCluster.getClusterName() != null && existing.equalsIgnoreCase(targetCluster.getClusterName())) {
+                return true;
+            }
+            String type = targetCluster.getType();
+            if (type != null && !type.trim().isEmpty() && existing.toLowerCase().contains(type.trim().toLowerCase())) {
+                return true;
+            }
+        }
+        return "CDH-Cluster-01".equalsIgnoreCase(existing) && clusterName.toLowerCase().contains("cdh");
+    }
+
+    private String ldapValue(Map<String, Object> entry, String key) {
+        if (entry == null) {
+            return null;
+        }
+        Object value = entry.get(key);
+        if (value == null) {
+            return null;
+        }
+        return value.toString().trim();
+    }
+
+    private String firstNonBlank(String... values) {
+        for (String value : values) {
+            if (value != null && !value.trim().isEmpty()) {
+                return value.trim();
+            }
+        }
+        return null;
     }
 
     private GrantCommand buildGrantCommand(String username, String cluster, String database,

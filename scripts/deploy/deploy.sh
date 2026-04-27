@@ -1,6 +1,8 @@
 #!/bin/bash
 
 # 部署脚本 - 构建前端和后端并打包
+ROOT_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$ROOT_DIR" || exit 1
 
 echo "========================================="
 echo "开始构建 DGA 平台..."
@@ -20,7 +22,7 @@ if [ $? -ne 0 ]; then
     echo "前端构建失败！"
     exit 1
 fi
-cd ..
+cd "$ROOT_DIR" || exit 1
 
 # 2. 准备静态资源
 echo "[2/4] 迁移前端资源到后端..."
@@ -46,7 +48,7 @@ if [ $? -ne 0 ]; then
     echo "后端构建失败！"
     exit 1
 fi
-cd ..
+cd "$ROOT_DIR" || exit 1
 
 # 4. 完成
 echo "========================================="
@@ -58,5 +60,5 @@ echo "启动命令 (测试环境):"
 echo "java -jar dga-backend/target/dga-backend-0.0.1-SNAPSHOT.jar --spring.profiles.active=test"
 echo ""
 echo "后台运行命令:"
-echo "nohup java -jar dga-backend/target/dga-backend-0.0.1-SNAPSHOT.jar --spring.profiles.active=test > dga.log 2>&1 &"
+echo "nohup java -jar dga-backend/target/dga-backend-0.0.1-SNAPSHOT.jar --spring.profiles.active=test > runtime/logs/dga.log 2>&1 &"
 echo "========================================="

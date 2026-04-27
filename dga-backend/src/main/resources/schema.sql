@@ -90,9 +90,12 @@ CREATE TABLE IF NOT EXISTS `dga_users` (
   `first_name` VARCHAR(100),
   `last_name` VARCHAR(100),
   `creation_strategy` VARCHAR(50) COMMENT 'LDAP, IPA_SSH, IPA_HTTP, SELF_REGISTER',
+  `cluster_name` VARCHAR(255),
   `create_time` DATETIME NOT NULL,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `is_deleted` BOOLEAN DEFAULT FALSE,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_username` (`username`)
+  UNIQUE KEY `uk_cluster_username` (`cluster_name`, `username`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 8. Data Map: Recent Views (Enhanced)

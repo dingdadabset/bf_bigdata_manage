@@ -11,6 +11,10 @@ import java.util.List;
 public interface DgaUserRepository extends JpaRepository<DgaUser, Long> {
     boolean existsByUsername(String username);
     DgaUser findByUsername(String username);
+    boolean existsByUsernameAndClusterName(String username, String clusterName);
+    DgaUser findByUsernameAndClusterName(String username, String clusterName);
+    List<DgaUser> findAllByUsername(String username);
+    List<DgaUser> findByUsernameAndIsDeletedFalse(String username);
     
     org.springframework.data.domain.Page<DgaUser> findByIsDeletedFalse(org.springframework.data.domain.Pageable pageable);
     

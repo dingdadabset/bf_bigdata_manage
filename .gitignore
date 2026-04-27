@@ -1,0 +1,19 @@
+# IDE / local workspace
+.idea/
+.vscode/
+.trae/
+.kombai/
+
+# Local runtime
+.run-local/
+runtime/logs/*.log
+runtime/secrets/*
+
+# Build outputs
+dga-backend/target/
+dga-frontend/dist/
+dga-frontend/node_modules/
+dga-frontend/node_modules/.vite/
+
+# Logs
+*.log

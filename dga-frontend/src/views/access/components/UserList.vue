@@ -10,7 +10,7 @@
         slot="renderItem" 
         slot-scope="item" 
         class="user-list-item"
-        :class="{ 'active': selectedUser && selectedUser.username === item.username }"
+        :class="{ 'active': isSelected(item) }"
         @click="selectUser(item)"
       >
         <a-list-item-meta>
@@ -106,14 +106,32 @@ export default {
   },
   methods: {
     async handleImport() {
+      const cluster = store.headerSelectedCluster;
+      if (!cluster) {
+        this.$message.warning('请先选择具体集群后再导入 OpenLDAP 用户');
+        return;
+      }
       this.loadingUsers = true; // Use loadingUsers to indicate busy
       try {
-        const res = await axios.post('/api/access/import');
-        this.$message.success(res.data || 'Import successful');
-        this.fetchUsers();
+        const res = await axios.post('/api/access/import', null, { params: { cluster } });
+        const data = res.data || {};
+        const repairedText = data.repaired ? `，历史修复 ${data.repaired}` : '';
+        if (data.failed) {
+          const firstFailure = data.failures && data.failures.length
+            ? `，首个失败: ${data.failures[0].message}`
+            : '';
+          this.$message.warning(
+            `导入完成：新增 ${data.inserted || 0}，更新 ${data.updated || 0}${repairedText}，失败 ${data.failed}${firstFailure}`
+          );
+        } else {
+          this.$message.success(
+            `导入完成：新增 ${data.inserted || 0}，更新 ${data.updated || 0}${repairedText}，失败 0`
+          );
+        }
+        await this.fetchUsers();
       } catch (e) {
         console.error(e);
-        this.$message.error('Import failed');
+        this.$message.error(e.response?.data?.message || 'OpenLDAP 导入失败');
       } finally {
         this.loadingUsers = false;
       }
@@ -195,7 +213,11 @@ export default {
              // Fallback or empty
         }
         
-        // Auto select first user if none selected
+        // Auto select first user if none selected or selected user is not in the current page/filter
+        if (this.selectedUser && !this.userList.some(u => this.sameUser(u, this.selectedUser))) {
+          this.selectedUser = null;
+          this.$emit('select', null);
+        }
         if (!this.selectedUser && this.userList.length > 0) {
           this.selectUser(this.userList[0]);
         }
@@ -213,6 +235,14 @@ export default {
     selectUser(user) {
       this.selectedUser = user;
       this.$emit('select', user);
+    },
+    sameUser(a, b) {
+      if (!a || !b) return false;
+      if (a.id && b.id) return a.id === b.id;
+      return a.username === b.username && (a.clusterName || a.cluster) === (b.clusterName || b.cluster);
+    },
+    isSelected(item) {
+      return this.sameUser(item, this.selectedUser);
     }
   }
 };

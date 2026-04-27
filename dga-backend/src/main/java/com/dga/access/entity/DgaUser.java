@@ -8,7 +8,8 @@ import java.time.LocalDateTime;
 import java.util.Objects;
 
 @Entity
-@Table(name = "dga_users")
+@Table(name = "dga_users",
+        uniqueConstraints = @UniqueConstraint(name = "uk_cluster_username", columnNames = {"cluster_name", "username"}))
 @EntityListeners(AuditingEntityListener.class)
 public class DgaUser {
 
@@ -16,7 +17,7 @@ public class DgaUser {
     @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
-    @Column(unique = true, nullable = false)
+    @Column(nullable = false)
     private String username;
 
     private String password;

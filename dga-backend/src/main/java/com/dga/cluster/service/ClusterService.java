@@ -20,13 +20,17 @@ import org.springframework.web.client.HttpStatusCodeException;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
+import javax.naming.ldap.Rdn;
 
 @Service
 public class ClusterService {
@@ -278,19 +282,74 @@ public class ClusterService {
     }
 
     private void testLdap(ClusterEndpoint endpoint) {
-        LdapContextSource source = new LdapContextSource();
-        source.setUrl(endpoint.getUrl());
-        if (!isBlank(endpoint.getBaseDn())) {
-            source.setBase(endpoint.getBaseDn());
+        Exception lastError = null;
+        List<String> candidates = ldapBindDnCandidates(endpoint);
+        for (String userDn : candidates) {
+            try {
+                LdapContextSource source = new LdapContextSource();
+                source.setUrl(endpoint.getUrl());
+                if (!isBlank(endpoint.getBaseDn())) {
+                    source.setBase(endpoint.getBaseDn().trim());
+                }
+                if (!isBlank(userDn)) {
+                    source.setUserDn(userDn);
+                }
+                if (!isBlank(endpoint.getPassword())) {
+                    source.setPassword(endpoint.getPassword());
+                }
+                source.afterPropertiesSet();
+                new LdapTemplate(source).lookup("");
+                return;
+            } catch (Exception e) {
+                lastError = e;
+            }
         }
-        if (!isBlank(endpoint.getUsername())) {
-            source.setUserDn(endpoint.getUsername());
+        String message = lastError == null ? "LDAP 连接失败" : lastError.getMessage();
+        throw new IllegalStateException("LDAP 认证失败，请检查账号是否为完整 Bind DN 或密码是否正确。尝试账号: "
+                + String.join(" / ", candidates) + "；错误: " + message, lastError);
+    }
+
+    private List<String> ldapBindDnCandidates(ClusterEndpoint endpoint) {
+        String username = endpoint.getUsername() == null ? "" : endpoint.getUsername().trim();
+        if (username.isEmpty()) {
+            return Collections.singletonList("");
         }
-        if (!isBlank(endpoint.getPassword())) {
-            source.setPassword(endpoint.getPassword());
+        if (username.contains("=")) {
+            return Collections.singletonList(username);
         }
-        source.afterPropertiesSet();
-        new LdapTemplate(source).lookup("");
+
+        LinkedHashSet<String> candidates = new LinkedHashSet<>();
+        String escaped = Rdn.escapeValue(username).toString();
+        String baseDn = trimToNull(endpoint.getBaseDn());
+        String userBaseDn = normalizeUserBaseDn(endpoint.getUserBaseDn(), baseDn);
+
+        if (!isBlank(baseDn)) {
+            candidates.add("cn=" + escaped + "," + baseDn);
+        }
+        if (!isBlank(userBaseDn)) {
+            candidates.add("uid=" + escaped + "," + userBaseDn);
+            candidates.add("cn=" + escaped + "," + userBaseDn);
+        }
+        candidates.add(username);
+        return new ArrayList<>(candidates);
+    }
+
+    private String normalizeUserBaseDn(String userBaseDn, String baseDn) {
+        String value = trimToNull(userBaseDn);
+        if (value == null) {
+            return baseDn;
+        }
+        if (isBlank(baseDn) || value.toLowerCase(Locale.ROOT).endsWith("," + baseDn.toLowerCase(Locale.ROOT))) {
+            return value;
+        }
+        return value + "," + baseDn;
+    }
+
+    private String trimToNull(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        return value.trim();
     }
 
     private void testRanger(ClusterEndpoint endpoint) {

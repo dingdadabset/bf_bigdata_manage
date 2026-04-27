@@ -21,6 +21,11 @@ public interface UserResourceAccessRepository extends JpaRepository<UserResource
 
     @Modifying
     @Transactional
+    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND (u.clusterCode = ?2 OR u.clusterName = ?2) AND u.isDeleted = false")
+    int softDeleteAllByUsernameAndCluster(String username, String clusterCodeOrName);
+
+    @Modifying
+    @Transactional
     @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND (u.clusterCode = ?2 OR u.clusterName = ?2) AND u.databaseName = ?3 AND u.tableName IS NULL AND u.permission = ?4 AND u.isDeleted = false")
     int softDeleteDatabaseAccess(String username, String clusterCodeOrName, String databaseName, String permission);
 

@@ -96,21 +96,30 @@ export default {
         this.$refs.permissionPanel.refresh();
       }
     },
-    handleDeleteUser(username) {
-      if (this.isProtectedBigDataUser(this.selectedUser || { username })) {
+    handleDeleteUser(userOrUsername) {
+      const user = typeof userOrUsername === 'object'
+        ? userOrUsername
+        : (this.selectedUser || { username: userOrUsername });
+      const username = user.username;
+      const cluster = user.clusterName || user.cluster;
+      if (this.isProtectedBigDataUser(user)) {
         this.$message.warning('大数据重要角色禁止删除');
+        return;
+      }
+      if (!cluster) {
+        this.$message.warning('删除用户必须指定所属集群');
         return;
       }
       const that = this;
       this.$confirm({
         title: '确认删除用户?',
-        content: `删除用户 ${username} 会收回Hive权限，同时会删除Linux上面的用户`,
+        content: `删除用户 ${username} (${cluster}) 会收回 Hive 权限，同时会删除 OpenLDAP 上的用户`,
         okText: 'Yes',
         okType: 'danger',
         cancelText: 'No',
         async onOk() {
           try {
-            await axios.delete(`/api/access/user/${username}`);
+            await axios.delete(`/api/access/user/${encodeURIComponent(username)}`, { params: { cluster } });
             that.$message.success('已删除');
             that.selectedUser = null;
             that.$refs.userList.fetchUsers();

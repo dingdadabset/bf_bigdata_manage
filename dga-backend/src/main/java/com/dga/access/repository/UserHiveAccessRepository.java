@@ -29,6 +29,11 @@ public interface UserHiveAccessRepository extends JpaRepository<UserHiveAccess, 
 
     @Modifying
     @Transactional
+    @Query("UPDATE UserHiveAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND u.clusterName = ?2 AND u.isDeleted = false")
+    int softDeleteAllAccessByUsernameAndClusterName(String username, String clusterName);
+
+    @Modifying
+    @Transactional
     @Query("UPDATE UserHiveAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND u.clusterName = ?2 AND u.databaseName = ?3 AND u.tableName IS NULL AND u.permission = ?4 AND u.isDeleted = false")
     int softDeleteDatabaseAccess(String username, String clusterName, String databaseName, String permission);
 

@@ -34,7 +34,7 @@
               ghost
               icon="delete"
               :disabled="isProtectedBigDataUser(user)"
-              @click="$emit('delete', user.username)"
+              @click="$emit('delete', user)"
             >
               删除用户
             </a-button>

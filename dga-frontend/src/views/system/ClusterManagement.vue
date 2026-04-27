@@ -27,7 +27,14 @@
       </div>
     </div>
 
-    <a-table :columns="columns" :data-source="clusters" :loading="loading" rowKey="id">
+    <a-table
+      class="cluster-table"
+      :columns="columns"
+      :data-source="clusters"
+      :loading="loading"
+      rowKey="id"
+      :scroll="{ x: 1280, y: 'calc(100vh - 430px)' }"
+    >
       <template slot="endpoints" slot-scope="endpoints">
         <a-space v-if="endpoints && endpoints.length" size="small">
           <a-tag v-for="endpoint in endpoints" :key="endpoint.id || endpoint.endpointType" :color="getEndpointColor(endpoint.endpointType)">
@@ -200,7 +207,7 @@
                 <a-row :gutter="16">
                   <a-col :span="12">
                     <a-form-model-item label="账号">
-                      <a-input v-model="activeEndpoint.username" placeholder="用户名 / LDAP bind DN" />
+                      <a-input v-model="activeEndpoint.username" placeholder="admin 或 cn=admin,dc=example,dc=com" />
                     </a-form-model-item>
                   </a-col>
                   <a-col :span="12">
@@ -277,15 +284,15 @@ export default {
       },
       columns: [
         { title: 'ID', dataIndex: 'id', width: 80 },
-        { title: '集群名称', dataIndex: 'clusterName' },
-        { title: '集群编码', dataIndex: 'clusterCode' },
-        { title: '类型', dataIndex: 'type' },
-        { title: '资源端点', dataIndex: 'endpoints', scopedSlots: { customRender: 'endpoints' } },
-        { title: '授权能力', key: 'capability', scopedSlots: { customRender: 'capability' } },
-        { title: '描述', dataIndex: 'description' },
-        { title: '状态', dataIndex: 'status', scopedSlots: { customRender: 'status' } },
-        { title: '创建时间', dataIndex: 'createTime' },
-        { title: '操作', key: 'action', scopedSlots: { customRender: 'action' } }
+        { title: '集群名称', dataIndex: 'clusterName', width: 120 },
+        { title: '集群编码', dataIndex: 'clusterCode', width: 120 },
+        { title: '类型', dataIndex: 'type', width: 120 },
+        { title: '资源端点', dataIndex: 'endpoints', width: 220, scopedSlots: { customRender: 'endpoints' } },
+        { title: '授权能力', key: 'capability', width: 320, scopedSlots: { customRender: 'capability' } },
+        { title: '描述', dataIndex: 'description', width: 160 },
+        { title: '状态', dataIndex: 'status', width: 120, scopedSlots: { customRender: 'status' } },
+        { title: '创建时间', dataIndex: 'createTime', width: 220 },
+        { title: '操作', key: 'action', width: 220, scopedSlots: { customRender: 'action' } }
       ],
       endpointColumns: []
     };
@@ -624,6 +631,16 @@ export default {
 }
 .muted-text {
   color: #999;
+}
+.cluster-table {
+  width: 100%;
+}
+.cluster-table >>> .ant-table-body {
+  scrollbar-gutter: stable;
+}
+.cluster-table >>> .ant-table-thead > tr > th,
+.cluster-table >>> .ant-table-tbody > tr > td {
+  white-space: nowrap;
 }
 .capability-cell {
   max-width: 260px;
