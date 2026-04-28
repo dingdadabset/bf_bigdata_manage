@@ -7,42 +7,178 @@ CREATE TABLE IF NOT EXISTS `data_source_config` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `name` VARCHAR(255) NOT NULL,
   `type` VARCHAR(50) NOT NULL COMMENT 'HIVE, STARROCKS, MYSQL',
+  `cluster_code` VARCHAR(100),
+  `cluster_name` VARCHAR(255),
+  `endpoint_id` BIGINT,
   `url` VARCHAR(500) NOT NULL,
   `username` VARCHAR(100) NOT NULL,
   `password` VARCHAR(255) NOT NULL,
+  `status` VARCHAR(20),
+  `description` VARCHAR(500),
+  `last_sync_time` DATETIME,
+  `last_sync_status` VARCHAR(20),
+  `last_sync_message` VARCHAR(1000),
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `is_deleted` BOOLEAN DEFAULT FALSE,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_cluster_endpoint_type` (`cluster_code`, `endpoint_id`, `type`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 2. Metadata: Table Info
-CREATE TABLE IF NOT EXISTS `dga_table_metadata` (
+CREATE TABLE IF NOT EXISTS `meta_table_info` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `datasource_id` BIGINT NOT NULL COMMENT 'FK to data_source_config.id',
+  `cluster_code` VARCHAR(100),
   `db_name` VARCHAR(100) NOT NULL,
   `table_name` VARCHAR(100) NOT NULL,
+  `table_comment` VARCHAR(1000),
+  `source_owner` VARCHAR(100),
   `owner` VARCHAR(100),
+  `owner_source` VARCHAR(50) COMMENT 'HIVE, MANUAL',
   `storage_format` VARCHAR(50) COMMENT 'ORC, PARQUET, TEXTFILE',
-  `location_path` VARCHAR(500),
-  `total_size` BIGINT COMMENT 'in bytes',
+  `hdfs_path` VARCHAR(500),
+  `table_size` BIGINT COMMENT 'in bytes',
   `record_count` BIGINT,
+  `partition_count` BIGINT DEFAULT 0,
+  `lifecycle_status` VARCHAR(30) DEFAULT 'ONLINE' COMMENT 'ONLINE, DEPRECATED, OFFLINE',
   `last_access_time` DATETIME,
-  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `last_modify_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `governance_score` DOUBLE,
+  `sync_time` DATETIME,
   PRIMARY KEY (`id`),
-  INDEX `idx_ds_db_tbl` (`datasource_id`, `db_name`, `table_name`)
+  UNIQUE KEY `uk_ds_db_tbl` (`datasource_id`, `db_name`, `table_name`),
+  INDEX `idx_cluster_db_tbl` (`cluster_code`, `db_name`, `table_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 3. Metadata: Column Info
-CREATE TABLE IF NOT EXISTS `dga_column_metadata` (
+CREATE TABLE IF NOT EXISTS `meta_column_info` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
-  `table_id` BIGINT NOT NULL COMMENT 'FK to dga_table_metadata.id',
+  `table_id` BIGINT NOT NULL COMMENT 'FK to meta_table_info.id',
   `column_name` VARCHAR(100) NOT NULL,
   `column_type` VARCHAR(50) NOT NULL,
-  `comment_str` TEXT,
+  `data_type` VARCHAR(100),
+  `column_comment` TEXT,
   `is_primary_key` BOOLEAN DEFAULT FALSE,
   `security_level` VARCHAR(20) COMMENT 'L1, L2, L3, L4',
   PRIMARY KEY (`id`),
   INDEX `idx_table_col` (`table_id`, `column_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS `meta_partition_info` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `table_id` BIGINT NOT NULL COMMENT 'FK to meta_table_info.id',
+  `datasource_id` BIGINT,
+  `cluster_code` VARCHAR(100),
+  `db_name` VARCHAR(100),
+  `table_name` VARCHAR(100),
+  `partition_name` VARCHAR(500) NOT NULL COMMENT 'e.g. dt=2026-04-27/city=sh',
+  `partition_spec` VARCHAR(1000),
+  `hdfs_path` VARCHAR(1000),
+  `storage_format` VARCHAR(50),
+  `table_size` BIGINT,
+  `record_count` BIGINT,
+  `last_access_time` DATETIME,
+  `last_modify_time` DATETIME,
+  `sync_time` DATETIME,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_table_partition` (`table_id`, `partition_name`),
+  INDEX `idx_partition_table` (`table_id`, `last_modify_time`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Hive 最新分区元数据';
+
+CREATE TABLE IF NOT EXISTS `dga_data_theme` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `theme_name` VARCHAR(100) NOT NULL,
+  `parent_id` BIGINT,
+  `description` TEXT,
+  `sort_order` INT DEFAULT 0,
+  `status` VARCHAR(20) DEFAULT 'ACTIVE',
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_theme_parent` (`parent_id`),
+  INDEX `idx_theme_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据主题';
+
+CREATE TABLE IF NOT EXISTS `dga_table_business_metadata` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `table_id` BIGINT NOT NULL,
+  `theme_id` BIGINT,
+  `business_description` TEXT,
+  `business_definition` TEXT,
+  `business_owner` VARCHAR(100),
+  `updated_by` VARCHAR(100),
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_business_table` (`table_id`),
+  INDEX `idx_business_theme` (`theme_id`),
+  INDEX `idx_business_owner` (`business_owner`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='表业务元数据';
+
+CREATE TABLE IF NOT EXISTS `dga_metric_definition` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `metric_name` VARCHAR(255) NOT NULL,
+  `metric_code` VARCHAR(255) NOT NULL,
+  `business_definition` TEXT,
+  `calculation_logic` TEXT,
+  `table_id` BIGINT,
+  `owner` VARCHAR(100),
+  `status` VARCHAR(20) DEFAULT 'ACTIVE',
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_metric_code` (`metric_code`),
+  INDEX `idx_metric_table` (`table_id`),
+  INDEX `idx_metric_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='指标定义';
+
+CREATE TABLE IF NOT EXISTS `dga_metadata_tag` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `tag_name` VARCHAR(100) NOT NULL,
+  `tag_type` VARCHAR(50) DEFAULT 'CUSTOM',
+  `color` VARCHAR(30),
+  `description` VARCHAR(500),
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_tag_name` (`tag_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='元数据标签';
+
+CREATE TABLE IF NOT EXISTS `dga_table_tag_mapping` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `table_id` BIGINT NOT NULL,
+  `tag_id` BIGINT NOT NULL,
+  `assigned_by` VARCHAR(100),
+  `assigned_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_table_tag` (`table_id`, `tag_id`),
+  INDEX `idx_tag_table` (`tag_id`, `table_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='表标签关系';
+
+INSERT IGNORE INTO `dga_data_theme` (`id`, `theme_name`, `parent_id`, `description`, `sort_order`, `status`) VALUES
+(1, '交易主题', NULL, '订单、支付、退款等交易数据', 10, 'ACTIVE'),
+(2, '用户主题', NULL, '账号、用户画像、行为等用户数据', 20, 'ACTIVE'),
+(3, '运营主题', NULL, '活动、渠道、增长等运营分析数据', 30, 'ACTIVE'),
+(4, '风控主题', NULL, '风险识别、审计、安全相关数据', 40, 'ACTIVE');
+
+CREATE TABLE IF NOT EXISTS `dga_metadata_collection_task` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `datasource_id` BIGINT NOT NULL,
+  `datasource_name` VARCHAR(255),
+  `cluster_code` VARCHAR(100),
+  `trigger_type` VARCHAR(50),
+  `triggered_by` VARCHAR(100),
+  `status` VARCHAR(20),
+  `started_at` DATETIME,
+  `finished_at` DATETIME,
+  `success_table_count` INT DEFAULT 0,
+  `failed_table_count` INT DEFAULT 0,
+  `message` VARCHAR(1000),
+  `error_detail` TEXT,
+  PRIMARY KEY (`id`),
+  INDEX `idx_collect_datasource` (`datasource_id`, `started_at`),
+  INDEX `idx_collect_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='元数据采集任务';
 
 -- 4. Data Quality Rules
 CREATE TABLE IF NOT EXISTS `dga_quality_rule` (
@@ -174,7 +310,7 @@ CREATE TABLE IF NOT EXISTS `dga_cluster` (
 CREATE TABLE IF NOT EXISTS `dga_cluster_endpoint` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `cluster_code` VARCHAR(100) NOT NULL,
-  `endpoint_type` VARCHAR(50) NOT NULL COMMENT 'HIVE_SERVER2, STARROCKS_JDBC, LDAP, RANGER',
+  `endpoint_type` VARCHAR(50) NOT NULL COMMENT 'HIVE_SERVER2, HIVE_METASTORE_DB, AZKABAN_DB, DOLPHINSCHEDULER_DB, STARROCKS_JDBC, LDAP, RANGER',
   `auth_backend` VARCHAR(50) COMMENT 'SENTRY, STARROCKS_SQL, RANGER',
   `url` VARCHAR(1000),
   `username` VARCHAR(255),

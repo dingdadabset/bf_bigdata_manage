@@ -1,5 +1,7 @@
 package com.dga.datasource.entity;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
+
 import javax.persistence.*;
 import java.time.LocalDateTime;
 
@@ -17,14 +19,36 @@ public class DataSourceConfig {
     @Column(nullable = false)
     private String type; // HIVE, STARROCKS, etc.
 
+    @Column(name = "cluster_code")
+    private String clusterCode;
+
+    @Column(name = "cluster_name")
+    private String clusterName;
+
+    @Column(name = "endpoint_id")
+    private Long endpointId;
+
     @Column(nullable = false)
     private String url;
 
     @Column(nullable = false)
     private String username;
 
+    @JsonProperty(access = JsonProperty.Access.WRITE_ONLY)
     @Column(nullable = false)
     private String password;
+
+    @Column(name = "status")
+    private String status;
+
+    @Column(name = "last_sync_time")
+    private LocalDateTime lastSyncTime;
+
+    @Column(name = "last_sync_status")
+    private String lastSyncStatus;
+
+    @Column(name = "last_sync_message", length = 1000)
+    private String lastSyncMessage;
 
     @Column(name = "description")
     private String description;
@@ -73,6 +97,30 @@ public class DataSourceConfig {
         this.type = type;
     }
 
+    public String getClusterCode() {
+        return clusterCode;
+    }
+
+    public void setClusterCode(String clusterCode) {
+        this.clusterCode = clusterCode;
+    }
+
+    public String getClusterName() {
+        return clusterName;
+    }
+
+    public void setClusterName(String clusterName) {
+        this.clusterName = clusterName;
+    }
+
+    public Long getEndpointId() {
+        return endpointId;
+    }
+
+    public void setEndpointId(Long endpointId) {
+        this.endpointId = endpointId;
+    }
+
     public String getUrl() {
         return url;
     }
@@ -95,6 +143,38 @@ public class DataSourceConfig {
 
     public void setPassword(String password) {
         this.password = password;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public LocalDateTime getLastSyncTime() {
+        return lastSyncTime;
+    }
+
+    public void setLastSyncTime(LocalDateTime lastSyncTime) {
+        this.lastSyncTime = lastSyncTime;
+    }
+
+    public String getLastSyncStatus() {
+        return lastSyncStatus;
+    }
+
+    public void setLastSyncStatus(String lastSyncStatus) {
+        this.lastSyncStatus = lastSyncStatus;
+    }
+
+    public String getLastSyncMessage() {
+        return lastSyncMessage;
+    }
+
+    public void setLastSyncMessage(String lastSyncMessage) {
+        this.lastSyncMessage = lastSyncMessage;
     }
 
     public String getDescription() {

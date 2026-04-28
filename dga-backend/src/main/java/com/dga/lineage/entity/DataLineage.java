@@ -1,7 +1,5 @@
 package com.dga.lineage.entity;
 
-import com.dga.metadata.entity.TableMetadata;
-import lombok.Data;
 import org.springframework.data.annotation.CreatedDate;
 import org.springframework.data.jpa.domain.support.AuditingEntityListener;
 
@@ -28,6 +26,42 @@ public class DataLineage {
 
     @Column(name = "transformation_logic")
     private String transformationLogic; // SQL or description
+
+    @Column(name = "source_type")
+    private String sourceType; // AZKABAN_DB, DOLPHINSCHEDULER_DB, LEGACY
+
+    @Column(name = "source_endpoint_id")
+    private Long sourceEndpointId;
+
+    @Column(name = "data_source_id")
+    private Long dataSourceId;
+
+    @Column(name = "cluster_code")
+    private String clusterCode;
+
+    @Column(name = "source_project")
+    private String sourceProject;
+
+    @Column(name = "source_workflow")
+    private String sourceWorkflow;
+
+    @Column(name = "source_task")
+    private String sourceTask;
+
+    @Column(name = "source_task_key")
+    private String sourceTaskKey;
+
+    @Column(name = "source_sql_hash")
+    private String sourceSqlHash;
+
+    @Column(name = "run_id")
+    private String runId;
+
+    @Column(name = "status")
+    private String status;
+
+    @Column(name = "parsed_at")
+    private LocalDateTime parsedAt;
 
     @CreatedDate
     @Column(name = "created_at", updatable = false)
@@ -71,6 +105,102 @@ public class DataLineage {
 
     public void setTransformationLogic(String transformationLogic) {
         this.transformationLogic = transformationLogic;
+    }
+
+    public String getSourceType() {
+        return sourceType;
+    }
+
+    public void setSourceType(String sourceType) {
+        this.sourceType = sourceType;
+    }
+
+    public Long getSourceEndpointId() {
+        return sourceEndpointId;
+    }
+
+    public void setSourceEndpointId(Long sourceEndpointId) {
+        this.sourceEndpointId = sourceEndpointId;
+    }
+
+    public Long getDataSourceId() {
+        return dataSourceId;
+    }
+
+    public void setDataSourceId(Long dataSourceId) {
+        this.dataSourceId = dataSourceId;
+    }
+
+    public String getClusterCode() {
+        return clusterCode;
+    }
+
+    public void setClusterCode(String clusterCode) {
+        this.clusterCode = clusterCode;
+    }
+
+    public String getSourceProject() {
+        return sourceProject;
+    }
+
+    public void setSourceProject(String sourceProject) {
+        this.sourceProject = sourceProject;
+    }
+
+    public String getSourceWorkflow() {
+        return sourceWorkflow;
+    }
+
+    public void setSourceWorkflow(String sourceWorkflow) {
+        this.sourceWorkflow = sourceWorkflow;
+    }
+
+    public String getSourceTask() {
+        return sourceTask;
+    }
+
+    public void setSourceTask(String sourceTask) {
+        this.sourceTask = sourceTask;
+    }
+
+    public String getSourceTaskKey() {
+        return sourceTaskKey;
+    }
+
+    public void setSourceTaskKey(String sourceTaskKey) {
+        this.sourceTaskKey = sourceTaskKey;
+    }
+
+    public String getSourceSqlHash() {
+        return sourceSqlHash;
+    }
+
+    public void setSourceSqlHash(String sourceSqlHash) {
+        this.sourceSqlHash = sourceSqlHash;
+    }
+
+    public String getRunId() {
+        return runId;
+    }
+
+    public void setRunId(String runId) {
+        this.runId = runId;
+    }
+
+    public String getStatus() {
+        return status;
+    }
+
+    public void setStatus(String status) {
+        this.status = status;
+    }
+
+    public LocalDateTime getParsedAt() {
+        return parsedAt;
+    }
+
+    public void setParsedAt(LocalDateTime parsedAt) {
+        this.parsedAt = parsedAt;
     }
 
     public LocalDateTime getCreatedAt() {

@@ -16,14 +16,26 @@ public class TableMetadata {
     @Column(name = "datasource_id", nullable = false)
     private Long dataSourceId;
 
+    @Column(name = "cluster_code")
+    private String clusterCode;
+
     @Column(name = "db_name", nullable = false)
     private String dbName;
 
     @Column(name = "table_name", nullable = false)
     private String tableName;
 
+    @Column(name = "table_comment", length = 1000)
+    private String tableComment;
+
+    @Column(name = "source_owner")
+    private String sourceOwner;
+
     @Column(name = "owner")
     private String owner;
+
+    @Column(name = "owner_source")
+    private String ownerSource;
 
     @Column(name = "storage_format")
     private String storageFormat; // e.g., ORC, PARQUET, TEXTFILE
@@ -36,6 +48,12 @@ public class TableMetadata {
 
     @Column(name = "record_count")
     private Long recordCount;
+
+    @Column(name = "partition_count")
+    private Long partitionCount;
+
+    @Column(name = "lifecycle_status")
+    private String lifecycleStatus;
 
     @Column(name = "last_access_time")
     private LocalDateTime lastAccessTime;
@@ -59,6 +77,14 @@ public class TableMetadata {
         this.dataSourceId = dataSourceId;
     }
 
+    public String getClusterCode() {
+        return clusterCode;
+    }
+
+    public void setClusterCode(String clusterCode) {
+        this.clusterCode = clusterCode;
+    }
+
     public String getDbName() {
         return dbName;
     }
@@ -75,12 +101,36 @@ public class TableMetadata {
         this.tableName = tableName;
     }
 
+    public String getTableComment() {
+        return tableComment;
+    }
+
+    public void setTableComment(String tableComment) {
+        this.tableComment = tableComment;
+    }
+
+    public String getSourceOwner() {
+        return sourceOwner;
+    }
+
+    public void setSourceOwner(String sourceOwner) {
+        this.sourceOwner = sourceOwner;
+    }
+
     public String getOwner() {
         return owner;
     }
 
     public void setOwner(String owner) {
         this.owner = owner;
+    }
+
+    public String getOwnerSource() {
+        return ownerSource;
+    }
+
+    public void setOwnerSource(String ownerSource) {
+        this.ownerSource = ownerSource;
     }
 
     public String getStorageFormat() {
@@ -113,6 +163,22 @@ public class TableMetadata {
 
     public void setRecordCount(Long recordCount) {
         this.recordCount = recordCount;
+    }
+
+    public Long getPartitionCount() {
+        return partitionCount;
+    }
+
+    public void setPartitionCount(Long partitionCount) {
+        this.partitionCount = partitionCount;
+    }
+
+    public String getLifecycleStatus() {
+        return lifecycleStatus;
+    }
+
+    public void setLifecycleStatus(String lifecycleStatus) {
+        this.lifecycleStatus = lifecycleStatus;
     }
 
     public LocalDateTime getLastAccessTime() {

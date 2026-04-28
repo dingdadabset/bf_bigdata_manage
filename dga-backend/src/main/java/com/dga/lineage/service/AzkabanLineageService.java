@@ -52,6 +52,11 @@ public class AzkabanLineageService {
      * Parse lineage from Azkaban database
      */
     public void parseAzkabanLineage(String host, int port, String dbName, String user, String password) {
+        parseAzkabanLineage(host, port, dbName, user, password, null, null);
+    }
+
+    public void parseAzkabanLineage(String host, int port, String dbName, String user, String password,
+                                    String clusterCode, Long dataSourceId) {
         log.info("Starting Azkaban lineage parsing from {}:{}/{}", host, port, dbName);
         
         try {
@@ -109,7 +114,7 @@ public class AzkabanLineageService {
                             for (byte[] chunk : chunks) {
                                 if (chunk != null) baos.write(chunk);
                             }
-                            parseProjectZip(projectName, baos.toByteArray());
+                            parseProjectZip(projectName, baos.toByteArray(), clusterCode, dataSourceId);
                         } catch (IOException e) {
                             log.error("Error assembling project chunks for {}: {}", projectName, e.getMessage());
                         }
@@ -124,13 +129,13 @@ public class AzkabanLineageService {
         }
     }
 
-    private void parseProjectZip(String projectName, byte[] zipBytes) {
+    private void parseProjectZip(String projectName, byte[] zipBytes, String clusterCode, Long dataSourceId) {
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
             ZipEntry entry;
             while ((entry = zis.getNextEntry()) != null) {
                 if (!entry.isDirectory() && (entry.getName().endsWith(".job") || entry.getName().endsWith(".flow"))) {
                     String content = readZipEntry(zis);
-                    parseJobContent(projectName, entry.getName(), content);
+                    parseJobContent(projectName, entry.getName(), content, clusterCode, dataSourceId);
                 }
             }
         } catch (IOException e) {
@@ -149,7 +154,7 @@ public class AzkabanLineageService {
         return new String(buffer.toByteArray(), StandardCharsets.UTF_8);
     }
     
-    private void parseJobContent(String projectName, String fileName, String content) {
+    private void parseJobContent(String projectName, String fileName, String content, String clusterCode, Long dataSourceId) {
         Properties props = new Properties();
         try {
             props.load(new java.io.StringReader(content));
@@ -182,12 +187,12 @@ public class AzkabanLineageService {
             }
 
             if (sqlToParse != null) {
-                extractTableLineage(projectName, fileName, sqlToParse);
+                extractTableLineage(projectName, fileName, sqlToParse, clusterCode, dataSourceId);
             }
         }
     }
 
-    private void extractTableLineage(String projectName, String jobName, String command) {
+    private void extractTableLineage(String projectName, String jobName, String command, String clusterCode, Long dataSourceId) {
         // Find all potential tables
         Matcher matcher = TABLE_PATTERN.matcher(command);
         Set<String> potentialTables = new HashSet<>();
@@ -214,19 +219,20 @@ public class AzkabanLineageService {
         }
 
         if (targetTable != null && !sourceTables.isEmpty()) {
-            saveLineage(projectName + ":" + jobName, sourceTables, targetTable, command);
+            saveLineage(projectName + ":" + jobName, sourceTables, targetTable, command, clusterCode, dataSourceId);
         }
     }
 
-    private void saveLineage(String jobIdentifier, Set<String> sources, String target, String command) {
-        TableMetadata targetMeta = findTableMetadata(target);
+    private void saveLineage(String jobIdentifier, Set<String> sources, String target, String command,
+                             String clusterCode, Long dataSourceId) {
+        TableMetadata targetMeta = findTableMetadata(target, clusterCode, dataSourceId);
         if (targetMeta == null) {
             log.debug("Target table metadata not found: {}", target);
             return;
         }
 
         for (String source : sources) {
-            TableMetadata sourceMeta = findTableMetadata(source);
+            TableMetadata sourceMeta = findTableMetadata(source, clusterCode, dataSourceId);
             if (sourceMeta != null) {
                 // Check if exists to avoid duplicates
                 Optional<DataLineage> existing = lineageRepository.findBySourceTableIdAndTargetTableId(sourceMeta.getId(), targetMeta.getId());
@@ -236,6 +242,15 @@ public class AzkabanLineageService {
                     lineage.setTargetTableId(targetMeta.getId());
                     lineage.setLineageType("ETL");
                     lineage.setTransformationLogic("Job: " + jobIdentifier + "\nCommand: " + command);
+                    lineage.setSourceType("AZKABAN_DB");
+                    lineage.setDataSourceId(dataSourceId);
+                    lineage.setClusterCode(clusterCode);
+                    lineage.setSourceProject(jobIdentifier.contains(":") ? jobIdentifier.substring(0, jobIdentifier.indexOf(":")) : jobIdentifier);
+                    lineage.setSourceTask(jobIdentifier);
+                    lineage.setSourceTaskKey(jobIdentifier);
+                    lineage.setSourceSqlHash(String.valueOf(command.hashCode()));
+                    lineage.setStatus("ACTIVE");
+                    lineage.setParsedAt(java.time.LocalDateTime.now());
                     lineageRepository.save(lineage);
                     log.info("Created lineage: {} -> {}", source, target);
                 }
@@ -243,15 +258,25 @@ public class AzkabanLineageService {
         }
     }
 
-    private TableMetadata findTableMetadata(String fullTableName) {
+    private TableMetadata findTableMetadata(String fullTableName, String clusterCode, Long dataSourceId) {
         String[] parts = fullTableName.split("\\.");
         if (parts.length != 2) return null;
         String db = parts[0];
         String tbl = parts[1];
-        
-        List<TableMetadata> tables = tableMetadataRepository.findByDbNameAndTableName(db, tbl);
+
+        List<TableMetadata> tables;
+        if (dataSourceId != null) {
+            tables = tableMetadataRepository.findByDataSourceIdAndDbNameAndTableName(dataSourceId, db, tbl);
+        } else if (StringUtils.hasText(clusterCode)) {
+            tables = tableMetadataRepository.findByClusterCodeAndDbNameAndTableName(clusterCode.trim(), db, tbl);
+        } else {
+            tables = tableMetadataRepository.findByDbNameAndTableName(db, tbl);
+        }
         if (tables != null && !tables.isEmpty()) {
-            return tables.get(0); // Return the first match
+            if (tables.size() == 1) {
+                return tables.get(0);
+            }
+            log.warn("Ambiguous table metadata for {}. Provide clusterCode or dataSourceId to avoid cross-cluster lineage.", fullTableName);
         }
         return null;
     }

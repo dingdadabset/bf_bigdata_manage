@@ -20,12 +20,14 @@
               slot="addonBefore"
               v-model="selectedDataSource"
               :class="$style['datasource-select']"
-              style="width: 140px"
+              style="width: 180px"
+              allow-clear
+              placeholder="全部数据源"
             >
               <a-icon slot="suffixIcon" type="database" />
-              <a-select-option value="emr_hive">
+              <a-select-option v-for="ds in dataSources" :key="ds.id" :value="ds.id">
                 <a-icon type="hdd" style="color: #fa8c16" />
-                EMR Hive
+                {{ ds.name }}
               </a-select-option>
             </a-select>
             
@@ -96,11 +98,11 @@
                 </a-select>
                 
                 <span style="margin-left: 16px">数据源:</span>
-                <a-select v-model="filterDataSource" style="width: 140px">
+                <a-select v-model="filterDataSource" style="width: 180px" allow-clear placeholder="全部数据源">
                   <a-icon slot="suffixIcon" type="database" />
-                  <a-select-option value="emr_hive">
+                  <a-select-option v-for="ds in dataSources" :key="ds.id" :value="ds.id">
                     <a-icon type="hdd" style="color: #fa8c16" />
-                    EMR Hive
+                    {{ ds.name }}
                   </a-select-option>
                 </a-select>
               </a-space>
@@ -236,7 +238,7 @@
                   <div :class="$style['datasource-stats']">
                     <div :class="$style['datasource-header']">
                       <a-icon type="hdd" style="color: #fa8c16" />
-                      <span :class="$style['datasource-name']">EMR Hive</span>
+                      <span :class="$style['datasource-name']">{{ selectedDataSourceName }}</span>
                     </div>
                     
                     <a-row :gutter="[8, 16]">
@@ -301,15 +303,16 @@ export default {
       // Search
       searchQuery: '',
       searchPlaceholder: '请输入关键字或描述，按"Enter"触发搜索，使用"Tab"切换AI搜索',
-      selectedDataSource: 'emr_hive',
+      selectedDataSource: undefined,
       aiSearchEnabled: false,
       caseSensitive: false,
       
       // Filters
       viewType: 'table',
-      filterDataSource: 'emr_hive',
+      filterDataSource: undefined,
       
       // Data
+      dataSources: [],
       recentViews: [],
       stats: {
         instanceCount: 0,
@@ -330,8 +333,16 @@ export default {
   
   mounted() {
     this.getCurrentUser();
+    this.fetchDataSources();
     this.fetchStats();
     this.fetchRecentViews();
+  },
+  computed: {
+    selectedDataSourceName() {
+      const id = this.selectedDataSource || this.filterDataSource;
+      const item = this.dataSources.find(ds => ds.id === id);
+      return item ? item.name : '全部 Hive 数据源';
+    }
   },
   
   methods: {
@@ -342,7 +353,7 @@ export default {
         this.currentUser = user.user?.username || user.username;
       }
     },
-    
+
     async fetchStats() {
       try {
         const response = await axios.get('/api/datamap/stats');
@@ -351,7 +362,16 @@ export default {
         console.error('Failed to fetch stats:', error);
       }
     },
-    
+
+    async fetchDataSources() {
+      try {
+        const response = await axios.get('/api/datasource');
+        this.dataSources = response.data || [];
+      } catch (error) {
+        console.error('Failed to fetch data sources:', error);
+      }
+    },
+
     async fetchRecentViews() {
       if (!this.currentUser) return;
       try {
@@ -378,7 +398,7 @@ export default {
           path: '/metadata', 
           query: { 
             q: this.searchQuery,
-            datasource: this.selectedDataSource,
+            dataSourceId: this.selectedDataSource,
             ai: this.aiSearchEnabled
           } 
         });

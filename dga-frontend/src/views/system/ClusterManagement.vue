@@ -3,7 +3,7 @@
     <div class="module-header">
       <div>
         <h1>环境资源注册</h1>
-        <p>统一维护 CDH、StarRocks、LDAP、Ranger 等授权相关资源端点</p>
+        <p>统一维护 CDH、HDP、Hive Metastore、LDAP、Ranger 等资源端点</p>
       </div>
       <a-button type="primary" icon="plus" size="large" @click="showCreateModal">新建环境</a-button>
     </div>
@@ -45,12 +45,14 @@
       </template>
       <template slot="capability" slot-scope="text, record">
         <div class="capability-cell">
-          <a-tag :color="getCapabilityColor(getCapability(record).status)">
-            {{ getCapability(record).status || 'UNKNOWN' }}
-          </a-tag>
-          <span class="capability-main">
+          <div class="capability-top">
+            <a-tag :color="getCapabilityColor(getCapability(record).status)">
+              {{ getCapability(record).status || 'UNKNOWN' }}
+            </a-tag>
+          </div>
+          <div class="capability-main" :title="`${getCapability(record).engineType || '-'} / ${getCapability(record).authBackend || '-'}`">
             {{ getCapability(record).engineType || '-' }} / {{ getCapability(record).authBackend || '-' }}
-          </span>
+          </div>
           <div v-if="getCapability(record).warnings && getCapability(record).warnings.length" class="capability-warning">
             {{ getCapability(record).warnings[0] }}
           </div>
@@ -165,6 +167,9 @@
                     <a-form-model-item label="端点类型">
                       <a-select v-model="activeEndpoint.endpointType" @change="onEndpointTypeChange(activeEndpoint)">
                         <a-select-option value="HIVE_SERVER2">HIVE_SERVER2</a-select-option>
+                        <a-select-option value="HIVE_METASTORE_DB">HIVE_METASTORE_DB</a-select-option>
+                        <a-select-option value="AZKABAN_DB">AZKABAN_DB</a-select-option>
+                        <a-select-option value="DOLPHINSCHEDULER_DB">DOLPHINSCHEDULER_DB</a-select-option>
                         <a-select-option value="STARROCKS_JDBC">STARROCKS_JDBC</a-select-option>
                         <a-select-option value="DORIS_JDBC">DORIS_JDBC</a-select-option>
                         <a-select-option value="LDAP">LDAP</a-select-option>
@@ -185,7 +190,7 @@
                 <a-row :gutter="16">
                   <a-col :span="12">
                     <a-form-model-item label="授权后端">
-                      <a-select v-model="activeEndpoint.authBackend" :allowClear="true" :disabled="activeEndpoint.endpointType === 'LDAP'">
+                      <a-select v-model="activeEndpoint.authBackend" :allowClear="true" :disabled="metadataEndpointTypes.includes(activeEndpoint.endpointType)">
                         <a-select-option value="SENTRY">SENTRY</a-select-option>
                         <a-select-option value="STARROCKS_SQL">STARROCKS_SQL</a-select-option>
                         <a-select-option value="DORIS_SQL">DORIS_SQL</a-select-option>
@@ -288,8 +293,8 @@ export default {
         { title: '集群名称', dataIndex: 'clusterName', width: 120 },
         { title: '集群编码', dataIndex: 'clusterCode', width: 120 },
         { title: '类型', dataIndex: 'type', width: 120 },
-        { title: '资源端点', dataIndex: 'endpoints', width: 220, scopedSlots: { customRender: 'endpoints' } },
-        { title: '授权能力', key: 'capability', width: 320, scopedSlots: { customRender: 'capability' } },
+        { title: '资源端点', dataIndex: 'endpoints', width: 260, scopedSlots: { customRender: 'endpoints' } },
+        { title: '授权能力', key: 'capability', width: 220, scopedSlots: { customRender: 'capability' } },
         { title: '描述', dataIndex: 'description', width: 160 },
         { title: '状态', dataIndex: 'status', width: 120, scopedSlots: { customRender: 'status' } },
         { title: '创建时间', dataIndex: 'createTime', width: 220 },
@@ -321,6 +326,9 @@ export default {
       if (!this.activeEndpoint) return '请输入连接地址';
       switch (this.activeEndpoint.endpointType) {
         case 'HIVE_SERVER2': return 'jdbc:hive2://host:10000/default';
+        case 'HIVE_METASTORE_DB': return 'jdbc:mysql://host:3306/hive_metastore';
+        case 'AZKABAN_DB': return 'jdbc:mysql://host:3306/azkaban';
+        case 'DOLPHINSCHEDULER_DB': return 'jdbc:mysql://host:3306/dolphinscheduler';
         case 'STARROCKS_JDBC': return 'jdbc:mysql://host:9030';
         case 'DORIS_JDBC': return 'jdbc:mysql://host:9030';
         case 'LDAP': return 'ldap://host:389';
@@ -330,6 +338,9 @@ export default {
     },
     canDeleteEnvironment() {
       return canDelete();
+    },
+    metadataEndpointTypes() {
+      return ['LDAP', 'HIVE_METASTORE_DB', 'AZKABAN_DB', 'DOLPHINSCHEDULER_DB'];
     }
   },
   methods: {
@@ -417,6 +428,8 @@ export default {
         record.authBackend = 'DORIS_SQL';
       } else if (record.endpointType === 'HIVE_SERVER2') {
         record.authBackend = 'SENTRY';
+      } else if (['HIVE_METASTORE_DB', 'AZKABAN_DB', 'DOLPHINSCHEDULER_DB'].includes(record.endpointType)) {
+        record.authBackend = undefined;
       } else if (record.endpointType === 'RANGER') {
         record.authBackend = 'RANGER';
       } else if (record.endpointType === 'LDAP') {
@@ -579,6 +592,9 @@ export default {
     getEndpointColor(type) {
       switch (type) {
         case 'HIVE_SERVER2': return 'orange';
+        case 'HIVE_METASTORE_DB': return 'volcano';
+        case 'AZKABAN_DB': return 'magenta';
+        case 'DOLPHINSCHEDULER_DB': return 'purple';
         case 'STARROCKS_JDBC': return 'blue';
         case 'DORIS_JDBC': return 'geekblue';
         case 'LDAP': return 'cyan';
@@ -654,17 +670,38 @@ export default {
 .cluster-table >>> .ant-table-tbody > tr > td {
   white-space: nowrap;
 }
+.cluster-table >>> .ant-table-tbody > tr > td {
+  vertical-align: top;
+}
+.cluster-table >>> .ant-space {
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
 .capability-cell {
-  max-width: 260px;
+  width: 200px;
+  min-height: 44px;
+}
+.capability-top {
+  display: flex;
+  align-items: center;
+  margin-bottom: 4px;
 }
 .capability-main {
+  display: block;
   color: #344054;
   font-size: 12px;
+  line-height: 18px;
+  max-width: 190px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .capability-warning {
   color: #b7791f;
   font-size: 12px;
+  line-height: 18px;
   margin-top: 4px;
+  max-width: 190px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

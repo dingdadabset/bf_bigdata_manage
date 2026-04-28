@@ -4,6 +4,7 @@ import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
 import com.dga.cluster.repository.ClusterRepository;
 import com.dga.cluster.repository.ClusterEndpointRepository;
+import com.dga.lineage.repository.DataLineageRepository;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -40,6 +41,9 @@ public class ClusterService {
 
     @Autowired
     private ClusterEndpointRepository endpointRepository;
+
+    @Autowired
+    private DataLineageRepository dataLineageRepository;
 
     private static final Pattern NON_CODE_CHARS = Pattern.compile("[^A-Z0-9_]+");
 
@@ -150,6 +154,15 @@ public class ClusterService {
                 case ClusterEndpoint.TYPE_HIVE_SERVER2:
                     testJdbc("org.apache.hive.jdbc.HiveDriver", testEndpoint);
                     break;
+                case ClusterEndpoint.TYPE_HIVE_METASTORE_DB:
+                    testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
+                    break;
+                case ClusterEndpoint.TYPE_AZKABAN_DB:
+                    testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
+                    break;
+                case ClusterEndpoint.TYPE_DOLPHINSCHEDULER_DB:
+                    testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
+                    break;
                 case ClusterEndpoint.TYPE_STARROCKS_JDBC:
                     testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
                     break;
@@ -193,9 +206,13 @@ public class ClusterService {
             existing.setUserBaseDn(endpoint.getUserBaseDn());
             existing.setStatus(endpoint.getStatus());
             existing.setDescription(endpoint.getDescription());
-            return endpointRepository.save(existing);
+            ClusterEndpoint saved = endpointRepository.save(existing);
+            expireLineageIfSchedulerDisabled(saved);
+            return saved;
         }
-        return endpointRepository.save(endpoint);
+        ClusterEndpoint saved = endpointRepository.save(endpoint);
+        expireLineageIfSchedulerDisabled(saved);
+        return saved;
     }
 
     @Transactional
@@ -204,6 +221,25 @@ public class ClusterService {
                 .orElseThrow(() -> new RuntimeException("Endpoint not found"));
         endpoint.setStatus("DELETED");
         endpointRepository.save(endpoint);
+        expireSchedulerLineage(endpoint);
+    }
+
+    private void expireLineageIfSchedulerDisabled(ClusterEndpoint endpoint) {
+        if (endpoint != null && !"ACTIVE".equals(endpoint.getStatus())) {
+            expireSchedulerLineage(endpoint);
+        }
+    }
+
+    private void expireSchedulerLineage(ClusterEndpoint endpoint) {
+        if (endpoint == null || endpoint.getId() == null || !isSchedulerEndpoint(endpoint.getEndpointType())) {
+            return;
+        }
+        dataLineageRepository.updateActiveStatusBySourceEndpointId(endpoint.getId(), "EXPIRED");
+    }
+
+    private boolean isSchedulerEndpoint(String endpointType) {
+        return ClusterEndpoint.TYPE_AZKABAN_DB.equals(endpointType)
+                || ClusterEndpoint.TYPE_DOLPHINSCHEDULER_DB.equals(endpointType);
     }
 
     private void saveEndpoints(String clusterCode, List<ClusterEndpoint> endpoints) {

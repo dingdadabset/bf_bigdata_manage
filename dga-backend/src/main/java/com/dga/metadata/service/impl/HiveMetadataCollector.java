@@ -2,11 +2,15 @@ package com.dga.metadata.service.impl;
 
 import com.dga.datasource.entity.DataSourceConfig;
 import com.dga.metadata.entity.ColumnMetadata;
+import com.dga.metadata.entity.PartitionMetadata;
 import com.dga.metadata.entity.TableMetadata;
 import com.dga.metadata.repository.ColumnMetadataRepository;
+import com.dga.metadata.repository.PartitionMetadataRepository;
 import com.dga.metadata.repository.TableMetadataRepository;
 import com.dga.metadata.service.MetadataCollector;
+import com.dga.metadata.service.MetadataCollectionResult;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -15,6 +19,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -28,6 +33,12 @@ public class HiveMetadataCollector implements MetadataCollector {
 
     @Autowired
     private ColumnMetadataRepository columnRepository;
+
+    @Autowired
+    private PartitionMetadataRepository partitionRepository;
+
+    @Value("${dga.metadata.partition.latest-limit:200}")
+    private int partitionLatestLimit;
 
     @Override
     public boolean testConnection(DataSourceConfig config) {
@@ -43,7 +54,8 @@ public class HiveMetadataCollector implements MetadataCollector {
     }
 
     @Override
-    public void collectMetadata(DataSourceConfig config) {
+    public MetadataCollectionResult collectMetadata(DataSourceConfig config) {
+        MetadataCollectionResult result = new MetadataCollectionResult();
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
             try (Connection conn = DriverManager.getConnection(config.getUrl(), config.getUsername(), config.getPassword())) {
@@ -71,12 +83,16 @@ public class HiveMetadataCollector implements MetadataCollector {
                     for (String tableName : tables) {
                         try {
                             collectTableMetadata(conn, config, dbName, tableName);
+                            result.addSuccess();
                         } catch (Exception e) {
-                            System.err.println("Error collecting table " + dbName + "." + tableName + ": " + e.getMessage());
+                            String detail = dbName + "." + tableName + ": " + e.getMessage();
+                            result.addFailure(detail);
+                            System.err.println("Error collecting table " + detail);
                         }
                     }
                 }
             }
+            return result;
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException("Failed to collect metadata: " + e.getMessage());
@@ -85,12 +101,15 @@ public class HiveMetadataCollector implements MetadataCollector {
 
     @Override
     @Transactional
-    public void collectTable(DataSourceConfig config, String dbName, String tableName) {
+    public MetadataCollectionResult collectTable(DataSourceConfig config, String dbName, String tableName) {
+        MetadataCollectionResult result = new MetadataCollectionResult();
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
             try (Connection conn = DriverManager.getConnection(config.getUrl(), config.getUsername(), config.getPassword())) {
                 collectTableMetadata(conn, config, dbName, tableName);
             }
+            result.addSuccess();
+            return result;
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException("Failed to collect table metadata: " + e.getMessage());
@@ -118,18 +137,15 @@ public class HiveMetadataCollector implements MetadataCollector {
                     String location = rs.getString("LOCATION");
                     String inputFormat = rs.getString("INPUT_FORMAT");
                     long createTime = rs.getLong("CREATE_TIME");
+                    String tableComment = null;
                     
                     // Determine storage format
-                    String format = "TEXTFILE";
-                    if (inputFormat != null) {
-                        if (inputFormat.contains("Orc")) format = "ORC";
-                        else if (inputFormat.contains("Parquet")) format = "PARQUET";
-                        else if (inputFormat.contains("Avro")) format = "AVRO";
-                    }
+                    String format = resolveStorageFormat(inputFormat);
 
                     // Fetch Table Params (totalSize, numRows)
                     long totalSize = 0;
                     long numRows = 0;
+                    long partitionCount = countPartitions(conn, tblId);
                     try (PreparedStatement paramStmt = conn.prepareStatement("SELECT PARAM_KEY, PARAM_VALUE FROM TABLE_PARAMS WHERE TBL_ID = ?")) {
                         paramStmt.setLong(1, tblId);
                         try (ResultSet paramRs = paramStmt.executeQuery()) {
@@ -140,6 +156,8 @@ public class HiveMetadataCollector implements MetadataCollector {
                                     totalSize = Long.parseLong(value);
                                 } else if ("numRows".equals(key)) {
                                     numRows = Long.parseLong(value);
+                                } else if ("comment".equalsIgnoreCase(key)) {
+                                    tableComment = value;
                                 }
                             }
                         }
@@ -162,15 +180,36 @@ public class HiveMetadataCollector implements MetadataCollector {
 
                     if (isNew) {
                         tableMetadata.setDataSourceId(config.getId());
+                        tableMetadata.setClusterCode(config.getClusterCode());
                         tableMetadata.setDbName(dbName);
                         tableMetadata.setTableName(tableName);
                         changed = true;
                     }
 
                     // Check for changes
-                    if (!fieldEquals(tableMetadata.getOwner(), owner)) {
-                        tableMetadata.setOwner(owner);
+                    if (!fieldEquals(tableMetadata.getClusterCode(), config.getClusterCode())) {
+                        tableMetadata.setClusterCode(config.getClusterCode());
                         changed = true;
+                    }
+                    if (!fieldEquals(tableMetadata.getTableComment(), tableComment)) {
+                        tableMetadata.setTableComment(tableComment);
+                        changed = true;
+                    }
+                    if (!fieldEquals(tableMetadata.getSourceOwner(), owner)) {
+                        tableMetadata.setSourceOwner(owner);
+                        changed = true;
+                    }
+                    if (!"MANUAL".equals(tableMetadata.getOwnerSource()) && !fieldEquals(tableMetadata.getOwner(), owner)) {
+                        tableMetadata.setOwner(owner);
+                        tableMetadata.setOwnerSource("HIVE");
+                        changed = true;
+                    }
+                    if (!fieldEquals(tableMetadata.getOwner(), owner)) {
+                        if (tableMetadata.getOwnerSource() == null || tableMetadata.getOwnerSource().isEmpty()) {
+                            tableMetadata.setOwner(owner);
+                            tableMetadata.setOwnerSource("HIVE");
+                            changed = true;
+                        }
                     }
                     if (!fieldEquals(tableMetadata.getLocationPath(), location)) {
                         tableMetadata.setLocationPath(location);
@@ -186,6 +225,14 @@ public class HiveMetadataCollector implements MetadataCollector {
                     }
                     if (!fieldEquals(tableMetadata.getRecordCount(), numRows)) {
                         tableMetadata.setRecordCount(numRows);
+                        changed = true;
+                    }
+                    if (!fieldEquals(tableMetadata.getPartitionCount(), partitionCount)) {
+                        tableMetadata.setPartitionCount(partitionCount);
+                        changed = true;
+                    }
+                    if (tableMetadata.getLifecycleStatus() == null || tableMetadata.getLifecycleStatus().trim().isEmpty()) {
+                        tableMetadata.setLifecycleStatus("ONLINE");
                         changed = true;
                     }
 
@@ -277,7 +324,112 @@ public class HiveMetadataCollector implements MetadataCollector {
                             }
                         }
                     }
+
+                    collectLatestPartitions(conn, config, tableMetadata, tblId);
                 }
+    }
+
+    private long countPartitions(Connection conn, long metastoreTableId) {
+        try (PreparedStatement stmt = conn.prepareStatement("SELECT COUNT(1) FROM PARTITIONS WHERE TBL_ID = ?")) {
+            stmt.setLong(1, metastoreTableId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getLong(1);
+                }
+            }
+        } catch (SQLException e) {
+            return 0L;
+        }
+        return 0L;
+    }
+
+    private void collectLatestPartitions(Connection conn, DataSourceConfig config, TableMetadata tableMetadata, long metastoreTableId) throws SQLException {
+        partitionRepository.deleteByTableId(tableMetadata.getId());
+        partitionRepository.flush();
+
+        if (partitionLatestLimit <= 0 || tableMetadata.getPartitionCount() == null || tableMetadata.getPartitionCount() <= 0) {
+            return;
+        }
+
+        String partitionSql =
+                "SELECT p.PART_ID, p.PART_NAME, p.CREATE_TIME, p.LAST_ACCESS_TIME, s.LOCATION, s.INPUT_FORMAT " +
+                "FROM PARTITIONS p " +
+                "LEFT JOIN SDS s ON p.SD_ID = s.SD_ID " +
+                "WHERE p.TBL_ID = ? " +
+                "ORDER BY COALESCE(p.CREATE_TIME, 0) DESC, p.PART_ID DESC " +
+                "LIMIT ?";
+        try (PreparedStatement stmt = conn.prepareStatement(partitionSql)) {
+            stmt.setLong(1, metastoreTableId);
+            stmt.setInt(2, partitionLatestLimit);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    long partitionId = rs.getLong("PART_ID");
+                    Map<String, String> params = readPartitionParams(conn, partitionId);
+                    long createTime = rs.getLong("CREATE_TIME");
+                    long lastDdlTime = parseLong(params.get("transient_lastDdlTime"), createTime);
+
+                    PartitionMetadata partition = new PartitionMetadata();
+                    partition.setTableId(tableMetadata.getId());
+                    partition.setDataSourceId(config.getId());
+                    partition.setClusterCode(config.getClusterCode());
+                    partition.setDbName(tableMetadata.getDbName());
+                    partition.setTableName(tableMetadata.getTableName());
+                    partition.setPartitionName(rs.getString("PART_NAME"));
+                    partition.setPartitionSpec(rs.getString("PART_NAME"));
+                    partition.setLocationPath(rs.getString("LOCATION"));
+                    partition.setStorageFormat(resolveStorageFormat(rs.getString("INPUT_FORMAT")));
+                    partition.setTotalSize(parseLong(params.get("totalSize"), 0L));
+                    partition.setRecordCount(parseLong(params.get("numRows"), 0L));
+                    partition.setLastAccessTime(fromEpochSeconds(rs.getLong("LAST_ACCESS_TIME")));
+                    partition.setLastModifyTime(fromEpochSeconds(lastDdlTime));
+                    partition.setSyncTime(LocalDateTime.now());
+                    partitionRepository.save(partition);
+                }
+            }
+        }
+    }
+
+    private Map<String, String> readPartitionParams(Connection conn, long partitionId) {
+        Map<String, String> params = new HashMap<>();
+        try (PreparedStatement stmt = conn.prepareStatement("SELECT PARAM_KEY, PARAM_VALUE FROM PARTITION_PARAMS WHERE PART_ID = ?")) {
+            stmt.setLong(1, partitionId);
+            try (ResultSet rs = stmt.executeQuery()) {
+                while (rs.next()) {
+                    params.put(rs.getString("PARAM_KEY"), rs.getString("PARAM_VALUE"));
+                }
+            }
+        } catch (SQLException e) {
+            return params;
+        }
+        return params;
+    }
+
+    private String resolveStorageFormat(String inputFormat) {
+        if (inputFormat == null) {
+            return "TEXTFILE";
+        }
+        if (inputFormat.contains("Orc")) return "ORC";
+        if (inputFormat.contains("Parquet")) return "PARQUET";
+        if (inputFormat.contains("Avro")) return "AVRO";
+        return "TEXTFILE";
+    }
+
+    private LocalDateTime fromEpochSeconds(long seconds) {
+        if (seconds <= 0) {
+            return null;
+        }
+        return LocalDateTime.ofInstant(Instant.ofEpochSecond(seconds), ZoneId.systemDefault());
+    }
+
+    private long parseLong(String value, long defaultValue) {
+        if (value == null || value.trim().isEmpty()) {
+            return defaultValue;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return defaultValue;
+        }
     }
 
     private boolean fieldEquals(Object a, Object b) {

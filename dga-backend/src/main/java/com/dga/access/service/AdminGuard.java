@@ -18,9 +18,13 @@ public class AdminGuard {
     private UserRepository userRepository;
 
     public void requireDeletePrivilege(HttpServletRequest request) {
+        requirePlatformAdmin(request, DELETE_FORBIDDEN_MESSAGE);
+    }
+
+    public void requirePlatformAdmin(HttpServletRequest request, String forbiddenMessage) {
         String username = request == null ? null : request.getHeader("X-DGA-Username");
         if (username == null || username.trim().isEmpty()) {
-            throw forbidden();
+            throw new ResponseStatusException(HttpStatus.FORBIDDEN, forbiddenMessage);
         }
 
         String normalized = username.trim();
@@ -33,7 +37,7 @@ public class AdminGuard {
             return;
         }
 
-        throw forbidden();
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, forbiddenMessage);
     }
 
     public void requireRootAdmin(HttpServletRequest request) {
@@ -44,7 +48,4 @@ public class AdminGuard {
         throw new ResponseStatusException(HttpStatus.FORBIDDEN, "仅 admin 用户可设置超级管理员");
     }
 
-    private ResponseStatusException forbidden() {
-        return new ResponseStatusException(HttpStatus.FORBIDDEN, DELETE_FORBIDDEN_MESSAGE);
-    }
 }

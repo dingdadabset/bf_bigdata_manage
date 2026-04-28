@@ -10,8 +10,11 @@ import java.time.LocalDateTime;
 public class ClusterEndpoint {
 
     public static final String TYPE_HIVE_SERVER2 = "HIVE_SERVER2";
+    public static final String TYPE_HIVE_METASTORE_DB = "HIVE_METASTORE_DB";
     public static final String TYPE_STARROCKS_JDBC = "STARROCKS_JDBC";
     public static final String TYPE_DORIS_JDBC = "DORIS_JDBC";
+    public static final String TYPE_AZKABAN_DB = "AZKABAN_DB";
+    public static final String TYPE_DOLPHINSCHEDULER_DB = "DOLPHINSCHEDULER_DB";
     public static final String TYPE_LDAP = "LDAP";
     public static final String TYPE_RANGER = "RANGER";
 

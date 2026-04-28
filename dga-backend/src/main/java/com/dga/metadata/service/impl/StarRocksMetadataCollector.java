@@ -6,6 +6,7 @@ import com.dga.metadata.entity.TableMetadata;
 import com.dga.metadata.repository.ColumnMetadataRepository;
 import com.dga.metadata.repository.TableMetadataRepository;
 import com.dga.metadata.service.MetadataCollector;
+import com.dga.metadata.service.MetadataCollectionResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -41,7 +42,8 @@ public class StarRocksMetadataCollector implements MetadataCollector {
     }
 
     @Override
-    public void collectMetadata(DataSourceConfig config) {
+    public MetadataCollectionResult collectMetadata(DataSourceConfig config) {
+        MetadataCollectionResult result = new MetadataCollectionResult();
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
             try (Connection conn = DriverManager.getConnection(config.getUrl(), config.getUsername(), config.getPassword())) {
@@ -69,12 +71,16 @@ public class StarRocksMetadataCollector implements MetadataCollector {
                     for (String tableName : tables) {
                         try {
                             collectTableMetadata(conn, config, dbName, tableName);
+                            result.addSuccess();
                         } catch (Exception e) {
-                            System.err.println("Error collecting table " + dbName + "." + tableName + ": " + e.getMessage());
+                            String detail = dbName + "." + tableName + ": " + e.getMessage();
+                            result.addFailure(detail);
+                            System.err.println("Error collecting table " + detail);
                         }
                     }
                 }
             }
+            return result;
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException("Failed to collect metadata: " + e.getMessage());
@@ -83,12 +89,15 @@ public class StarRocksMetadataCollector implements MetadataCollector {
 
     @Override
     @Transactional
-    public void collectTable(DataSourceConfig config, String dbName, String tableName) {
+    public MetadataCollectionResult collectTable(DataSourceConfig config, String dbName, String tableName) {
+        MetadataCollectionResult result = new MetadataCollectionResult();
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
             try (Connection conn = DriverManager.getConnection(config.getUrl(), config.getUsername(), config.getPassword())) {
                 collectTableMetadata(conn, config, dbName, tableName);
             }
+            result.addSuccess();
+            return result;
         } catch (Exception e) {
             e.printStackTrace();
             throw new RuntimeException("Failed to collect table metadata: " + e.getMessage());
@@ -130,12 +139,22 @@ public class StarRocksMetadataCollector implements MetadataCollector {
 
                     if (isNew) {
                         tableMetadata.setDataSourceId(config.getId());
+                        tableMetadata.setClusterCode(config.getClusterCode());
                         tableMetadata.setDbName(dbName);
                         tableMetadata.setTableName(tableName);
                         changed = true;
                     }
 
-                    // For StarRocks, owner might not be easily available, skipping
+                    if (!fieldEquals(tableMetadata.getClusterCode(), config.getClusterCode())) {
+                        tableMetadata.setClusterCode(config.getClusterCode());
+                        changed = true;
+                    }
+                    if (!fieldEquals(tableMetadata.getTableComment(), comment)) {
+                        tableMetadata.setTableComment(comment);
+                        changed = true;
+                    }
+
+                    // For StarRocks, owner might not be easily available.
                     // Storage Format -> Engine
                     if (!fieldEquals(tableMetadata.getStorageFormat(), engine)) {
                         tableMetadata.setStorageFormat(engine);

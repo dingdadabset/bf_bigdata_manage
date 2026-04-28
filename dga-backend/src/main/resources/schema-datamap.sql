@@ -87,7 +87,7 @@ CREATE TABLE IF NOT EXISTS `dga_data_categories` (
 -- ============================================
 CREATE TABLE IF NOT EXISTS `dga_table_category_mapping` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
-  `table_id` BIGINT NOT NULL COMMENT 'FK to dga_table_metadata.id',
+  `table_id` BIGINT NOT NULL COMMENT 'FK to meta_table_info.id',
   `category_id` BIGINT NOT NULL COMMENT 'FK to dga_data_categories.id',
   `assigned_by` VARCHAR(100),
   `assigned_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -120,15 +120,52 @@ CREATE TABLE IF NOT EXISTS `dga_datamap_permissions` (
 -- ============================================
 CREATE TABLE IF NOT EXISTS `dga_data_lineage` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
-  `source_table_id` BIGINT NOT NULL COMMENT 'FK to dga_table_metadata.id',
-  `target_table_id` BIGINT NOT NULL COMMENT 'FK to dga_table_metadata.id',
+  `source_table_id` BIGINT NOT NULL COMMENT 'FK to meta_table_info.id',
+  `target_table_id` BIGINT NOT NULL COMMENT 'FK to meta_table_info.id',
   `lineage_type` VARCHAR(50) NOT NULL COMMENT 'ETL, VIEW, COPY, DERIVED',
   `transformation_logic` TEXT COMMENT 'SQL or description of transformation',
+  `source_type` VARCHAR(50) DEFAULT 'LEGACY' COMMENT 'AZKABAN_DB, DOLPHINSCHEDULER_DB, LEGACY',
+  `source_endpoint_id` BIGINT,
+  `data_source_id` BIGINT,
+  `cluster_code` VARCHAR(100),
+  `source_project` VARCHAR(255),
+  `source_workflow` VARCHAR(255),
+  `source_task` VARCHAR(255),
+  `source_task_key` VARCHAR(255),
+  `source_sql_hash` VARCHAR(128),
+  `run_id` VARCHAR(100),
+  `status` VARCHAR(20) DEFAULT 'ACTIVE' COMMENT 'ACTIVE, EXPIRED, DELETED',
+  `parsed_at` DATETIME,
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   INDEX `idx_source` (`source_table_id`),
-  INDEX `idx_target` (`target_table_id`)
+  INDEX `idx_target` (`target_table_id`),
+  INDEX `idx_lineage_source_scope` (`source_endpoint_id`, `data_source_id`, `status`),
+  INDEX `idx_lineage_type_status` (`source_type`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='数据血缘关系';
+
+CREATE TABLE IF NOT EXISTS `dga_lineage_parse_task` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `source_type` VARCHAR(50),
+  `source_endpoint_id` BIGINT,
+  `source_endpoint_name` VARCHAR(500),
+  `data_source_id` BIGINT,
+  `data_source_name` VARCHAR(255),
+  `cluster_code` VARCHAR(100),
+  `run_id` VARCHAR(100),
+  `trigger_type` VARCHAR(50),
+  `triggered_by` VARCHAR(100),
+  `status` VARCHAR(30),
+  `started_at` DATETIME,
+  `finished_at` DATETIME,
+  `success_edge_count` INT DEFAULT 0,
+  `failed_edge_count` INT DEFAULT 0,
+  `message` VARCHAR(1000),
+  `error_detail` TEXT,
+  PRIMARY KEY (`id`),
+  INDEX `idx_lineage_task_source` (`source_endpoint_id`, `data_source_id`, `started_at`),
+  INDEX `idx_lineage_task_status` (`status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='调度源血缘解析任务';
 
 -- ============================================
 -- 9. Data Map Recommendations (for AI search)
