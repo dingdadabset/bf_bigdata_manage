@@ -13,6 +13,7 @@ import com.dga.access.service.IpaHttpService;
 import com.dga.access.service.IpaService;
 import com.dga.access.service.LdapService;
 import com.dga.access.service.authorization.AuthorizationService;
+import com.dga.access.service.authorization.AuthorizationSupport;
 import com.dga.access.service.authorization.AuthorizationCapability;
 import com.dga.access.service.authorization.GrantCommand;
 import com.dga.access.service.authorization.RevokeCommand;
@@ -38,6 +39,7 @@ import java.time.LocalDateTime;
 
 import java.util.Set;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 import java.util.Objects;
@@ -524,7 +526,7 @@ public class AccessController {
     @PostMapping("/grant/batch")
     public String batchGrant(@RequestBody BatchGrantRequest request) {
         String username = request.getUsername();
-        String permission = request.getPermission();
+        List<String> permissions = resolvePermissionsOrThrow(request);
         List<String> databases = request.getDatabases();
         String clusterName = request.getCluster();
         if (clusterName == null || clusterName.isEmpty()) {
@@ -539,48 +541,52 @@ public class AccessController {
 
         if (databases != null) {
             for (String database : databases) {
-                try {
-                    hiveAuthService.grantPermission(username, database, permission, clusterName);
-                    
-                    UserHiveAccess access = new UserHiveAccess();
-                    access.setUsername(username);
-                    access.setClusterName(clusterName);
-                    access.setDatabaseName(database);
-                    access.setPermission(permission);
-                    access.setGrantedBy("admin");
-                    access.setGrantTime(LocalDateTime.now());
-                    access.setStatus("ACTIVE");
-                    userHiveAccessRepository.save(access);
-                    saveResourceAccess(username, clusterName, database, null, permission, "admin", "DGA_GRANT");
-                    System.out.println("Saved DB access: " + database);
-                } catch (Exception e) {
-                    System.err.println("Failed to grant/save DB access: " + e.getMessage());
-                    throw e;
+                for (String permission : permissions) {
+                    try {
+                        hiveAuthService.grantPermission(username, database, permission, clusterName);
+
+                        UserHiveAccess access = new UserHiveAccess();
+                        access.setUsername(username);
+                        access.setClusterName(clusterName);
+                        access.setDatabaseName(database);
+                        access.setPermission(permission);
+                        access.setGrantedBy("admin");
+                        access.setGrantTime(LocalDateTime.now());
+                        access.setStatus("ACTIVE");
+                        userHiveAccessRepository.save(access);
+                        saveResourceAccess(username, clusterName, database, null, permission, "admin", "DGA_GRANT");
+                        System.out.println("Saved DB access: " + database + " / " + permission);
+                    } catch (Exception e) {
+                        System.err.println("Failed to grant/save DB access: " + e.getMessage());
+                        throw e;
+                    }
                 }
             }
         }
         List<TableGrant> tables = request.getTables();
         if (tables != null) {
             for (TableGrant tableGrant : tables) {
-                try {
-                    hiveAuthService.grantTablePermission(username, tableGrant.getDatabase(), tableGrant.getTable(), permission, clusterName);
-                    
-                    UserHiveAccess access = new UserHiveAccess();
-                    access.setUsername(username);
-                    access.setClusterName(clusterName);
-                    access.setDatabaseName(tableGrant.getDatabase());
-                    access.setTableName(tableGrant.getTable());
-                    access.setPermission(permission);
-                    access.setGrantedBy("admin");
-                    access.setGrantTime(LocalDateTime.now());
-                    access.setStatus("ACTIVE");
-                    userHiveAccessRepository.save(access);
-                    saveResourceAccess(username, clusterName, tableGrant.getDatabase(), tableGrant.getTable(),
-                            permission, "admin", "DGA_GRANT");
-                    System.out.println("Saved Table access: " + tableGrant.getTable());
-                } catch (Exception e) {
-                    System.err.println("Failed to grant/save Table access: " + e.getMessage());
-                    throw e;
+                for (String permission : permissions) {
+                    try {
+                        hiveAuthService.grantTablePermission(username, tableGrant.getDatabase(), tableGrant.getTable(), permission, clusterName);
+
+                        UserHiveAccess access = new UserHiveAccess();
+                        access.setUsername(username);
+                        access.setClusterName(clusterName);
+                        access.setDatabaseName(tableGrant.getDatabase());
+                        access.setTableName(tableGrant.getTable());
+                        access.setPermission(permission);
+                        access.setGrantedBy("admin");
+                        access.setGrantTime(LocalDateTime.now());
+                        access.setStatus("ACTIVE");
+                        userHiveAccessRepository.save(access);
+                        saveResourceAccess(username, clusterName, tableGrant.getDatabase(), tableGrant.getTable(),
+                                permission, "admin", "DGA_GRANT");
+                        System.out.println("Saved Table access: " + tableGrant.getTable() + " / " + permission);
+                    } catch (Exception e) {
+                        System.err.println("Failed to grant/save Table access: " + e.getMessage());
+                        throw e;
+                    }
                 }
             }
         }
@@ -590,25 +596,29 @@ public class AccessController {
     @PostMapping("/grants/batch")
     public String batchGrantResource(@RequestBody BatchGrantRequest request) {
         String username = request.getUsername();
-        String permission = request.getPermission();
+        List<String> permissions = resolvePermissionsOrThrow(request);
         String cluster = request.getCluster() != null && !request.getCluster().isEmpty()
                 ? request.getCluster() : "CDH-Cluster-01";
 
         try {
             if (request.getDatabases() != null) {
                 for (String database : request.getDatabases()) {
-                    GrantCommand command = buildGrantCommand(username, cluster, database, null, permission);
-                    authorizationService.grant(command);
-                    saveResourceAccess(username, cluster, database, null, permission, "admin", "AUTHORIZATION_CENTER");
+                    for (String permission : permissions) {
+                        GrantCommand command = buildGrantCommand(username, cluster, database, null, permission);
+                        authorizationService.grant(command);
+                        saveResourceAccess(username, cluster, database, null, permission, "admin", "AUTHORIZATION_CENTER");
+                    }
                 }
             }
             if (request.getTables() != null) {
                 for (TableGrant tableGrant : request.getTables()) {
-                    GrantCommand command = buildGrantCommand(username, cluster, tableGrant.getDatabase(),
-                            tableGrant.getTable(), permission);
-                    authorizationService.grant(command);
-                    saveResourceAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(),
-                            permission, "admin", "AUTHORIZATION_CENTER");
+                    for (String permission : permissions) {
+                        GrantCommand command = buildGrantCommand(username, cluster, tableGrant.getDatabase(),
+                                tableGrant.getTable(), permission);
+                        authorizationService.grant(command);
+                        saveResourceAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(),
+                                permission, "admin", "AUTHORIZATION_CENTER");
+                    }
                 }
             }
             return "Resource access granted for user: " + username;
@@ -673,38 +683,42 @@ public class AccessController {
     @org.springframework.transaction.annotation.Transactional
     public String batchRevoke(@RequestBody BatchGrantRequest request) {
         String username = request.getUsername();
-        String permission = request.getPermission();
+        List<String> permissions = resolvePermissionsOrThrow(request);
         String cluster = request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01"; // Default or validate
         
         List<String> databases = request.getDatabases();
         if (databases != null) {
             for (String database : databases) {
-                try {
-                    hiveAuthService.revokePermission(username, database, permission, cluster);
-                } catch (Exception e) {
-                    System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
-                }
-                try {
-                    userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
-                    userResourceAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
-                } catch (Exception e) {
-                    System.err.println("Failed to soft delete DB access: " + e.getMessage());
+                for (String permission : permissions) {
+                    try {
+                        hiveAuthService.revokePermission(username, database, permission, cluster);
+                    } catch (Exception e) {
+                        System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
+                    }
+                    try {
+                        userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                        userResourceAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                    } catch (Exception e) {
+                        System.err.println("Failed to soft delete DB access: " + e.getMessage());
+                    }
                 }
             }
         }
         List<TableGrant> tables = request.getTables();
         if (tables != null) {
             for (TableGrant tableGrant : tables) {
-                try {
-                    hiveAuthService.revokeTablePermission(username, tableGrant.getDatabase(), tableGrant.getTable(), permission, cluster);
-                } catch (Exception e) {
-                    System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
-                }
-                try {
-                    userHiveAccessRepository.softDeleteTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
-                    userResourceAccessRepository.softDeleteTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
-                } catch (Exception e) {
-                    System.err.println("Failed to soft delete Table access: " + e.getMessage());
+                for (String permission : permissions) {
+                    try {
+                        hiveAuthService.revokeTablePermission(username, tableGrant.getDatabase(), tableGrant.getTable(), permission, cluster);
+                    } catch (Exception e) {
+                        System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
+                    }
+                    try {
+                        userHiveAccessRepository.softDeleteTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                        userResourceAccessRepository.softDeleteTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                    } catch (Exception e) {
+                        System.err.println("Failed to soft delete Table access: " + e.getMessage());
+                    }
                 }
             }
         }
@@ -714,28 +728,32 @@ public class AccessController {
     @PostMapping("/revokes/batch")
     public String batchRevokeResource(@RequestBody BatchGrantRequest request) {
         String username = request.getUsername();
-        String permission = request.getPermission();
+        List<String> permissions = resolvePermissionsOrThrow(request);
         String cluster = request.getCluster() != null && !request.getCluster().isEmpty()
                 ? request.getCluster() : "CDH-Cluster-01";
 
         try {
             if (request.getDatabases() != null) {
                 for (String database : request.getDatabases()) {
-                    RevokeCommand command = buildRevokeCommand(username, cluster, database, null, permission);
-                    authorizationService.revoke(command);
-                    userResourceAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
-                    userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                    for (String permission : permissions) {
+                        RevokeCommand command = buildRevokeCommand(username, cluster, database, null, permission);
+                        authorizationService.revoke(command);
+                        userResourceAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                        userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                    }
                 }
             }
             if (request.getTables() != null) {
                 for (TableGrant tableGrant : request.getTables()) {
-                    RevokeCommand command = buildRevokeCommand(username, cluster, tableGrant.getDatabase(),
-                            tableGrant.getTable(), permission);
-                    authorizationService.revoke(command);
-                    userResourceAccessRepository.softDeleteTableAccess(username, cluster,
-                            tableGrant.getDatabase(), tableGrant.getTable(), permission);
-                    userHiveAccessRepository.softDeleteTableAccess(username, cluster,
-                            tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                    for (String permission : permissions) {
+                        RevokeCommand command = buildRevokeCommand(username, cluster, tableGrant.getDatabase(),
+                                tableGrant.getTable(), permission);
+                        authorizationService.revoke(command);
+                        userResourceAccessRepository.softDeleteTableAccess(username, cluster,
+                                tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                        userHiveAccessRepository.softDeleteTableAccess(username, cluster,
+                                tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                    }
                 }
             }
             return "Resource access revoked for user: " + username;
@@ -911,6 +929,37 @@ public class AccessController {
         command.setTable(table);
         command.setPermission(permission);
         return command;
+    }
+
+    private List<String> resolvePermissionsOrThrow(BatchGrantRequest request) {
+        Set<String> normalized = new LinkedHashSet<>();
+        if (request.getPermissions() != null) {
+            for (String permission : request.getPermissions()) {
+                addNormalizedPermission(normalized, permission);
+            }
+        }
+        addNormalizedPermission(normalized, request.getPermission());
+        if (normalized.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择权限类型");
+        }
+        return new ArrayList<>(normalized);
+    }
+
+    private void addNormalizedPermission(Set<String> target, String permission) {
+        if (permission == null) {
+            return;
+        }
+        for (String part : permission.split(",")) {
+            String normalized = part.trim();
+            if (!normalized.isEmpty()) {
+                try {
+                    AuthorizationSupport.validatePermission(normalized);
+                } catch (IllegalArgumentException e) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持的权限类型: " + normalized, e);
+                }
+                target.add(normalized.toUpperCase());
+            }
+        }
     }
 
     private String readableAuthorizationError(Exception e) {

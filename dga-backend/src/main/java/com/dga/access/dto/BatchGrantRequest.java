@@ -6,6 +6,7 @@ public class BatchGrantRequest {
 
     private String username;
     private String permission;
+    private List<String> permissions;
     private String level;
     private String cluster;
     private List<String> databases;
@@ -25,6 +26,14 @@ public class BatchGrantRequest {
 
     public void setPermission(String permission) {
         this.permission = permission;
+    }
+
+    public List<String> getPermissions() {
+        return permissions;
+    }
+
+    public void setPermissions(List<String> permissions) {
+        this.permissions = permissions;
     }
 
     public String getLevel() {

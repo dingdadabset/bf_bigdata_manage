@@ -52,13 +52,23 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
 
     @Override
     public List<String> listDatabases(AuthorizationContext context) {
-        return hdpJdbcTemplate(context).queryForList("SHOW DATABASES", String.class);
+        try {
+            return hdpJdbcTemplate(context).queryForList("SHOW DATABASES", String.class);
+        } catch (Exception e) {
+            System.err.println("HDP HiveServer2 list databases failed, fallback to Ranger policies: " + e.getMessage());
+            return rangerService.listPolicyDatabases(rangerEndpoint(context));
+        }
     }
 
     @Override
     public List<String> listTables(AuthorizationContext context, String database) {
         AuthorizationSupport.validateName(database);
-        return hdpJdbcTemplate(context).queryForList("SHOW TABLES IN " + database, String.class);
+        try {
+            return hdpJdbcTemplate(context).queryForList("SHOW TABLES IN " + database, String.class);
+        } catch (Exception e) {
+            System.err.println("HDP HiveServer2 list tables failed, fallback to Ranger policies: " + e.getMessage());
+            return rangerService.listPolicyTables(rangerEndpoint(context), database);
+        }
     }
 
     @Override

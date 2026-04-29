@@ -81,7 +81,16 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
     @Override
     public void revoke(AuthorizationContext context, RevokeCommand command) {
         validate(command);
-        jdbcTemplate(context).execute(buildSql("REVOKE", "FROM", command));
+        String sql = buildSql("REVOKE", "FROM", command);
+        try {
+            jdbcTemplate(context).execute(sql);
+        } catch (Exception e) {
+            if (isMissingGrant(e)) {
+                System.out.println("StarRocks grant already absent, skip revoke: " + sql);
+                return;
+            }
+            throw e;
+        }
     }
 
     @Override
@@ -167,6 +176,11 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
             return text.substring(1, text.length() - 1);
         }
         return text;
+    }
+
+    private boolean isMissingGrant(Exception e) {
+        String message = e.getMessage();
+        return message != null && message.toLowerCase().contains("no such grant defined");
     }
 
     private String normalizeUser(Object value) {

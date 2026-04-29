@@ -136,6 +136,62 @@ public class RangerService {
         return new ArrayList<>(users);
     }
 
+    public List<String> listPolicyDatabases(ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
+        Set<String> databases = new TreeSet<>();
+        try {
+            List<Map<String, Object>> policies = listPolicies(config);
+            if (policies == null) {
+                return new ArrayList<>();
+            }
+            for (Map<String, Object> policy : policies) {
+                if (!Boolean.TRUE.equals(policy.get("isEnabled"))) {
+                    continue;
+                }
+                Map<String, Object> resources = (Map<String, Object>) policy.get("resources");
+                for (String database : getResourceValues(resources, "database")) {
+                    String normalized = normalizeRangerDatabase(database);
+                    if (normalized != null) {
+                        databases.add(normalized);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error listing Ranger policy databases: " + e.getMessage());
+        }
+        return new ArrayList<>(databases);
+    }
+
+    public List<String> listPolicyTables(ClusterEndpoint endpoint, String database) {
+        RangerConfig config = config(endpoint);
+        Set<String> tables = new TreeSet<>();
+        try {
+            List<Map<String, Object>> policies = listPolicies(config);
+            if (policies == null) {
+                return new ArrayList<>();
+            }
+            for (Map<String, Object> policy : policies) {
+                if (!Boolean.TRUE.equals(policy.get("isEnabled"))) {
+                    continue;
+                }
+                Map<String, Object> resources = (Map<String, Object>) policy.get("resources");
+                List<String> databases = getResourceValues(resources, "database");
+                if (!resourceMatches(databases, database)) {
+                    continue;
+                }
+                for (String table : getResourceValues(resources, "table")) {
+                    String normalized = normalizeRangerTable(table);
+                    if (normalized != null) {
+                        tables.add(normalized);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("Error listing Ranger policy tables: " + e.getMessage());
+        }
+        return new ArrayList<>(tables);
+    }
+
     private void collectUsers(Set<String> result, List<Map<String, Object>> policyItems) {
         if (policyItems == null) {
             return;
@@ -152,6 +208,13 @@ public class RangerService {
         }
     }
 
+    private List<Map<String, Object>> listPolicies(RangerConfig config) {
+        String url = String.format("%s/service/public/v2/api/policy?serviceName=%s", config.url, config.serviceName);
+        ResponseEntity<List> response = restTemplate.exchange(url, HttpMethod.GET,
+                new HttpEntity<>(createHeaders(config)), List.class);
+        return response.getBody();
+    }
+
     private String getResourceValue(Map<String, Object> resources, String key) {
         if (resources == null) return null;
         Map<String, Object> res = (Map<String, Object>) resources.get(key);
@@ -159,6 +222,68 @@ public class RangerService {
         List<String> values = (List<String>) res.get("values");
         if (values != null && !values.isEmpty()) return values.get(0);
         return null;
+    }
+
+    private List<String> getResourceValues(Map<String, Object> resources, String key) {
+        if (resources == null) return Collections.emptyList();
+        Map<String, Object> res = (Map<String, Object>) resources.get(key);
+        if (res == null) return Collections.emptyList();
+        List<String> values = (List<String>) res.get("values");
+        return values == null ? Collections.emptyList() : values;
+    }
+
+    private List<String> normalizeResourceValues(List<String> values, String fallback) {
+        if (values == null || values.isEmpty()) {
+            return Collections.singletonList(fallback);
+        }
+        return values.stream()
+                .filter(value -> value != null && !value.trim().isEmpty())
+                .map(String::trim)
+                .collect(Collectors.toList());
+    }
+
+    private String normalizeRangerDatabase(String database) {
+        if (database == null) {
+            return null;
+        }
+        String normalized = database.trim();
+        if (normalized.isEmpty() || "*".equals(normalized) || "ALL DATABASES".equalsIgnoreCase(normalized)) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private String normalizeRangerTable(String table) {
+        if (table == null) {
+            return null;
+        }
+        String normalized = table.trim();
+        if (normalized.isEmpty() || "*".equals(normalized) || "ALL TABLES".equalsIgnoreCase(normalized)) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private boolean resourceMatches(List<String> resourceValues, String target) {
+        if (target == null || target.trim().isEmpty()) {
+            return false;
+        }
+        if (resourceValues == null || resourceValues.isEmpty()) {
+            return false;
+        }
+        String normalizedTarget = target.trim();
+        for (String value : resourceValues) {
+            if (value == null) {
+                continue;
+            }
+            String normalizedValue = value.trim();
+            if ("*".equals(normalizedValue)
+                    || "ALL DATABASES".equalsIgnoreCase(normalizedValue)
+                    || normalizedValue.equalsIgnoreCase(normalizedTarget)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private Map<String, Object> findPolicy(RangerConfig config, String database, String table) {

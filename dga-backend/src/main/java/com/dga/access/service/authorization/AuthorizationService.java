@@ -206,6 +206,9 @@ public class AuthorizationService {
         } else {
             capability.setEndpointUrl(endpoint.getUrl());
         }
+        if (!AuthorizationSupport.hasEndpoint(context, ClusterEndpoint.TYPE_HIVE_SERVER2)) {
+            capability.getWarnings().add("未配置 HIVE_SERVER2 端点，库表下拉将从 Ranger 已有策略资源推断。");
+        }
         return capability;
     }
 

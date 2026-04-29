@@ -213,9 +213,21 @@
                   <a-select
                     v-if="form.level === 'DATABASE'"
                     v-model="form.databases"
-                    mode="multiple"
+                    :mode="databaseSelectMode"
                     placeholder="请选择数据库"
                     :loading="loadingResources"
+                  >
+                    <a-select-option v-for="db in databases" :key="db" :value="db">
+                      {{ db }}
+                    </a-select-option>
+                  </a-select>
+                  <a-select
+                    v-else-if="isRangerBackend"
+                    v-model="form.database"
+                    mode="combobox"
+                    placeholder="请选择数据库"
+                    :loading="loadingResources"
+                    @change="onDatabaseChange"
                   >
                     <a-select-option v-for="db in databases" :key="db" :value="db">
                       {{ db }}
@@ -241,7 +253,7 @@
                 <a-form-model-item label="表">
                   <a-select
                     v-model="form.tables"
-                    mode="multiple"
+                    :mode="tableSelectMode"
                     placeholder="请选择表"
                     :disabled="!form.database"
                     :loading="loadingTables"
@@ -255,7 +267,12 @@
               </a-col>
               <a-col :xs="24" :md="form.level === 'TABLE' ? 6 : 10">
                 <a-form-model-item label="权限类型">
-                  <a-select v-model="form.permission" placeholder="请选择权限">
+                  <a-select
+                    v-model="form.permissions"
+                    mode="multiple"
+                    placeholder="请选择权限"
+                    :max-tag-count="2"
+                  >
                     <a-select-option v-for="permission in permissions" :key="permission" :value="permission">
                       {{ permission }}
                     </a-select-option>
@@ -318,7 +335,7 @@ export default {
         databases: [],
         database: '',
         tables: [],
-        permission: 'SELECT'
+        permissions: ['SELECT']
       }
     };
   },
@@ -332,6 +349,15 @@ export default {
       return this.capability && this.capability.resourceTypes && this.capability.resourceTypes.length
         ? this.capability.resourceTypes
         : ['DATABASE', 'TABLE'];
+    },
+    isRangerBackend() {
+      return this.capability && this.capability.authBackend === 'RANGER';
+    },
+    databaseSelectMode() {
+      return this.isRangerBackend ? 'tags' : 'multiple';
+    },
+    tableSelectMode() {
+      return this.isRangerBackend ? 'tags' : 'multiple';
     },
     permissionGrants() {
       return this.permissionSnapshot && this.permissionSnapshot.grants
@@ -351,7 +377,7 @@ export default {
     },
     canSubmit() {
       if (!this.capability || this.capability.status !== 'READY') return false;
-      if (!this.selectedCluster || !this.form.username || !this.form.permission) return false;
+      if (!this.selectedCluster || !this.form.username || !this.form.permissions || !this.form.permissions.length) return false;
       if (this.form.level === 'DATABASE') {
         return this.form.databases && this.form.databases.length > 0;
       }
@@ -419,7 +445,7 @@ export default {
       const res = await axios.get('/api/access/capabilities', { params: { cluster: this.selectedCluster } });
       this.capability = res.data || null;
       if (this.permissions.length) {
-        this.form.permission = this.permissions[0];
+        this.form.permissions = [this.permissions[0]];
       }
       if (this.capability && this.capability.status === 'READY') {
         this.loadDatabases();
@@ -537,7 +563,8 @@ export default {
     async submit() {
       const payload = {
         username: this.form.username,
-        permission: this.form.permission,
+        permission: this.form.permissions[0],
+        permissions: this.form.permissions,
         level: this.form.level,
         cluster: this.selectedCluster
       };
