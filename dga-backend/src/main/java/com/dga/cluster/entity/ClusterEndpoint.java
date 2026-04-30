@@ -17,6 +17,10 @@ public class ClusterEndpoint {
     public static final String TYPE_DOLPHINSCHEDULER_DB = "DOLPHINSCHEDULER_DB";
     public static final String TYPE_LDAP = "LDAP";
     public static final String TYPE_RANGER = "RANGER";
+    public static final String TYPE_RANGER_DB = "RANGER_DB";
+    public static final String TYPE_HDFS = "HDFS";
+    public static final String TYPE_YARN = "YARN";
+    public static final String TYPE_HUE = "HUE";
 
     public static final String AUTH_SENTRY = "SENTRY";
     public static final String AUTH_STARROCKS_SQL = "STARROCKS_SQL";

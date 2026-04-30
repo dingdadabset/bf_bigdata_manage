@@ -89,6 +89,9 @@ public class AuthorizationService {
         } catch (RuntimeException e) {
             return unsupportedCapability(context, type);
         }
+        if (ClusterEndpoint.AUTH_DORIS_SQL.equals(provider.authBackend())) {
+            return dorisCapability(context);
+        }
         if (ClusterEndpoint.AUTH_STARROCKS_SQL.equals(provider.authBackend())) {
             return starRocksCapability(context);
         }
@@ -124,9 +127,12 @@ public class AuthorizationService {
             if (!provider.supports(context)) {
                 continue;
             }
-            if (ClusterEndpoint.AUTH_STARROCKS_SQL.equals(provider.authBackend())) {
-                return provider;
-            }
+        if (ClusterEndpoint.AUTH_DORIS_SQL.equals(provider.authBackend())) {
+            return provider;
+        }
+        if (ClusterEndpoint.AUTH_STARROCKS_SQL.equals(provider.authBackend())) {
+            return provider;
+        }
             if (ClusterEndpoint.AUTH_RANGER.equals(provider.authBackend())) {
                 fallback = provider;
             } else if (fallback == null) {
@@ -223,12 +229,12 @@ public class AuthorizationService {
         ClusterEndpoint endpoint = AuthorizationSupport.firstEndpoint(context, ClusterEndpoint.TYPE_DORIS_JDBC);
         if (endpoint != null) {
             capability.setEndpointUrl(endpoint.getUrl());
+        } else {
+            capability.setStatus("UNCONFIGURED");
+            capability.getWarnings().add("Doris 授权需要 DORIS_JDBC 端点。");
+            return capability;
         }
-        capability.setStatus("PLANNED");
-        capability.getWarnings().add("Doris 授权适配器第一阶段仅预留能力声明，暂不执行真实授权。");
-        if (endpoint == null) {
-            capability.getWarnings().add("可先配置 DORIS_JDBC 端点，为后续真实授权做准备。");
-        }
+        capability.setStatus("READY");
         return capability;
     }
 

@@ -23,6 +23,12 @@
             {{ item.username }}
             <a-tag v-if="item.role" color="blue" style="margin-left: 8px; font-size: 10px; line-height: 18px; height: 20px;">{{ item.role }}</a-tag>
             <a-tag v-if="isProtectedBigDataUser(item)" color="orange" class="compact-tag">保护</a-tag>
+            <a-tag v-if="userTypeLabel(item.userType)" :color="userTypeColor(item.userType)" class="compact-tag">
+              {{ userTypeLabel(item.userType) }}
+            </a-tag>
+            <a-tag v-if="item.expiresAt" color="geekblue" class="compact-tag">
+              至 {{ formatDate(item.expiresAt) }}
+            </a-tag>
           </span>
           <a-avatar slot="avatar" icon="user" :style="{ backgroundColor: getAvatarColor(item.username) }" />
         </a-list-item-meta>
@@ -43,6 +49,7 @@
 
 <script>
 import axios from 'axios';
+import moment from 'moment';
 import { store, mutations } from '../../../store';
 
 const PROTECTED_BIGDATA_USERS = [
@@ -178,6 +185,27 @@ export default {
       if (s.includes('SELF')) return 'source-self';
       if (s.includes('INIT')) return 'source-init';
       return 'source-default';
+    },
+    userTypeLabel(userType) {
+      const value = (userType || 'INTERNAL').toUpperCase();
+      const labels = {
+        OUTSOURCER: '外包',
+        TEMPORARY: '临时',
+        SERVICE: '服务'
+      };
+      return labels[value] || '';
+    },
+    userTypeColor(userType) {
+      const value = (userType || '').toUpperCase();
+      const colors = {
+        OUTSOURCER: 'volcano',
+        TEMPORARY: 'orange',
+        SERVICE: 'purple'
+      };
+      return colors[value] || 'default';
+    },
+    formatDate(value) {
+      return value ? moment(value).format('YYYY-MM-DD') : '';
     },
     isProtectedBigDataUser(user) {
       if (!user || !user.username) return false;

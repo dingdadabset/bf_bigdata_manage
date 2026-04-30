@@ -142,6 +142,8 @@ public class AccessController {
     public String createUser(@RequestBody CreateUserRequest request) {
         dgaUserSchemaService.ensureClusterScopedUsernameConstraint();
         String clusterName = resolveClusterName(request.getCluster());
+        String userType = normalizeGovernanceUserType(request.getUserType());
+        validateUserExpiry(userType, request.getExpiresAt());
         // Check if user exists in DB first
         if (dgaUserRepository.existsByUsernameAndClusterName(request.getUsername(), clusterName)) {
              throw new ResponseStatusException(HttpStatus.CONFLICT, "User " + request.getUsername() + " already exists in cluster " + clusterName + ".");
@@ -209,6 +211,8 @@ public class AccessController {
             }
             user.setCreationStrategy(strategy);
             user.setClusterName(clusterName);
+            user.setUserType(userType);
+            user.setExpiresAt(request.getExpiresAt());
             dgaUserRepository.save(user);
         } else {
              // If user exists (e.g. re-registering or different strategy), update it?
@@ -218,9 +222,11 @@ public class AccessController {
              DgaUser user = dgaUserRepository.findByUsernameAndClusterName(request.getUsername(), clusterName);
              if (user.getPassword() == null && request.getPassword() != null) {
                  user.setPassword(passwordEncoder.encode(request.getPassword()));
-                 user.setClusterName(clusterName);
-                 dgaUserRepository.save(user);
              }
+             user.setClusterName(clusterName);
+             user.setUserType(userType);
+             user.setExpiresAt(request.getExpiresAt());
+             dgaUserRepository.save(user);
         }
 
         return resultMsg;
@@ -1240,5 +1246,26 @@ public class AccessController {
             return null;
         }
         return normalized;
+    }
+
+    private String normalizeGovernanceUserType(String userType) {
+        if (userType == null || userType.trim().isEmpty()) {
+            return "INTERNAL";
+        }
+        String normalized = userType.trim().toUpperCase();
+        if (!java.util.Arrays.asList("INTERNAL", "OUTSOURCER", "TEMPORARY", "SERVICE").contains(normalized)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持的用户类型: " + userType);
+        }
+        return normalized;
+    }
+
+    private void validateUserExpiry(String userType, LocalDateTime expiresAt) {
+        boolean requiresExpiry = "OUTSOURCER".equals(userType) || "TEMPORARY".equals(userType);
+        if (requiresExpiry && expiresAt == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "外包/临时用户必须设置过期时间");
+        }
+        if (expiresAt != null && expiresAt.isBefore(LocalDateTime.now())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "过期时间必须晚于当前时间");
+        }
     }
 }

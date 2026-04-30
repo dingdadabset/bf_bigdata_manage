@@ -46,6 +46,21 @@ public class UserResourceAccess {
     @Column(name = "source")
     private String source;
 
+    @Column(name = "owner", length = 100)
+    private String owner;
+
+    @Column(name = "collaborator_owners", length = 1000)
+    private String collaboratorOwners;
+
+    @Column(name = "last_reviewed_at")
+    private LocalDateTime lastReviewedAt;
+
+    @Column(name = "reviewed_by", length = 100)
+    private String reviewedBy;
+
+    @Column(name = "review_due_at")
+    private LocalDateTime reviewDueAt;
+
     @Column(nullable = false)
     private String status;
 
@@ -162,6 +177,46 @@ public class UserResourceAccess {
 
     public void setSource(String source) {
         this.source = source;
+    }
+
+    public String getOwner() {
+        return owner;
+    }
+
+    public void setOwner(String owner) {
+        this.owner = owner;
+    }
+
+    public String getCollaboratorOwners() {
+        return collaboratorOwners;
+    }
+
+    public void setCollaboratorOwners(String collaboratorOwners) {
+        this.collaboratorOwners = collaboratorOwners;
+    }
+
+    public LocalDateTime getLastReviewedAt() {
+        return lastReviewedAt;
+    }
+
+    public void setLastReviewedAt(LocalDateTime lastReviewedAt) {
+        this.lastReviewedAt = lastReviewedAt;
+    }
+
+    public String getReviewedBy() {
+        return reviewedBy;
+    }
+
+    public void setReviewedBy(String reviewedBy) {
+        this.reviewedBy = reviewedBy;
+    }
+
+    public LocalDateTime getReviewDueAt() {
+        return reviewDueAt;
+    }
+
+    public void setReviewDueAt(LocalDateTime reviewDueAt) {
+        this.reviewDueAt = reviewDueAt;
     }
 
     public String getStatus() {

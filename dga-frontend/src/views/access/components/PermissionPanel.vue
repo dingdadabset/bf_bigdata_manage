@@ -23,6 +23,17 @@
                   {{ getStrategyLabel(user.creationStrategy) }}
                 </span>
               </span>
+              <span class="meta-item">
+                <a-icon type="idcard" /> 用户类型:
+                <a-tag :color="userTypeColor(user.userType)">{{ userTypeLabel(user.userType) }}</a-tag>
+              </span>
+              <span v-if="user.expiresAt" class="meta-item">
+                <a-icon type="calendar" /> 过期时间: {{ formatDate(user.expiresAt) }}
+              </span>
+              <span v-if="user.lastActiveAt" class="meta-item">
+                <a-icon type="history" /> 最近活跃: {{ formatDate(user.lastActiveAt) }}
+                <a-tag v-if="user.lastActiveSource" color="cyan">{{ user.lastActiveSource }}</a-tag>
+              </span>
               <span class="meta-item"><a-icon type="cluster" /> 所属集群: <a-tag color="blue">{{ effectiveCluster || '未选择' }}</a-tag></span>
             </div>
           </div>
@@ -220,6 +231,26 @@ export default {
       if (s.includes('SELF')) return 'source-self';
       if (s.includes('INIT')) return 'source-init';
       return 'source-default';
+    },
+    userTypeLabel(userType) {
+      const value = (userType || 'INTERNAL').toUpperCase();
+      const labels = {
+        INTERNAL: '内部用户',
+        OUTSOURCER: '外包用户',
+        TEMPORARY: '临时用户',
+        SERVICE: '服务账号'
+      };
+      return labels[value] || value;
+    },
+    userTypeColor(userType) {
+      const value = (userType || 'INTERNAL').toUpperCase();
+      const colors = {
+        INTERNAL: 'default',
+        OUTSOURCER: 'volcano',
+        TEMPORARY: 'orange',
+        SERVICE: 'purple'
+      };
+      return colors[value] || 'default';
     },
     refresh() {
       this.loadCapability();

@@ -4,7 +4,7 @@
       <div>
         <p class="eyebrow">Authorization Center</p>
         <h1>授权中心</h1>
-        <p>根据环境资源自动识别授权适配器，统一管理 Hive/Sentry、StarRocks SQL 和未来 Doris SQL 授权。</p>
+        <p>根据环境资源自动识别授权适配器，统一管理 Hive/Sentry、StarRocks SQL 和 Doris SQL 授权。</p>
       </div>
       <a-button type="primary" icon="reload" :loading="loading" @click="reloadAll">刷新能力</a-button>
     </div>
@@ -389,6 +389,9 @@ export default {
       }
       if (this.capability.authBackend === 'STARROCKS_SQL') {
         return '用户列表来自 StarRocks：通过 SHOW USERS 查询，不依赖 LDAP。';
+      }
+      if (this.capability.authBackend === 'DORIS_SQL') {
+        return '用户列表来自 Doris：优先通过 SHOW ALL GRANTS 推断，不依赖 LDAP。';
       }
       return '用户列表来自 DGA/LDAP 身份侧。';
     }

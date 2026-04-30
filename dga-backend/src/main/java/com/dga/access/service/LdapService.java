@@ -156,6 +156,15 @@ public class LdapService {
             if (attrs.get("cn") != null) map.put("cn", attrs.get("cn").get());
             if (attrs.get("sn") != null) map.put("sn", attrs.get("sn").get());
             if (attrs.get("mail") != null) map.put("mail", attrs.get("mail").get());
+            if (attrs.get("modifyTimestamp") != null) map.put("modifyTimestamp", attrs.get("modifyTimestamp").get());
+            if (attrs.get("createTimestamp") != null) map.put("createTimestamp", attrs.get("createTimestamp").get());
+            if (attrs.get("pwdChangedTime") != null) map.put("pwdChangedTime", attrs.get("pwdChangedTime").get());
+            if (attrs.get("krbLastSuccessfulAuth") != null) map.put("krbLastSuccessfulAuth", attrs.get("krbLastSuccessfulAuth").get());
+            if (attrs.get("authTimestamp") != null) map.put("authTimestamp", attrs.get("authTimestamp").get());
+            if (attrs.get("lastLoginTime") != null) map.put("lastLoginTime", attrs.get("lastLoginTime").get());
+            if (attrs.get("lastLogin") != null) map.put("lastLogin", attrs.get("lastLogin").get());
+            if (attrs.get("lastLogonTimestamp") != null) map.put("lastLogonTimestamp", attrs.get("lastLogonTimestamp").get());
+            if (attrs.get("lastLogon") != null) map.put("lastLogon", attrs.get("lastLogon").get());
             return map;
         } catch (Exception e) {
             return null;
@@ -180,6 +189,15 @@ public class LdapService {
             user.put("sn", firstAttributeValue(attrs, "sn"));
             user.put("mail", firstAttributeValue(attrs, "mail"));
             user.put("givenName", firstAttributeValue(attrs, "givenName"));
+            user.put("modifyTimestamp", firstAttributeValue(attrs, "modifyTimestamp"));
+            user.put("createTimestamp", firstAttributeValue(attrs, "createTimestamp"));
+            user.put("pwdChangedTime", firstAttributeValue(attrs, "pwdChangedTime"));
+            user.put("krbLastSuccessfulAuth", firstAttributeValue(attrs, "krbLastSuccessfulAuth"));
+            user.put("authTimestamp", firstAttributeValue(attrs, "authTimestamp"));
+            user.put("lastLoginTime", firstAttributeValue(attrs, "lastLoginTime"));
+            user.put("lastLogin", firstAttributeValue(attrs, "lastLogin"));
+            user.put("lastLogonTimestamp", firstAttributeValue(attrs, "lastLogonTimestamp"));
+            user.put("lastLogon", firstAttributeValue(attrs, "lastLogon"));
             return user;
         });
     }

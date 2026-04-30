@@ -16,6 +16,10 @@ public interface UserResourceAccessRepository extends JpaRepository<UserResource
     List<UserResourceAccess> findByUsernameAndClusterCodeAndIsDeletedFalse(String username, String clusterCode);
 
     @Query("SELECT u FROM UserResourceAccess u WHERE u.isDeleted = false AND u.status = 'ACTIVE' " +
+            "AND (:cluster IS NULL OR :cluster = '' OR u.clusterCode = :cluster OR u.clusterName = :cluster)")
+    List<UserResourceAccess> findActiveByCluster(@Param("cluster") String cluster);
+
+    @Query("SELECT u FROM UserResourceAccess u WHERE u.isDeleted = false AND u.status = 'ACTIVE' " +
             "AND (:clusterCode IS NULL OR u.clusterCode = :clusterCode) " +
             "AND u.databaseName = :databaseName " +
             "AND (u.tableName = :tableName OR u.tableName IS NULL) " +

@@ -31,6 +31,18 @@ public class DgaUser {
     @Column(name = "creation_strategy")
     private String creationStrategy; // LDAP, IPA_SSH, IPA_HTTP
 
+    @Column(name = "user_type", length = 30)
+    private String userType = "INTERNAL"; // INTERNAL, OUTSOURCER, TEMPORARY, SERVICE
+
+    @Column(name = "expires_at")
+    private LocalDateTime expiresAt;
+
+    @Column(name = "last_active_at")
+    private LocalDateTime lastActiveAt;
+
+    @Column(name = "last_active_source", length = 50)
+    private String lastActiveSource;
+
     @Column(name = "cluster_name")
     private String clusterName;
 
@@ -104,6 +116,38 @@ public class DgaUser {
         this.creationStrategy = creationStrategy;
     }
 
+    public String getUserType() {
+        return userType;
+    }
+
+    public void setUserType(String userType) {
+        this.userType = userType;
+    }
+
+    public LocalDateTime getExpiresAt() {
+        return expiresAt;
+    }
+
+    public void setExpiresAt(LocalDateTime expiresAt) {
+        this.expiresAt = expiresAt;
+    }
+
+    public LocalDateTime getLastActiveAt() {
+        return lastActiveAt;
+    }
+
+    public void setLastActiveAt(LocalDateTime lastActiveAt) {
+        this.lastActiveAt = lastActiveAt;
+    }
+
+    public String getLastActiveSource() {
+        return lastActiveSource;
+    }
+
+    public void setLastActiveSource(String lastActiveSource) {
+        this.lastActiveSource = lastActiveSource;
+    }
+
     public String getClusterName() {
         return clusterName;
     }
@@ -148,6 +192,9 @@ public class DgaUser {
     public void prePersist() {
         if (createTime == null) {
             createTime = LocalDateTime.now();
+        }
+        if (userType == null || userType.trim().isEmpty()) {
+            userType = "INTERNAL";
         }
     }
 

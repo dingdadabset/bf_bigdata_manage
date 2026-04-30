@@ -1,26 +1,33 @@
 <template>
   <div class="access-management">
-    <div class="access-container">
-      <!-- Left Panel: User List -->
-      <div class="access-item left-panel">
-        <user-list 
-          ref="userList"
-          @select="onSelectUser"
-          @create="createUserVisible = true"
-        />
-      </div>
+    <a-tabs :active-key="activeTab" class="access-tabs" @change="activeTab = $event">
+      <a-tab-pane key="permissions" tab="用户权限">
+        <div class="access-container">
+          <!-- Left Panel: User List -->
+          <div class="access-item left-panel">
+            <user-list
+              ref="userList"
+              @select="onSelectUser"
+              @create="createUserVisible = true"
+            />
+          </div>
 
-      <!-- Right Panel: Control Panel -->
-      <div class="access-item right-panel">
-        <permission-panel 
-          ref="permissionPanel"
-          :user="selectedUser" 
-          @delete="handleDeleteUser"
-          @grant="onGrant"
-          @toggle-protection="handleToggleProtection"
-        />
-      </div>
-    </div>
+          <!-- Right Panel: Control Panel -->
+          <div class="access-item right-panel">
+            <permission-panel
+              ref="permissionPanel"
+              :user="selectedUser"
+              @delete="handleDeleteUser"
+              @grant="onGrant"
+              @toggle-protection="handleToggleProtection"
+            />
+          </div>
+        </div>
+      </a-tab-pane>
+      <a-tab-pane key="governance" tab="治理风险">
+        <access-governance-panel />
+      </a-tab-pane>
+    </a-tabs>
 
     <!-- Modals -->
     <create-user-modal 
@@ -44,6 +51,7 @@ import UserList from './components/UserList.vue';
 import PermissionPanel from './components/PermissionPanel.vue';
 import CreateUserModal from './components/CreateUserModal.vue';
 import GrantModal from './components/GrantModal.vue';
+import AccessGovernancePanel from './components/AccessGovernancePanel.vue';
 import axios from 'axios';
 import { canDelete, deleteForbiddenMessage, isRootAdmin } from '../../utils/currentUser';
 
@@ -68,10 +76,12 @@ export default {
     UserList,
     PermissionPanel,
     CreateUserModal,
-    GrantModal
+    GrantModal,
+    AccessGovernancePanel
   },
   data() {
     return {
+      activeTab: 'permissions',
       selectedUser: null,
       createUserVisible: false,
       grantModalVisible: false,
@@ -179,6 +189,18 @@ export default {
 
 <style scoped>
 .access-management {
+  height: 100%;
+}
+
+.access-tabs {
+  height: 100%;
+}
+
+.access-tabs ::v-deep .ant-tabs-content {
+  height: calc(100% - 44px);
+}
+
+.access-tabs ::v-deep .ant-tabs-tabpane {
   height: 100%;
 }
 

@@ -174,6 +174,10 @@
                         <a-select-option value="DORIS_JDBC">DORIS_JDBC</a-select-option>
                         <a-select-option value="LDAP">LDAP</a-select-option>
                         <a-select-option value="RANGER">RANGER</a-select-option>
+                        <a-select-option value="RANGER_DB">RANGER_DB</a-select-option>
+                        <a-select-option value="HDFS">HDFS</a-select-option>
+                        <a-select-option value="YARN">YARN</a-select-option>
+                        <a-select-option value="HUE">HUE</a-select-option>
                       </a-select>
                     </a-form-model-item>
                   </a-col>
@@ -200,7 +204,7 @@
                   </a-col>
                   <a-col :span="12">
                     <a-form-model-item label="服务名">
-                      <a-input v-model="activeEndpoint.serviceName" placeholder="Ranger serviceName，可选" />
+                      <a-input v-model="activeEndpoint.serviceName" :placeholder="serviceNamePlaceholder" />
                     </a-form-model-item>
                   </a-col>
                 </a-row>
@@ -333,14 +337,40 @@ export default {
         case 'DORIS_JDBC': return 'jdbc:mysql://host:9030';
         case 'LDAP': return 'ldap://host:389';
         case 'RANGER': return 'http://host:6080';
+        case 'RANGER_DB': return 'jdbc:mysql://10.0.20.107:3306/hdp_ranger?useSSL=false&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true';
+        case 'HDFS': return 'http://namenode:9870';
+        case 'YARN': return 'http://resourcemanager:8088';
+        case 'HUE': return 'http://hue:8888';
         default: return '请输入连接地址';
       }
     },
     canDeleteEnvironment() {
       return canDelete();
     },
+    serviceNamePlaceholder() {
+      if (!this.activeEndpoint) return 'Ranger serviceName，可选';
+      if (this.activeEndpoint.endpointType === 'HIVE_SERVER2') {
+        return 'Hive/Ranger 审计明细表名，用于直接查表判定未使用权限';
+      }
+      if (this.activeEndpoint.endpointType === 'STARROCKS_JDBC') {
+        return '直接查询的审计表名，默认 starrocks_audit_db__.starrocks_audit_tbl__';
+      }
+      if (this.activeEndpoint.endpointType === 'DORIS_JDBC') {
+        return '直接查询的审计表名，默认 doris_audit_db__.doris_audit_tbl__';
+      }
+      if (this.activeEndpoint.endpointType === 'RANGER_DB') {
+        return 'Ranger Hive serviceName，例如 hdp_hive；自动识别 x_access_audit/xa_access_audit';
+      }
+      if (this.activeEndpoint.endpointType === 'HDFS') {
+        return 'HDFS 审计表/视图名，可选；字段建议 user/event_time/path';
+      }
+      if (this.activeEndpoint.endpointType === 'YARN') {
+        return 'YARN history 表/视图名，可选；字段建议 user/event_time/application_id';
+      }
+      return 'Ranger serviceName，可选';
+    },
     metadataEndpointTypes() {
-      return ['LDAP', 'HIVE_METASTORE_DB', 'AZKABAN_DB', 'DOLPHINSCHEDULER_DB'];
+      return ['LDAP', 'HIVE_METASTORE_DB', 'AZKABAN_DB', 'DOLPHINSCHEDULER_DB', 'RANGER_DB', 'HDFS', 'YARN', 'HUE'];
     }
   },
   methods: {
@@ -428,7 +458,7 @@ export default {
         record.authBackend = 'DORIS_SQL';
       } else if (record.endpointType === 'HIVE_SERVER2') {
         record.authBackend = 'SENTRY';
-      } else if (['HIVE_METASTORE_DB', 'AZKABAN_DB', 'DOLPHINSCHEDULER_DB'].includes(record.endpointType)) {
+      } else if (['HIVE_METASTORE_DB', 'AZKABAN_DB', 'DOLPHINSCHEDULER_DB', 'RANGER_DB', 'HDFS', 'YARN', 'HUE'].includes(record.endpointType)) {
         record.authBackend = undefined;
       } else if (record.endpointType === 'RANGER') {
         record.authBackend = 'RANGER';
@@ -599,6 +629,10 @@ export default {
         case 'DORIS_JDBC': return 'geekblue';
         case 'LDAP': return 'cyan';
         case 'RANGER': return 'green';
+        case 'RANGER_DB': return 'lime';
+        case 'HDFS': return 'blue';
+        case 'YARN': return 'gold';
+        case 'HUE': return 'magenta';
         default: return 'default';
       }
     },

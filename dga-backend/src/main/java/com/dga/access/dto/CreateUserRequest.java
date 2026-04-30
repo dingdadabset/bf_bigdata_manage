@@ -10,6 +10,8 @@ public class CreateUserRequest {
     private String creationStrategy; // "LDAP" (default) or "IPA_SSH" or "IPA_HTTP"
     private String ipaHost; // optional override
     private String cluster;
+    private String userType; // INTERNAL, OUTSOURCER, TEMPORARY, SERVICE
+    private java.time.LocalDateTime expiresAt;
 
     public String getUsername() {
         return username;
@@ -73,5 +75,21 @@ public class CreateUserRequest {
 
     public void setCluster(String cluster) {
         this.cluster = cluster;
+    }
+
+    public String getUserType() {
+        return userType;
+    }
+
+    public void setUserType(String userType) {
+        this.userType = userType;
+    }
+
+    public java.time.LocalDateTime getExpiresAt() {
+        return expiresAt;
+    }
+
+    public void setExpiresAt(java.time.LocalDateTime expiresAt) {
+        this.expiresAt = expiresAt;
     }
 }

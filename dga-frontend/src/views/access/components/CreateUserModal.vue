@@ -18,6 +18,25 @@
       <a-form-model-item label="邮箱">
         <a-input v-model="userForm.email" placeholder="可选，用于写入 LDAP mail 属性" />
       </a-form-model-item>
+      <a-form-model-item label="用户类型">
+        <a-select v-model="userForm.userType">
+          <a-select-option value="INTERNAL">内部用户</a-select-option>
+          <a-select-option value="OUTSOURCER">外包用户</a-select-option>
+          <a-select-option value="TEMPORARY">临时用户</a-select-option>
+          <a-select-option value="SERVICE">服务账号</a-select-option>
+        </a-select>
+      </a-form-model-item>
+      <a-form-model-item label="过期时间" :required="requiresExpiry">
+        <a-date-picker
+          v-model="userForm.expiresAt"
+          show-time
+          format="YYYY-MM-DD HH:mm"
+          style="width: 100%"
+          :disabled="!requiresExpiry && userForm.userType !== 'SERVICE'"
+          placeholder="外包/临时用户必填"
+        />
+        <div class="form-hint">外包和临时用户必须设置过期时间。</div>
+      </a-form-model-item>
       <a-form-model-item label="密码">
         <a-input-password v-model="userForm.password" />
       </a-form-model-item>
@@ -46,12 +65,19 @@ export default {
         email: '',
         cluster: '',
         creationStrategy: 'OPENLDAP',
+        userType: 'INTERNAL',
+        expiresAt: null,
         firstName: '',
         lastName: '',
         password: '',
         confirmPassword: ''
       }
     };
+  },
+  computed: {
+    requiresExpiry() {
+      return ['OUTSOURCER', 'TEMPORARY'].includes(this.userForm.userType);
+    }
   },
   mounted() {
     this.fetchClusters();
@@ -86,13 +112,21 @@ export default {
         this.$message.warning('请输入密码');
         return;
       }
+      if (this.requiresExpiry && !this.userForm.expiresAt) {
+        this.$message.warning('外包/临时用户必须设置过期时间');
+        return;
+      }
       if (this.userForm.password !== this.userForm.confirmPassword) {
         this.$message.warning('密码不一致');
         return;
       }
       this.creatingUser = true;
       try {
-        await axios.post('/api/access/user', this.userForm);
+        const payload = {
+          ...this.userForm,
+          expiresAt: this.userForm.expiresAt ? this.userForm.expiresAt.format('YYYY-MM-DDTHH:mm:ss') : null
+        };
+        await axios.post('/api/access/user', payload);
         this.$message.success('创建成功');
         this.$emit('ok');
       } catch (e) {

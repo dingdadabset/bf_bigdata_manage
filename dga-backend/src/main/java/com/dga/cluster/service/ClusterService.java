@@ -175,6 +175,14 @@ public class ClusterService {
                 case ClusterEndpoint.TYPE_RANGER:
                     testRanger(testEndpoint);
                     break;
+                case ClusterEndpoint.TYPE_RANGER_DB:
+                    testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
+                    break;
+                case ClusterEndpoint.TYPE_HDFS:
+                case ClusterEndpoint.TYPE_YARN:
+                case ClusterEndpoint.TYPE_HUE:
+                    testHttp(testEndpoint);
+                    break;
                 default:
                     throw new IllegalArgumentException("不支持的端点类型: " + testEndpoint.getEndpointType());
             }
@@ -419,6 +427,21 @@ public class ClusterService {
             throw new IllegalStateException("Ranger API 访问失败: HTTP " + e.getRawStatusCode()
                     + "，请检查账号密码、Ranger 地址和 serviceName。响应: " + e.getResponseBodyAsString(), e);
         }
+    }
+
+    private void testHttp(ClusterEndpoint endpoint) {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(5000);
+        requestFactory.setReadTimeout(5000);
+        RestTemplate restTemplate = new RestTemplate(requestFactory);
+        HttpHeaders headers = new HttpHeaders();
+        headers.set(HttpHeaders.ACCEPT, "application/json,*/*");
+        if (!isBlank(endpoint.getUsername())) {
+            String token = endpoint.getUsername() + ":" + nullToEmpty(endpoint.getPassword());
+            String encoded = Base64.getEncoder().encodeToString(token.getBytes(StandardCharsets.UTF_8));
+            headers.set(HttpHeaders.AUTHORIZATION, "Basic " + encoded);
+        }
+        restTemplate.exchange(endpoint.getUrl(), HttpMethod.GET, new HttpEntity<>(headers), String.class);
     }
 
     private String trimTrailingSlash(String url) {

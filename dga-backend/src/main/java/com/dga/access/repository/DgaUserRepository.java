@@ -5,6 +5,7 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
 import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
 import java.util.List;
 
 @Repository
@@ -26,6 +27,10 @@ public interface DgaUserRepository extends JpaRepository<DgaUser, Long> {
 
     @Query("SELECT DISTINCT u.clusterName FROM DgaUser u WHERE u.isDeleted = false AND u.clusterName IS NOT NULL")
     List<String> findDistinctClusterNames();
+
+    @Query("SELECT u FROM DgaUser u WHERE u.isDeleted = false " +
+            "AND (:cluster IS NULL OR :cluster = '' OR u.clusterName = :cluster)")
+    List<DgaUser> findActiveUsersByCluster(@Param("cluster") String cluster);
 
     org.springframework.data.domain.Page<DgaUser> findByIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
             List<String> strategies, String username, org.springframework.data.domain.Pageable pageable);
