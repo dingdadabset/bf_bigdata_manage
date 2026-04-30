@@ -158,31 +158,51 @@ export default {
         const buildTree = records => {
           const byDb = {};
           records.forEach(r => {
-            if (!byDb[r.databaseName]) {
-              byDb[r.databaseName] = {
-                title: r.databaseName,
-                key: `db-${r.databaseName}`,
+            const dbName = r.databaseName || r.database || '-';
+            const tableName = this.normalizeTableName(r.tableName || r.table);
+            const permission = this.normalizePermission(r.permission);
+            if (!byDb[dbName]) {
+              byDb[dbName] = {
+                title: dbName,
+                key: `db-${dbName}`,
                 slots: { icon: 'database' },
                 scopedSlots: { title: 'custom' },
                 levelTag: '库',
-                perms: null,
+                perms: '',
+                permSet: new Set(),
                 children: []
               };
             }
-            if (r.tableName) {
-              byDb[r.databaseName].children.push({
-                title: r.tableName,
-                key: `tbl-${r.databaseName}-${r.tableName}`,
+            if (tableName) {
+              byDb[dbName].children.push({
+                title: tableName,
+                key: `tbl-${dbName}-${tableName}-${permission}`,
                 slots: { icon: 'table' },
                 scopedSlots: { title: 'custom' },
                 levelTag: '表',
-                perms: r.permission
+                perms: permission
               });
             } else {
-              byDb[r.databaseName].perms = r.permission;
+              this.addPermission(byDb[dbName].permSet, permission);
             }
           });
           return Object.values(byDb).map(node => {
+            node.perms = Array.from(node.permSet).join(' / ');
+            delete node.permSet;
+            if (node.children && node.children.length) {
+              const byTable = {};
+              node.children.forEach(child => {
+                if (!byTable[child.title]) {
+                  byTable[child.title] = { ...child, permSet: new Set() };
+                }
+                this.addPermission(byTable[child.title].permSet, child.perms);
+              });
+              node.children = Object.values(byTable).map(child => {
+                child.perms = Array.from(child.permSet).join(' / ');
+                delete child.permSet;
+                return child;
+              });
+            }
             if (node.children && node.children.length === 0) {
               delete node.children;
             }
@@ -218,6 +238,24 @@ export default {
         }));
         this.revokedTreeData = [];
       }
+    },
+    normalizeTableName(tableName) {
+      const table = tableName === undefined || tableName === null ? '' : String(tableName).trim();
+      if (!table || table === '*' || table.toUpperCase() === 'ALL TABLES') {
+        return '';
+      }
+      return table;
+    },
+    normalizePermission(permission) {
+      const text = permission === undefined || permission === null ? '' : String(permission).trim();
+      return text ? text.toUpperCase() : '-';
+    },
+    addPermission(target, permission) {
+      if (!target || !permission || permission === '-') return;
+      permission.split(/[,\s/]+/)
+        .map(item => item.trim().toUpperCase())
+        .filter(Boolean)
+        .forEach(item => target.add(item));
     },
     async openTables(dbName, perms) {
       this.tablesVisible = true;

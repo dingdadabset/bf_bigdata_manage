@@ -52,6 +52,9 @@ public class UserResourceAccess {
     @Column(name = "granted_by")
     private String grantedBy;
 
+    @Column(name = "revoked_by")
+    private String revokedBy;
+
     @Column(name = "grant_time")
     @CreatedDate
     private LocalDateTime grantTime;
@@ -175,6 +178,14 @@ public class UserResourceAccess {
 
     public void setGrantedBy(String grantedBy) {
         this.grantedBy = grantedBy;
+    }
+
+    public String getRevokedBy() {
+        return revokedBy;
+    }
+
+    public void setRevokedBy(String revokedBy) {
+        this.revokedBy = revokedBy;
     }
 
     public LocalDateTime getGrantTime() {

@@ -17,6 +17,7 @@
           :user="selectedUser" 
           @delete="handleDeleteUser"
           @grant="onGrant"
+          @toggle-protection="handleToggleProtection"
         />
       </div>
     </div>
@@ -44,7 +45,7 @@ import PermissionPanel from './components/PermissionPanel.vue';
 import CreateUserModal from './components/CreateUserModal.vue';
 import GrantModal from './components/GrantModal.vue';
 import axios from 'axios';
-import { canDelete, deleteForbiddenMessage } from '../../utils/currentUser';
+import { canDelete, deleteForbiddenMessage, isRootAdmin } from '../../utils/currentUser';
 
 const PROTECTED_BIGDATA_USERS = [
   'alading',
@@ -97,6 +98,32 @@ export default {
         this.$refs.permissionPanel.refresh();
       }
     },
+    async handleToggleProtection(user) {
+      if (!isRootAdmin()) {
+        this.$message.warning('仅 admin 用户可设置保护用户');
+        return;
+      }
+      if (!user || !user.username) return;
+      const cluster = user.clusterName || user.cluster;
+      if (!cluster) {
+        this.$message.warning('设置保护用户必须指定所属集群');
+        return;
+      }
+      const nextProtected = !this.isProtectedBigDataUser(user);
+      try {
+        const res = await axios.put(`/api/access/user/${encodeURIComponent(user.username)}/protection`, null, {
+          params: { cluster, protected: nextProtected }
+        });
+        const updatedUser = res.data || { ...user, protectedUser: nextProtected };
+        this.selectedUser = updatedUser;
+        if (this.$refs.userList) {
+          this.$refs.userList.updateUser(updatedUser);
+        }
+        this.$message.success(nextProtected ? '已设为保护用户' : '已取消保护');
+      } catch (e) {
+        this.$message.error(e.response?.data?.message || '更新保护状态失败');
+      }
+    },
     handleDeleteUser(userOrUsername) {
       if (!canDelete()) {
         this.$message.warning(deleteForbiddenMessage());
@@ -136,6 +163,9 @@ export default {
     },
     isProtectedBigDataUser(user) {
       if (!user || !user.username) return false;
+      if (user.protectedUser !== undefined && user.protectedUser !== null) {
+        return Boolean(user.protectedUser);
+      }
       const userName = String(user.username).toLowerCase();
       const role = String(user.role || user.userRole || '').toLowerCase();
       return PROTECTED_BIGDATA_USERS.includes(userName)

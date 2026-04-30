@@ -22,7 +22,7 @@
           <span slot="title" class="user-list-title">
             {{ item.username }}
             <a-tag v-if="item.role" color="blue" style="margin-left: 8px; font-size: 10px; line-height: 18px; height: 20px;">{{ item.role }}</a-tag>
-            <a-tag v-if="isProtectedBigDataUser(item)" color="orange" style="margin-left: 8px; font-size: 10px; line-height: 18px; height: 20px;">保护</a-tag>
+            <a-tag v-if="isProtectedBigDataUser(item)" color="orange" class="compact-tag">保护</a-tag>
           </span>
           <a-avatar slot="avatar" icon="user" :style="{ backgroundColor: getAvatarColor(item.username) }" />
         </a-list-item-meta>
@@ -116,16 +116,18 @@ export default {
         const res = await axios.post('/api/access/import', null, { params: { cluster } });
         const data = res.data || {};
         const repairedText = data.repaired ? `，历史修复 ${data.repaired}` : '';
-        if (data.failed) {
+        if ((data.total || 0) === 0) {
+          this.$message.warning(data.message || 'LDAP 查询成功，但没有找到用户，请检查 User Base DN 是否为用户所在目录');
+        } else if (data.failed) {
           const firstFailure = data.failures && data.failures.length
             ? `，首个失败: ${data.failures[0].message}`
             : '';
           this.$message.warning(
-            `导入完成：新增 ${data.inserted || 0}，更新 ${data.updated || 0}${repairedText}，失败 ${data.failed}${firstFailure}`
+            `${data.message || `导入完成：新增 ${data.inserted || 0}，更新 ${data.updated || 0}${repairedText}，失败 ${data.failed}`}${firstFailure}`
           );
         } else {
           this.$message.success(
-            `导入完成：新增 ${data.inserted || 0}，更新 ${data.updated || 0}${repairedText}，失败 0`
+            data.message || `导入完成：新增 ${data.inserted || 0}，更新 ${data.updated || 0}${repairedText}，失败 0`
           );
         }
         await this.fetchUsers();
@@ -179,12 +181,23 @@ export default {
     },
     isProtectedBigDataUser(user) {
       if (!user || !user.username) return false;
+      if (user.protectedUser !== undefined && user.protectedUser !== null) {
+        return Boolean(user.protectedUser);
+      }
       const username = String(user.username).toLowerCase();
       const role = String(user.role || user.userRole || '').toLowerCase();
       return PROTECTED_BIGDATA_USERS.includes(username)
         || role.includes('important')
         || role.includes('protected')
         || role.includes('bigdata');
+    },
+    updateUser(updatedUser) {
+      if (!updatedUser) return;
+      const users = this.userList.map(item => this.sameUser(item, updatedUser) ? updatedUser : item);
+      mutations.setUsers(users);
+      if (this.selectedUser && this.sameUser(this.selectedUser, updatedUser)) {
+        this.selectedUser = updatedUser;
+      }
     },
     async fetchUsers(params = {}) {
       this.loadingUsers = true;
@@ -264,6 +277,12 @@ export default {
 }
 .user-list-item.active {
   background-color: #e6f7ff;
+}
+.compact-tag {
+  margin-left: 8px;
+  font-size: 10px;
+  line-height: 18px;
+  height: 20px;
 }
 .source-badge {
   display: inline-flex;

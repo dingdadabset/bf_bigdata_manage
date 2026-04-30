@@ -26,21 +26,21 @@ public interface UserResourceAccessRepository extends JpaRepository<UserResource
 
     @Modifying
     @Transactional
-    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND u.isDeleted = false")
-    int softDeleteAllByUsername(String username);
+    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokedBy = ?2, u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND u.isDeleted = false")
+    int softDeleteAllByUsername(String username, String revokedBy);
 
     @Modifying
     @Transactional
-    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND (u.clusterCode = ?2 OR u.clusterName = ?2) AND u.isDeleted = false")
-    int softDeleteAllByUsernameAndCluster(String username, String clusterCodeOrName);
+    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokedBy = ?3, u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND (u.clusterCode = ?2 OR u.clusterName = ?2) AND u.isDeleted = false")
+    int softDeleteAllByUsernameAndCluster(String username, String clusterCodeOrName, String revokedBy);
 
     @Modifying
     @Transactional
-    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND (u.clusterCode = ?2 OR u.clusterName = ?2) AND u.databaseName = ?3 AND u.tableName IS NULL AND u.permission = ?4 AND u.isDeleted = false")
-    int softDeleteDatabaseAccess(String username, String clusterCodeOrName, String databaseName, String permission);
+    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokedBy = ?5, u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND (u.clusterCode = ?2 OR u.clusterName = ?2) AND u.databaseName = ?3 AND u.tableName IS NULL AND u.permission = ?4 AND u.isDeleted = false")
+    int softDeleteDatabaseAccess(String username, String clusterCodeOrName, String databaseName, String permission, String revokedBy);
 
     @Modifying
     @Transactional
-    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND (u.clusterCode = ?2 OR u.clusterName = ?2) AND u.databaseName = ?3 AND u.tableName = ?4 AND u.permission = ?5 AND u.isDeleted = false")
-    int softDeleteTableAccess(String username, String clusterCodeOrName, String databaseName, String tableName, String permission);
+    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokedBy = ?6, u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND (u.clusterCode = ?2 OR u.clusterName = ?2) AND u.databaseName = ?3 AND u.tableName = ?4 AND u.permission = ?5 AND u.isDeleted = false")
+    int softDeleteTableAccess(String username, String clusterCodeOrName, String databaseName, String tableName, String permission, String revokedBy);
 }

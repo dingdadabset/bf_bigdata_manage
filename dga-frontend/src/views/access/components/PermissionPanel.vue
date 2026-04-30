@@ -10,7 +10,7 @@
               {{ user.username }}
               <a-tag color="green" v-if="user.status !== 'DISABLED'">Active</a-tag>
               <a-tag color="red" v-else>Disabled</a-tag>
-              <a-tag v-if="isProtectedBigDataUser(user)" color="orange">大数据重要角色</a-tag>
+              <a-tag v-if="isProtectedUser" color="orange">保护用户</a-tag>
             </div>
             <div class="info-desc">
               {{ user.firstName }} {{ user.lastName }} | {{ user.email || 'No Email' }}
@@ -27,13 +27,23 @@
             </div>
           </div>
         </div>
-        <div v-if="canDeleteUser" class="header-actions">
-          <a-tooltip :title="isProtectedBigDataUser(user) ? '大数据重要角色禁止删除' : '删除用户'">
+        <div v-if="canManageProtection || canDeleteUser" class="header-actions">
+          <a-button
+            v-if="canManageProtection"
+            :type="isProtectedUser ? 'default' : 'primary'"
+            :ghost="!isProtectedUser"
+            :icon="isProtectedUser ? 'unlock' : 'lock'"
+            @click="$emit('toggle-protection', user)"
+          >
+            {{ isProtectedUser ? '取消保护' : '设为保护' }}
+          </a-button>
+          <a-tooltip :title="isProtectedUser ? '保护用户禁止删除' : '删除用户'">
             <a-button
+              v-if="canDeleteUser"
               type="danger"
               ghost
               icon="delete"
-              :disabled="isProtectedBigDataUser(user)"
+              :disabled="isProtectedUser"
               @click="$emit('delete', user)"
             >
               删除用户
@@ -82,7 +92,7 @@ import moment from 'moment';
 import { store } from '../../../store';
 import RangerCard from './RangerCard.vue';
 import axios from 'axios';
-import { canDelete } from '../../../utils/currentUser';
+import { canDelete, isRootAdmin } from '../../../utils/currentUser';
 
 const PROTECTED_BIGDATA_USERS = [
   'alading',
@@ -142,6 +152,12 @@ export default {
     },
     canDeleteUser() {
       return canDelete();
+    },
+    canManageProtection() {
+      return isRootAdmin();
+    },
+    isProtectedUser() {
+      return this.isProtectedBigDataUser(this.user);
     }
   },
   methods: {
@@ -174,6 +190,9 @@ export default {
     },
     isProtectedBigDataUser(user) {
       if (!user || !user.username) return false;
+      if (user.protectedUser !== undefined && user.protectedUser !== null) {
+        return Boolean(user.protectedUser);
+      }
       const username = String(user.username).toLowerCase();
       const role = String(user.role || user.userRole || '').toLowerCase();
       return PROTECTED_BIGDATA_USERS.includes(username)
@@ -217,6 +236,7 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  gap: 16px;
 }
 .user-info {
   display: flex;
@@ -237,6 +257,13 @@ export default {
 .info-meta {
   color: #999;
   font-size: 12px;
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-shrink: 0;
 }
 .meta-item {
   margin-right: 16px;

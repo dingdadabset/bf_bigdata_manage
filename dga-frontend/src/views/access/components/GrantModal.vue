@@ -338,6 +338,7 @@ export default {
         const payload = {
           username: this.username,
           permission: this.hiveForm.permission,
+          permissions: this.hiveForm.permission ? [this.hiveForm.permission] : [],
           level: this.hiveForm.level,
           cluster: this.cluster || store.currentCluster || store.headerSelectedCluster || 'CDH-Cluster-01'
         };

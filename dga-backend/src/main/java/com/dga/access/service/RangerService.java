@@ -79,28 +79,52 @@ public class RangerService {
                     if (!Boolean.TRUE.equals(policy.get("isEnabled"))) continue;
                     
                     Map<String, Object> resources = (Map<String, Object>) policy.get("resources");
-                    String db = getResourceValue(resources, "database");
-                    String table = getResourceValue(resources, "table");
+                    List<String> databases = normalizeResourceValues(getResourceValues(resources, "database"), "ALL DATABASES");
+                    List<String> tables = normalizeResourceValues(getResourceValues(resources, "table"), "*");
                     
                     List<Map<String, Object>> policyItems = (List<Map<String, Object>>) policy.get("policyItems");
-                    if (policyItems != null) {
-                        for (Map<String, Object> item : policyItems) {
-                            List<String> users = (List<String>) item.get("users");
-                            if (users != null && users.contains(user)) {
-                                List<Map<String, Object>> accesses = (List<Map<String, Object>>) item.get("accesses");
+                    if (policyItems == null) {
+                        continue;
+                    }
+
+                    for (Map<String, Object> item : policyItems) {
+                        List<String> users = (List<String>) item.get("users");
+                        if (users == null || !users.contains(user)) {
+                            continue;
+                        }
+
+                        List<Map<String, Object>> accesses = (List<Map<String, Object>>) item.get("accesses");
+                        if (accesses == null) {
+                            continue;
+                        }
+
+                        for (String db : databases) {
+                            for (String tableValue : tables) {
+                                String normalizedTable = normalizeRangerTable(tableValue);
                                 for (Map<String, Object> access : accesses) {
-                                    if (Boolean.TRUE.equals(access.get("isAllowed"))) {
-                                        Map<String, Object> perm = new HashMap<>();
-                                        perm.put("database", db);
-                                        perm.put("table", table);
-                                        String type = (String) access.get("type");
-                                        String mappedPerm = type.toUpperCase();
-                                        if ("UPDATE".equals(mappedPerm)) {
-                                            mappedPerm = "INSERT";
-                                        }
-                                        perm.put("permission", mappedPerm);
-                                        result.add(perm);
+                                    if (!Boolean.TRUE.equals(access.get("isAllowed"))) {
+                                        continue;
                                     }
+
+                                    String type = (String) access.get("type");
+                                    if (type == null || type.trim().isEmpty()) {
+                                        continue;
+                                    }
+
+                                    String mappedPerm = type.trim().toUpperCase();
+                                    if ("UPDATE".equals(mappedPerm)) {
+                                        mappedPerm = "INSERT";
+                                    }
+
+                                    Map<String, Object> perm = new HashMap<>();
+                                    perm.put("database", db);
+                                    if (normalizedTable != null) {
+                                        perm.put("table", normalizedTable);
+                                    }
+                                    perm.put("permission", mappedPerm);
+                                    perm.put("policyName", policy.get("name"));
+                                    perm.put("policyId", policy.get("id"));
+                                    result.add(perm);
                                 }
                             }
                         }
@@ -117,10 +141,7 @@ public class RangerService {
         RangerConfig config = config(endpoint);
         Set<String> users = new TreeSet<>();
         try {
-            String url = String.format("%s/service/public/v2/api/policy?serviceName=%s", config.url, config.serviceName);
-            ResponseEntity<List> response = restTemplate.exchange(url, HttpMethod.GET,
-                    new HttpEntity<>(createHeaders(config)), List.class);
-            List<Map<String, Object>> policies = response.getBody();
+            List<Map<String, Object>> policies = listPolicies(config);
             if (policies == null) {
                 return new ArrayList<>();
             }

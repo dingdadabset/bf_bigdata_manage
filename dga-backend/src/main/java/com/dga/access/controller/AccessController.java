@@ -6,8 +6,10 @@ import com.dga.access.dto.CreateUserRequest;
 import com.dga.access.dto.TableGrant;
 import com.dga.access.entity.DgaUser;
 import com.dga.access.entity.UserResourceAccess;
+import com.dga.access.security.CurrentUser;
 import com.dga.access.repository.DgaUserRepository;
 import com.dga.access.service.AdminGuard;
+import com.dga.access.service.DgaUserSchemaService;
 import com.dga.access.service.HiveAuthService;
 import com.dga.access.service.IpaHttpService;
 import com.dga.access.service.IpaService;
@@ -103,8 +105,12 @@ public class AccessController {
     @Autowired
     private AdminGuard adminGuard;
 
+    @Autowired
+    private DgaUserSchemaService dgaUserSchemaService;
+
     @PostMapping("/grant")
     public String grantAccess(@RequestBody AccessRequest request) {
+        String operator = currentOperator();
         try {
             ldapService.createUser(request.getCluster(), request.getUsername(), request.getPassword(), request.getEmail());
         } catch (Exception e) {
@@ -123,17 +129,18 @@ public class AccessController {
         access.setClusterName(request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01");
         access.setDatabaseName(request.getDatabase());
         access.setPermission(request.getPermission());
-        access.setGrantedBy("admin"); // TODO: get from security context
+        access.setGrantedBy(operator);
         access.setStatus("ACTIVE");
         userHiveAccessRepository.save(access);
         saveResourceAccess(request.getUsername(), request.getCluster(), request.getDatabase(), null,
-                request.getPermission(), "admin", "DGA_GRANT");
+                request.getPermission(), operator, "DGA_GRANT");
 
         return "Access granted successfully for user: " + request.getUsername();
     }
 
     @PostMapping("/user")
     public String createUser(@RequestBody CreateUserRequest request) {
+        dgaUserSchemaService.ensureClusterScopedUsernameConstraint();
         String clusterName = resolveClusterName(request.getCluster());
         // Check if user exists in DB first
         if (dgaUserRepository.existsByUsernameAndClusterName(request.getUsername(), clusterName)) {
@@ -220,7 +227,9 @@ public class AccessController {
     }
     
     @PostMapping("/import")
-    public Map<String, Object> importUsers(@RequestParam(required = false) String cluster) {
+    public Map<String, Object> importUsers(@RequestParam(required = false) String cluster,
+                                           HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可导入 OpenLDAP 用户");
         if (cluster == null || cluster.trim().isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请先选择具体集群后再导入 OpenLDAP 用户");
         }
@@ -229,8 +238,10 @@ public class AccessController {
         String clusterName = targetCluster != null && targetCluster.getClusterName() != null
                 ? targetCluster.getClusterName()
                 : resolveClusterName(cluster);
+        dgaUserSchemaService.ensureClusterScopedUsernameConstraint();
         try {
             List<Map<String, Object>> ldapUsers = ldapService.listUsers(cluster);
+            Map<String, Object> searchInfo = ldapService.describeUserSearch(cluster);
             int inserted = 0;
             int updated = 0;
             int repaired = 0;
@@ -286,11 +297,25 @@ public class AccessController {
             result.put("repaired", repaired);
             result.put("failed", failed);
             result.put("failures", failures);
+            result.put("search", searchInfo);
+            result.put("message", buildImportMessage(ldapUsers.size(), inserted, updated, repaired, failed, searchInfo));
             return result;
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
                     e.getMessage() == null ? "OpenLDAP 导入失败" : e.getMessage(), e);
         }
+    }
+
+    private String buildImportMessage(int total, int inserted, int updated, int repaired, int failed, Map<String, Object> searchInfo) {
+        if (total == 0) {
+            Object searchBaseDn = searchInfo == null ? null : searchInfo.get("searchBaseDn");
+            Object filter = searchInfo == null ? "(uid=*)" : searchInfo.getOrDefault("filter", "(uid=*)");
+            return "LDAP 查询成功，但没有找到 uid 用户。请检查 User Base DN 是否为用户所在目录，当前搜索范围: "
+                    + (searchBaseDn == null ? "未配置" : searchBaseDn)
+                    + "，过滤条件: " + filter;
+        }
+        String repairedText = repaired > 0 ? "，历史修复 " + repaired : "";
+        return "导入完成：新增 " + inserted + "，更新 " + updated + repairedText + "，失败 " + failed;
     }
 
     @PostMapping("/sync/{username}")
@@ -310,6 +335,7 @@ public class AccessController {
              
              String table = (String) lowerRow.get("table");
              if (table == null) table = (String) lowerRow.get("table_name");
+             table = normalizeAuthTable(table);
 
              String perm = (String) lowerRow.get("privilege");
              if (perm == null) perm = (String) lowerRow.get("permission");
@@ -405,6 +431,24 @@ public class AccessController {
         }
         return dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(
                 excludedStrategies, pageable);
+    }
+
+    @PutMapping("/user/{username}/protection")
+    public DgaUser updateUserProtection(@PathVariable String username,
+                                        @RequestParam(required = false) String cluster,
+                                        @RequestParam("protected") boolean protectedUser,
+                                        HttpServletRequest request) {
+        adminGuard.requireRootAdmin(request);
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "设置保护用户必须指定所属集群");
+        }
+        String clusterName = resolveClusterName(cluster);
+        DgaUser user = dgaUserRepository.findByUsernameAndClusterName(username, clusterName);
+        if (user == null || Boolean.TRUE.equals(user.getDeleted())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在: " + username + " (" + clusterName + ")");
+        }
+        user.setProtectedUser(protectedUser);
+        return dgaUserRepository.save(user);
     }
 
     @GetMapping("/clusters")
@@ -528,6 +572,7 @@ public class AccessController {
         String username = request.getUsername();
         List<String> permissions = resolvePermissionsOrThrow(request);
         List<String> databases = request.getDatabases();
+        String operator = currentOperator();
         String clusterName = request.getCluster();
         if (clusterName == null || clusterName.isEmpty()) {
             List<DgaUser> users = dgaUserRepository.findByUsernameAndIsDeletedFalse(username);
@@ -550,11 +595,11 @@ public class AccessController {
                         access.setClusterName(clusterName);
                         access.setDatabaseName(database);
                         access.setPermission(permission);
-                        access.setGrantedBy("admin");
+                        access.setGrantedBy(operator);
                         access.setGrantTime(LocalDateTime.now());
                         access.setStatus("ACTIVE");
                         userHiveAccessRepository.save(access);
-                        saveResourceAccess(username, clusterName, database, null, permission, "admin", "DGA_GRANT");
+                        saveResourceAccess(username, clusterName, database, null, permission, operator, "DGA_GRANT");
                         System.out.println("Saved DB access: " + database + " / " + permission);
                     } catch (Exception e) {
                         System.err.println("Failed to grant/save DB access: " + e.getMessage());
@@ -576,12 +621,12 @@ public class AccessController {
                         access.setDatabaseName(tableGrant.getDatabase());
                         access.setTableName(tableGrant.getTable());
                         access.setPermission(permission);
-                        access.setGrantedBy("admin");
+                        access.setGrantedBy(operator);
                         access.setGrantTime(LocalDateTime.now());
                         access.setStatus("ACTIVE");
                         userHiveAccessRepository.save(access);
                         saveResourceAccess(username, clusterName, tableGrant.getDatabase(), tableGrant.getTable(),
-                                permission, "admin", "DGA_GRANT");
+                                permission, operator, "DGA_GRANT");
                         System.out.println("Saved Table access: " + tableGrant.getTable() + " / " + permission);
                     } catch (Exception e) {
                         System.err.println("Failed to grant/save Table access: " + e.getMessage());
@@ -597,6 +642,7 @@ public class AccessController {
     public String batchGrantResource(@RequestBody BatchGrantRequest request) {
         String username = request.getUsername();
         List<String> permissions = resolvePermissionsOrThrow(request);
+        String operator = currentOperator();
         String cluster = request.getCluster() != null && !request.getCluster().isEmpty()
                 ? request.getCluster() : "CDH-Cluster-01";
 
@@ -606,7 +652,7 @@ public class AccessController {
                     for (String permission : permissions) {
                         GrantCommand command = buildGrantCommand(username, cluster, database, null, permission);
                         authorizationService.grant(command);
-                        saveResourceAccess(username, cluster, database, null, permission, "admin", "AUTHORIZATION_CENTER");
+                        saveResourceAccess(username, cluster, database, null, permission, operator, "AUTHORIZATION_CENTER");
                     }
                 }
             }
@@ -617,7 +663,7 @@ public class AccessController {
                                 tableGrant.getTable(), permission);
                         authorizationService.grant(command);
                         saveResourceAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(),
-                                permission, "admin", "AUTHORIZATION_CENTER");
+                                permission, operator, "AUTHORIZATION_CENTER");
                     }
                 }
             }
@@ -656,25 +702,16 @@ public class AccessController {
 
     @PostMapping("/revoke")
     public String revokeAccess(@RequestBody AccessRequest request) {
+        String operator = currentOperator();
+        String cluster = request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01";
         try {
             hiveAuthService.revokePermission(request.getUsername(), request.getDatabase(), request.getPermission(), request.getCluster());
         } catch (Exception e) {
             System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
         }
         
-        // Soft delete from DB
-        try {
-            userHiveAccessRepository.softDeleteDatabaseAccess(request.getUsername(), 
-                request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01", 
-                request.getDatabase(), 
-                request.getPermission());
-            userResourceAccessRepository.softDeleteDatabaseAccess(request.getUsername(),
-                request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01",
-                request.getDatabase(),
-                request.getPermission());
-        } catch (Exception e) {
-             System.err.println("Warning: DB revoke failed: " + e.getMessage());
-        }
+        revokeDatabaseAccessRecords(request.getUsername(), cluster, request.getDatabase(),
+                request.getPermission(), operator, "DGA_REVOKE");
 
         return "Access revoked successfully for user: " + request.getUsername();
     }
@@ -684,6 +721,7 @@ public class AccessController {
     public String batchRevoke(@RequestBody BatchGrantRequest request) {
         String username = request.getUsername();
         List<String> permissions = resolvePermissionsOrThrow(request);
+        String operator = currentOperator();
         String cluster = request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01"; // Default or validate
         
         List<String> databases = request.getDatabases();
@@ -696,8 +734,7 @@ public class AccessController {
                         System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
                     }
                     try {
-                        userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
-                        userResourceAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                        revokeDatabaseAccessRecords(username, cluster, database, permission, operator, "DGA_REVOKE");
                     } catch (Exception e) {
                         System.err.println("Failed to soft delete DB access: " + e.getMessage());
                     }
@@ -714,8 +751,8 @@ public class AccessController {
                         System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
                     }
                     try {
-                        userHiveAccessRepository.softDeleteTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
-                        userResourceAccessRepository.softDeleteTableAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                        revokeTableAccessRecords(username, cluster, tableGrant.getDatabase(),
+                                tableGrant.getTable(), permission, operator, "DGA_REVOKE");
                     } catch (Exception e) {
                         System.err.println("Failed to soft delete Table access: " + e.getMessage());
                     }
@@ -729,6 +766,7 @@ public class AccessController {
     public String batchRevokeResource(@RequestBody BatchGrantRequest request) {
         String username = request.getUsername();
         List<String> permissions = resolvePermissionsOrThrow(request);
+        String operator = currentOperator();
         String cluster = request.getCluster() != null && !request.getCluster().isEmpty()
                 ? request.getCluster() : "CDH-Cluster-01";
 
@@ -738,8 +776,8 @@ public class AccessController {
                     for (String permission : permissions) {
                         RevokeCommand command = buildRevokeCommand(username, cluster, database, null, permission);
                         authorizationService.revoke(command);
-                        userResourceAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
-                        userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+                        revokeDatabaseAccessRecords(username, cluster, database, permission,
+                                operator, "AUTHORIZATION_CENTER");
                     }
                 }
             }
@@ -749,10 +787,8 @@ public class AccessController {
                         RevokeCommand command = buildRevokeCommand(username, cluster, tableGrant.getDatabase(),
                                 tableGrant.getTable(), permission);
                         authorizationService.revoke(command);
-                        userResourceAccessRepository.softDeleteTableAccess(username, cluster,
-                                tableGrant.getDatabase(), tableGrant.getTable(), permission);
-                        userHiveAccessRepository.softDeleteTableAccess(username, cluster,
-                                tableGrant.getDatabase(), tableGrant.getTable(), permission);
+                        revokeTableAccessRecords(username, cluster, tableGrant.getDatabase(),
+                                tableGrant.getTable(), permission, operator, "AUTHORIZATION_CENTER");
                     }
                 }
             }
@@ -768,24 +804,23 @@ public class AccessController {
                              @RequestParam(required = false) String cluster,
                              HttpServletRequest request) {
         adminGuard.requireDeletePrivilege(request);
-        if (isProtectedBigDataUser(username)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "大数据重要角色禁止删除: " + username);
-        }
+        String operator = currentOperator();
         if (cluster == null || cluster.trim().isEmpty()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "删除用户必须指定所属集群");
         }
         String clusterName = resolveClusterName(cluster);
         DgaUser user = dgaUserRepository.findByUsernameAndClusterName(username, clusterName);
         if (user != null) {
+            if (isProtectedBigDataUser(user)) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "保护用户禁止删除: " + username);
+            }
             // 1. Revoke Hive Permissions
             try {
                 hiveAuthService.revokeAll(username, clusterName);
             } catch (Throwable e) {
                  System.err.println("Failed to revoke Hive permissions: " + e.getMessage());
-                 // Continue to delete user even if revoke fails? 
-                 // User requirement: "首先，先收回用户hive权限" - implying strict order.
-                 // But if user doesn't exist in Hive, it shouldn't block deletion.
-                 // We logged it, let's proceed but maybe warn in return message.
+                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                         "删除用户前回收权限失败，请处理后重试: " + readableAuthorizationError(new Exception(e)), e);
             }
 
             // 2. Delete user from the identity backend selected by creation strategy.
@@ -807,7 +842,7 @@ public class AccessController {
             // 4. Revoke Hive Access Records (Soft Delete)
             try {
                 userHiveAccessRepository.softDeleteAllAccessByUsernameAndClusterName(username, clusterName);
-                userResourceAccessRepository.softDeleteAllByUsernameAndCluster(username, clusterName);
+                userResourceAccessRepository.softDeleteAllByUsernameAndCluster(username, clusterName, operator);
             } catch (Exception e) {
                 System.err.println("Failed to update UserHiveAccess status: " + e.getMessage());
                 // Non-blocking, but logged
@@ -819,8 +854,14 @@ public class AccessController {
         }
     }
 
-    private boolean isProtectedBigDataUser(String username) {
-        return username != null && PROTECTED_BIGDATA_USERS.contains(username.trim().toLowerCase());
+    private boolean isProtectedBigDataUser(DgaUser user) {
+        if (user == null || user.getUsername() == null) {
+            return false;
+        }
+        if (user.getProtectedUser() != null) {
+            return Boolean.TRUE.equals(user.getProtectedUser());
+        }
+        return PROTECTED_BIGDATA_USERS.contains(user.getUsername().trim().toLowerCase());
     }
 
     private com.dga.cluster.entity.Cluster resolveCluster(String clusterIdentifier) {
@@ -1009,6 +1050,10 @@ public class AccessController {
             permission = permission != null ? permission : parsed.get("permission");
             resourceType = parsed.get("resourceType") != null ? parsed.get("resourceType") : resourceType;
         }
+        table = normalizeAuthTable(table);
+        if (table == null && !"GLOBAL".equals(resourceType)) {
+            resourceType = "DATABASE";
+        }
 
         Map<String, Object> grant = new HashMap<>();
         grant.put("resourceType", resourceType);
@@ -1126,23 +1171,74 @@ public class AccessController {
         return null;
     }
 
+    private String currentOperator() {
+        return CurrentUser.usernameOrUnknown();
+    }
+
+    private void revokeDatabaseAccessRecords(String username, String cluster, String database,
+                                             String permission, String operator, String source) {
+        userHiveAccessRepository.softDeleteDatabaseAccess(username, cluster, database, permission);
+        int updated = userResourceAccessRepository.softDeleteDatabaseAccess(
+                username, cluster, database, permission, operator);
+        if (updated == 0) {
+            saveResourceAccess(username, cluster, database, null, permission,
+                    operator, source, "REVOKED", true, LocalDateTime.now());
+        }
+    }
+
+    private void revokeTableAccessRecords(String username, String cluster, String database, String table,
+                                          String permission, String operator, String source) {
+        userHiveAccessRepository.softDeleteTableAccess(username, cluster, database, table, permission);
+        int updated = userResourceAccessRepository.softDeleteTableAccess(
+                username, cluster, database, table, permission, operator);
+        if (updated == 0) {
+            saveResourceAccess(username, cluster, database, table, permission,
+                    operator, source, "REVOKED", true, LocalDateTime.now());
+        }
+    }
+
     private void saveResourceAccess(String username, String cluster, String database, String table,
                                     String permission, String grantedBy, String source) {
+        saveResourceAccess(username, cluster, database, table, permission,
+                grantedBy, source, "ACTIVE", false, null);
+    }
+
+    private void saveResourceAccess(String username, String cluster, String database, String table,
+                                    String permission, String operator, String source,
+                                    String status, boolean deleted, LocalDateTime revokeTime) {
         String clusterIdentifier = cluster != null && !cluster.isEmpty() ? cluster : "CDH-Cluster-01";
+        String normalizedTable = normalizeAuthTable(table);
         UserResourceAccess access = new UserResourceAccess();
         access.setUsername(username);
         access.setClusterName(clusterIdentifier);
         access.setClusterCode(authorizationService.resolveClusterCodeOrName(clusterIdentifier));
         access.setEngineType(authorizationService.engineType(clusterIdentifier));
         access.setAuthBackend(authorizationService.authBackend(clusterIdentifier));
-        access.setResourceType(table == null || table.isEmpty() ? "DATABASE" : "TABLE");
+        access.setResourceType(normalizedTable == null ? "DATABASE" : "TABLE");
         access.setDatabaseName(database);
-        access.setTableName(table);
+        access.setTableName(normalizedTable);
         access.setPermission(permission);
-        access.setGrantedBy(grantedBy);
+        access.setGrantedBy(operator);
         access.setSource(source);
-        access.setStatus("ACTIVE");
-        access.setGrantTime(LocalDateTime.now());
+        access.setStatus(status);
+        access.setDeleted(deleted);
+        if ("REVOKED".equals(status)) {
+            access.setRevokedBy(operator);
+            access.setRevokeTime(revokeTime != null ? revokeTime : LocalDateTime.now());
+        } else {
+            access.setGrantTime(LocalDateTime.now());
+        }
         userResourceAccessRepository.save(access);
+    }
+
+    private String normalizeAuthTable(String table) {
+        if (table == null) {
+            return null;
+        }
+        String normalized = table.trim();
+        if (normalized.isEmpty() || "*".equals(normalized) || "ALL TABLES".equalsIgnoreCase(normalized)) {
+            return null;
+        }
+        return normalized;
     }
 }
