@@ -157,7 +157,7 @@
               class="custom-menu bottom-menu"
               :selectable="false"
             >
-              <a-menu-item key="settings">
+              <a-menu-item key="settings" @click="goSettings">
                 <a-icon type="setting" />
                 <span>设置</span>
               </a-menu-item>
@@ -178,11 +178,18 @@
       <a-layout style="flex: 1; min-width: 0;">
         <a-layout-content style="margin: 0; background: #f4f7f9;">
           <div :style="{ padding: '24px', background: 'transparent', minHeight: '360px' }">
+            <a-alert
+              v-if="systemSettings.maintenanceNotice"
+              class="maintenance-notice"
+              type="warning"
+              show-icon
+              :message="systemSettings.maintenanceNotice"
+            />
             <router-view />
           </div>
         </a-layout-content>
         <a-layout-footer style="text-align: center">
-          DGA Platform ©2026 Created by Data Engineering Team
+          {{ systemSettings.footerText || 'DGA Platform ©2026 Created by Data Engineering Team' }}
         </a-layout-footer>
       </a-layout>
     </a-layout>
@@ -192,7 +199,7 @@
 <script>
 import { store, mutations } from '../store';
 import axios from 'axios';
-import { canDelete, deleteForbiddenMessage, isRootAdmin } from '../utils/currentUser';
+import { canDelete, clearAuthCache, deleteForbiddenMessage, getCurrentUser, isRootAdmin } from '../utils/currentUser';
 
 export default {
   data() {
@@ -203,7 +210,11 @@ export default {
       selectedCluster: '',
       clusters: [],
       createClusterVisible: false,
-      newClusterName: ''
+      newClusterName: '',
+      systemSettings: {
+        footerText: 'DGA Platform ©2026 Created by Data Engineering Team',
+        maintenanceNotice: ''
+      }
     };
   },
   watch: {
@@ -229,6 +240,18 @@ export default {
     }
   },
   methods: {
+    async fetchSystemSettings() {
+      try {
+        const res = await axios.get('/api/settings');
+        const system = (res.data && res.data.system) || {};
+        this.systemSettings = {
+          footerText: system.footerText || 'DGA Platform ©2026 Created by Data Engineering Team',
+          maintenanceNotice: system.maintenanceNotice || ''
+        };
+      } catch (e) {
+        console.error('Failed to fetch system settings', e);
+      }
+    },
     async fetchClusters() {
       try {
         const res = await axios.get('/api/clusters');
@@ -306,20 +329,19 @@ export default {
       }
     },
     handleLogout() {
-      localStorage.removeItem('user');
+      clearAuthCache();
       this.$router.push('/login');
+    },
+    goSettings() {
+      if (this.$route.path !== '/settings') {
+        this.$router.push('/settings');
+      }
     }
   },
   created() {
-    const userStr = localStorage.getItem('user');
-    if (userStr) {
-      try {
-        const user = JSON.parse(userStr);
-        this.username = user.user?.username || user.username || 'Admin';
-      } catch (e) {
-        // ignore
-      }
-    }
+    const user = getCurrentUser();
+    this.username = user.username || 'Admin';
+    this.fetchSystemSettings();
   }
 };
 </script>
@@ -451,6 +473,10 @@ export default {
 }
 .sider-trigger:hover {
   color: #1890ff;
+}
+
+.maintenance-notice {
+  margin-bottom: 16px;
 }
 
 .ant-breadcrumb-separator {

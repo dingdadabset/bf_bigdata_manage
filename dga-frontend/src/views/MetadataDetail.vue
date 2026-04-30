@@ -35,8 +35,13 @@
             <a-descriptions-item label="存储格式">
               <a-tag color="blue">{{ tableInfo.storageFormat }}</a-tag>
             </a-descriptions-item>
-            <a-descriptions-item label="大小">
-              {{ formatSize(tableInfo.totalSize) }}
+            <a-descriptions-item label="元数据大小">
+              <a-tooltip :title="sizeHelpText">
+                <span class="size-value">
+                  {{ formatSize(tableInfo.totalSize) }}
+                  <a-icon type="question-circle" class="size-help-icon" />
+                </span>
+              </a-tooltip>
             </a-descriptions-item>
             <a-descriptions-item label="记录数">
               {{ tableInfo.recordCount !== null ? tableInfo.recordCount : '-' }}
@@ -71,7 +76,15 @@
           <a-descriptions-item label="存储格式">
             <a-tag color="blue">{{ tableInfo.storageFormat || '-' }}</a-tag>
           </a-descriptions-item>
-          <a-descriptions-item label="大小">{{ formatSize(tableInfo.totalSize) }}</a-descriptions-item>
+          <a-descriptions-item label="元数据大小">
+            <a-tooltip :title="sizeHelpText">
+              <span class="size-value">
+                {{ formatSize(tableInfo.totalSize) }}
+                <a-icon type="question-circle" class="size-help-icon" />
+              </span>
+            </a-tooltip>
+            <span v-if="isZeroSize(tableInfo.totalSize)" class="size-inline-note">可能未刷新统计</span>
+          </a-descriptions-item>
           <a-descriptions-item label="记录数">{{ tableInfo.recordCount !== null ? tableInfo.recordCount : '-' }}</a-descriptions-item>
           <a-descriptions-item label="分区数">{{ tableInfo.partitionCount || 0 }}</a-descriptions-item>
           <a-descriptions-item label="存储路径" :span="2">
@@ -82,23 +95,47 @@
         </a-descriptions>
       </div>
       <div v-else-if="activeTabKey === 'schema'">
-        <a-table :columns="columns" :data-source="columnData" row-key="id" :pagination="false" :loading="loadingColumns" :scroll="{ x: 900 }">
-          <span slot="columnType" slot-scope="text, record">
-            <a-tag color="green">{{ text || record.column_type || record.dataType || '-' }}</a-tag>
-          </span>
-          <span slot="isPrimaryKey" slot-scope="text">
-            <a-icon v-if="text" type="key" style="color: #faad14" />
-          </span>
-        </a-table>
+        <div class="schema-toolbar">
+          <a-alert
+            class="schema-source-alert"
+            :type="hiveCreateSqlSource === 'HIVE_SERVER2' ? 'success' : 'warning'"
+            :message="schemaSourceMessage"
+            show-icon
+          />
+          <a-space>
+            <a-button icon="copy" @click="copyHiveCreateSql">复制 SQL</a-button>
+            <a-button icon="reload" :loading="loadingColumns" @click="fetchColumns">刷新字段</a-button>
+            <a-button type="primary" icon="search" :loading="loadingCreateSql" @click="fetchHiveCreateSql">查询 HS2 真实建表语句</a-button>
+          </a-space>
+        </div>
+        <a-spin :spinning="loadingCreateSql || loadingColumns">
+          <pre class="schema-json"><code><span
+            v-for="line in highlightedHiveCreateSqlLines"
+            :key="line.index"
+            class="schema-code-line"
+            :class="line.className"
+            v-html="line.html"
+          ></span></code></pre>
+        </a-spin>
       </div>
       <div v-else-if="activeTabKey === 'partitions'">
-        <a-alert
-          :message="`当前表分区总数：${partitionCount || 0}，页面展示最近采集的最新分区`"
-          type="info"
-          show-icon
-          style="margin-bottom: 16px"
-        />
-        <a-table :columns="partitionColumns" :data-source="partitionData" row-key="id" :pagination="{ pageSize: 10 }" :loading="loadingPartitions" :scroll="{ x: 1100 }">
+        <div class="partition-summary">
+          <div class="partition-summary-item">
+            <span>总分区数</span>
+            <strong>{{ formatNumber(partitionCount) }}</strong>
+          </div>
+          <div class="partition-summary-item">
+            <span>平均文件大小</span>
+            <strong>{{ formatSize(partitionAverageSize) }}</strong>
+            <small>{{ partitionAverageBasis }}</small>
+          </div>
+          <div class="partition-summary-item">
+            <span>当前展示</span>
+            <strong>最新 {{ partitionData.length }} 个</strong>
+            <small>上限 {{ partitionDisplayLimit }} 个</small>
+          </div>
+        </div>
+        <a-table :columns="partitionColumns" :data-source="partitionData" row-key="id" :pagination="false" :loading="loadingPartitions" :scroll="{ x: 1100 }">
           <span slot="partitionSize" slot-scope="text">{{ formatSize(text) }}</span>
           <span slot="partitionTime" slot-scope="text">{{ text ? new Date(text).toLocaleString() : '-' }}</span>
           <span slot="partitionPath" slot-scope="text">
@@ -242,6 +279,50 @@
           <a-button v-if="canManageOwner" type="primary" icon="save" :loading="managementSaving" @click="saveManagement">保存管理元数据</a-button>
         </a-form-model>
       </div>
+      <div v-else-if="activeTabKey === 'quality'">
+        <div class="table-toolbar">
+          <a-button icon="dashboard" @click="$router.push({ path: '/quality', query: { tableId } })">进入质量中心</a-button>
+          <a-button v-if="canManageOwner" type="primary" icon="thunderbolt" :loading="qualityExecuting" @click="executeTableQuality">执行本表规则</a-button>
+        </div>
+        <a-table
+          :columns="qualityRuleColumns"
+          :data-source="qualityRules"
+          row-key="id"
+          :pagination="{ pageSize: 5 }"
+          :loading="loadingQuality"
+          :scroll="{ x: 1000 }"
+        >
+          <span slot="qualityRuleType" slot-scope="text">
+            <a-tag color="blue">{{ qualityRuleTypeLabel(text) }}</a-tag>
+          </span>
+          <span slot="qualityStatus" slot-scope="text">
+            <a-tag :color="text === 'SUCCESS' ? 'green' : text === 'FAILED' ? 'red' : 'default'">
+              {{ text === 'SUCCESS' ? '成功' : text === 'FAILED' ? '失败' : '未执行' }}
+            </a-tag>
+          </span>
+          <span slot="qualityTime" slot-scope="text">{{ text ? new Date(text).toLocaleString() : '-' }}</span>
+        </a-table>
+        <a-divider orientation="left">质量问题</a-divider>
+        <a-table
+          :columns="qualityIssueColumns"
+          :data-source="qualityIssues"
+          row-key="id"
+          :pagination="{ pageSize: 5 }"
+          :loading="loadingQualityIssues"
+          :scroll="{ x: 1000 }"
+        >
+          <span slot="qualityIssueStatus" slot-scope="text">
+            <a-tag :color="text === 'OPEN' ? 'red' : 'green'">{{ text === 'OPEN' ? '待处理' : '已解决' }}</a-tag>
+          </span>
+          <span slot="qualityIssueMessage" slot-scope="text">
+            <a-tooltip v-if="text" :title="text">
+              <span class="lineage-message">{{ text }}</span>
+            </a-tooltip>
+            <span v-else>-</span>
+          </span>
+          <span slot="qualityTime" slot-scope="text">{{ text ? new Date(text).toLocaleString() : '-' }}</span>
+        </a-table>
+      </div>
       <div v-else-if="activeTabKey === 'permissions'">
         <a-table :columns="permissionColumns" :data-source="permissionsData" row-key="id" :pagination="{ pageSize: 10 }" :loading="loadingPermissions" :scroll="{ x: 1000 }">
           <span slot="permissionTime" slot-scope="text">{{ text ? new Date(text).toLocaleString() : '-' }}</span>
@@ -308,11 +389,17 @@ export default {
       tableId: this.$route.params.id,
       tableInfo: {},
       columnData: [],
+      hiveCreateSqlFromServer: '',
+      hiveCreateSqlSource: 'LOCAL_FALLBACK',
+      hiveCreateSqlError: '',
       partitionData: [],
       partitionCount: 0,
+      partitionDisplayLimit: 10,
       taskData: [],
       permissionsData: [],
       metricsData: [],
+      qualityRules: [],
+      qualityIssues: [],
       themes: [],
       tags: [],
       businessInfo: {
@@ -335,6 +422,7 @@ export default {
       lineageChart: null,
       lineageTasks: [],
       loadingColumns: false,
+      loadingCreateSql: false,
       loadingPartitions: false,
       loadingTasks: false,
       lineageLoading: false,
@@ -342,6 +430,9 @@ export default {
       lineageTasksLoading: false,
       loadingPermissions: false,
       loadingMetrics: false,
+      loadingQuality: false,
+      loadingQualityIssues: false,
+      qualityExecuting: false,
       syncing: false,
       businessSaving: false,
       managementSaving: false,
@@ -386,6 +477,10 @@ export default {
         {
           key: 'management',
           tab: '管理元数据',
+        },
+        {
+          key: 'quality',
+          tab: '质量',
         },
         {
           key: 'permissions',
@@ -440,6 +535,23 @@ export default {
         { title: '负责人', dataIndex: 'owner', key: 'owner' },
         { title: '状态', dataIndex: 'status', key: 'status', scopedSlots: { customRender: 'metricStatus' }, width: 100 },
         { title: '操作', key: 'action', scopedSlots: { customRender: 'metricAction' }, width: 120 }
+      ],
+      qualityRuleColumns: [
+        { title: '规则名称', dataIndex: 'ruleName', key: 'ruleName', width: 220 },
+        { title: '类型', dataIndex: 'ruleType', key: 'ruleType', scopedSlots: { customRender: 'qualityRuleType' }, width: 120 },
+        { title: '字段', dataIndex: 'columnName', key: 'columnName', width: 140 },
+        { title: '负责人', dataIndex: 'owner', key: 'owner', width: 120 },
+        { title: '最近状态', dataIndex: 'lastExecutionStatus', key: 'lastExecutionStatus', scopedSlots: { customRender: 'qualityStatus' }, width: 120 },
+        { title: '结果值', dataIndex: 'lastResultValue', key: 'lastResultValue', width: 110 },
+        { title: '最近执行', dataIndex: 'lastExecutedAt', key: 'lastExecutedAt', scopedSlots: { customRender: 'qualityTime' }, width: 180 }
+      ],
+      qualityIssueColumns: [
+        { title: '问题', dataIndex: 'issueTitle', key: 'issueTitle', width: 220 },
+        { title: '描述', dataIndex: 'issueDescription', key: 'issueDescription', scopedSlots: { customRender: 'qualityIssueMessage' }, width: 320 },
+        { title: '状态', dataIndex: 'status', key: 'status', scopedSlots: { customRender: 'qualityIssueStatus' }, width: 110 },
+        { title: '负责人', dataIndex: 'owner', key: 'owner', width: 120 },
+        { title: '最近发现', dataIndex: 'lastSeenAt', key: 'lastSeenAt', scopedSlots: { customRender: 'qualityTime' }, width: 180 },
+        { title: '解决时间', dataIndex: 'resolvedAt', key: 'resolvedAt', scopedSlots: { customRender: 'qualityTime' }, width: 180 }
       ]
     };
   },
@@ -447,12 +559,52 @@ export default {
     canManageOwner() {
       return canDelete();
     },
+    hiveCreateSql() {
+      if (this.hiveCreateSqlFromServer) {
+        return this.hiveCreateSqlFromServer;
+      }
+      const payload = this.buildHiveCreatePayload();
+      return payload.createTableSql;
+    },
+    schemaSourceMessage() {
+      if (this.hiveCreateSqlSource === 'HIVE_SERVER2') {
+        return '建表语句来自 HiveServer2 SHOW CREATE TABLE';
+      }
+      return this.hiveCreateSqlError
+        ? `HiveServer2 获取失败，当前展示本地元数据推断 SQL：${this.hiveCreateSqlError}`
+        : '当前展示本地元数据推断 SQL，可点击“查询 HS2 真实建表语句”获取 Hive 原始 DDL';
+    },
+    highlightedHiveCreateSqlLines() {
+      return this.hiveCreateSql.split('\n').map((line, index, lines) => ({
+        index,
+        html: this.highlightSqlLine(line),
+        className: this.getSchemaSqlLineClass(line, lines[index - 1] || '')
+      }));
+    },
     breadcrumbRoutes() {
       return [
         { path: '/metadata', breadcrumbName: '元数据列表' },
-        { path: '', breadcrumbName: this.tableInfo.dbName || '...' },
-        { path: '', breadcrumbName: this.tableInfo.tableName || '...' },
+        { path: `db-${this.tableInfo.dbName || 'unknown'}`, breadcrumbName: this.tableInfo.dbName || '...' },
+        { path: `table-${this.tableInfo.id || this.tableId}`, breadcrumbName: this.tableInfo.tableName || '...' },
       ];
+    },
+    sizeHelpText() {
+      return '当前大小来自 Hive Metastore TABLE_PARAMS.totalSize / PARTITION_PARAMS.totalSize。若未执行统计刷新或 HDFS 文件刚变化，可能显示 0 B 或与实际文件大小不一致。';
+    },
+    partitionAverageSize() {
+      const sizes = (this.partitionData || [])
+        .map(item => Number(item.totalSize))
+        .filter(size => Number.isFinite(size) && size >= 0);
+      if (!sizes.length) {
+        return null;
+      }
+      return sizes.reduce((sum, size) => sum + size, 0) / sizes.length;
+    },
+    partitionAverageBasis() {
+      if (!this.partitionData.length) {
+        return '暂无展示分区';
+      }
+      return `基于当前展示 ${this.formatNumber(this.partitionData.length)} 个`;
     }
   },
   mounted() {
@@ -469,6 +621,9 @@ export default {
       try {
         const res = await axios.get(`/api/metadata/table/${this.tableId}`);
         this.tableInfo = res.data;
+        if (this.activeTabKey === 'schema' && Number(this.tableInfo.partitionCount || 0) > 0 && this.partitionData.length === 0) {
+          this.fetchPartitions();
+        }
         this.fetchSchedulerEndpoints();
       } catch (e) {
         this.$message.error('获取表详情失败');
@@ -478,19 +633,37 @@ export default {
       this.loadingColumns = true;
       try {
         const res = await axios.get(`/api/metadata/table/${this.tableId}/columns`);
-        this.columnData = res.data;
+        this.columnData = res.data || [];
       } catch (e) {
         this.$message.error('获取字段信息失败');
       } finally {
         this.loadingColumns = false;
       }
     },
+    async fetchHiveCreateSql() {
+      this.loadingCreateSql = true;
+      try {
+        const res = await axios.get(`/api/metadata/table/${this.tableId}/create-ddl`);
+        this.hiveCreateSqlFromServer = res.data?.sql || '';
+        this.hiveCreateSqlSource = 'HIVE_SERVER2';
+        this.hiveCreateSqlError = '';
+      } catch (e) {
+        this.hiveCreateSqlFromServer = '';
+        this.hiveCreateSqlSource = 'LOCAL_FALLBACK';
+        this.hiveCreateSqlError = this.resolveErrorMessage(e);
+      } finally {
+        this.loadingCreateSql = false;
+      }
+    },
     async fetchPartitions() {
       this.loadingPartitions = true;
       try {
-        const res = await axios.get(`/api/metadata/table/${this.tableId}/partitions`);
+        const res = await axios.get(`/api/metadata/table/${this.tableId}/partitions`, {
+          params: { limit: this.partitionDisplayLimit }
+        });
         this.partitionCount = res.data?.partitionCount || 0;
-        this.partitionData = res.data?.items || [];
+        this.partitionDisplayLimit = res.data?.displayLimit || this.partitionDisplayLimit;
+        this.partitionData = (res.data?.items || []).slice(0, this.partitionDisplayLimit);
       } catch (e) {
         this.$message.error('获取分区信息失败');
       } finally {
@@ -560,6 +733,39 @@ export default {
       } finally {
         this.loadingMetrics = false;
       }
+    },
+    async fetchQualityRules() {
+      this.loadingQuality = true;
+      try {
+        const res = await axios.get('/api/quality/rules', { params: { tableId: this.tableId } });
+        this.qualityRules = res.data || [];
+      } catch (e) {
+        this.$message.error('获取质量规则失败');
+      } finally {
+        this.loadingQuality = false;
+      }
+    },
+    async fetchQualityIssues() {
+      this.loadingQualityIssues = true;
+      try {
+        const res = await axios.get('/api/quality/issues', {
+          params: {
+            tableId: this.tableId,
+            size: 20
+          }
+        });
+        this.qualityIssues = res.data?.content || [];
+      } catch (e) {
+        this.$message.error('获取质量问题失败');
+      } finally {
+        this.loadingQualityIssues = false;
+      }
+    },
+    async fetchQuality() {
+      await Promise.all([
+        this.fetchQualityRules(),
+        this.fetchQualityIssues()
+      ]);
     },
     async fetchTasks() {
       this.loadingTasks = true;
@@ -634,8 +840,12 @@ export default {
         }
       } else if (key === 'partitions' && this.partitionData.length === 0) {
         this.fetchPartitions();
+      } else if (key === 'schema' && Number(this.tableInfo.partitionCount || 0) > 0 && this.partitionData.length === 0) {
+        this.fetchPartitions();
       } else if (key === 'permissions' && this.permissionsData.length === 0) {
         this.fetchPermissions();
+      } else if (key === 'quality') {
+        this.fetchQuality();
       }
     },
     async fetchLineage() {
@@ -782,13 +992,26 @@ export default {
              this.lineageChart && this.lineageChart.resize();
         });
     },
-    formatSize(bytes) {
-      if (!bytes && bytes !== 0) return '-';
+    formatSize(value) {
+      const bytes = Number(value);
+      if (!Number.isFinite(bytes)) return '-';
       if (bytes === 0) return '0 B';
-      const k = 1024;
-      const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-      const i = Math.floor(Math.log(bytes) / Math.log(k));
-      return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+      const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+      let unitIndex = 0;
+      let displayValue = Math.abs(bytes);
+      while (displayValue >= 1024 && unitIndex < units.length - 1) {
+        displayValue /= 1024;
+        unitIndex += 1;
+      }
+      const signedValue = bytes < 0 ? -displayValue : displayValue;
+      return `${parseFloat(signedValue.toFixed(2))} ${units[unitIndex]}`;
+    },
+    formatNumber(value) {
+      const number = Number(value || 0);
+      return number.toLocaleString();
+    },
+    isZeroSize(bytes) {
+      return Number(bytes) === 0;
     },
     getLifecycleColor(status) {
       if (status === 'DEPRECATED') return 'orange';
@@ -896,6 +1119,202 @@ export default {
         this.metricSaving = false;
       }
     },
+    async executeTableQuality() {
+      this.qualityExecuting = true;
+      try {
+        const res = await axios.post(`/api/quality/execute/table/${this.tableId}`);
+        this.$message.success(`已执行 ${res.data?.length || 0} 条质量规则`);
+        this.fetchQuality();
+      } catch (e) {
+        this.$message.error(e.response?.data?.message || '执行质量规则失败');
+      } finally {
+        this.qualityExecuting = false;
+      }
+    },
+    qualityRuleTypeLabel(type) {
+      const labels = {
+        NULL_RATE: '空值率',
+        UNIQUE_RATE: '重复率',
+        VALUE_RANGE: '数值范围',
+        ROW_COUNT: '行数检查',
+        FRESHNESS: '新鲜度',
+        REGEX_MATCH: '正则匹配'
+      };
+      return labels[type] || type || '-';
+    },
+    buildHiveCreatePayload() {
+      const databaseName = this.tableInfo.dbName || '';
+      const tableName = this.tableInfo.tableName || '';
+      const columns = (this.columnData || []).map(column => ({
+        name: column.columnName || '',
+        type: column.columnType || column.column_type || column.dataType || 'string',
+        comment: column.comment || '',
+        primaryKey: Boolean(column.isPrimaryKey),
+        securityLevel: column.securityLevel || ''
+      }));
+      return {
+        database: databaseName,
+        table: tableName,
+        tableComment: this.tableInfo.tableComment || '',
+        storageFormat: this.tableInfo.storageFormat || '',
+        location: this.tableInfo.locationPath || '',
+        columns,
+        partitionColumns: this.inferPartitionColumns(),
+        createTableSql: this.buildHiveCreateSql(databaseName, tableName, columns)
+      };
+    },
+    buildHiveCreateSql(databaseName, tableName, columns) {
+      const qualifiedName = databaseName
+        ? `${this.quoteHiveIdentifier(databaseName)}.${this.quoteHiveIdentifier(tableName)}`
+        : this.quoteHiveIdentifier(tableName || 'table_name');
+      const partitionColumns = this.inferPartitionColumns();
+      const columnLines = columns.length
+        ? columns.map(column => {
+          const comment = column.comment ? ` COMMENT '${this.escapeHiveString(column.comment)}'` : '';
+          return `  ${this.quoteHiveIdentifier(column.name)} ${column.type || 'string'}${comment}`;
+        }).join(',\n')
+        : '  `column_name` string';
+      const createKeyword = this.shouldUseExternalTable() ? 'CREATE EXTERNAL TABLE' : 'CREATE TABLE';
+      const sql = [
+        '-- Generated from collected Hive Metastore metadata.',
+        '-- For an exact statement, prefer SHOW CREATE TABLE in Hive when available.',
+        `${createKeyword} IF NOT EXISTS ${qualifiedName} (`,
+        columnLines,
+        ')'
+      ];
+      if (this.tableInfo.tableComment) {
+        sql.push(`COMMENT '${this.escapeHiveString(this.tableInfo.tableComment)}'`);
+      }
+      if (partitionColumns.length) {
+        sql.push('PARTITIONED BY (');
+        sql.push(partitionColumns.map(column => `  ${this.quoteHiveIdentifier(column.name)} ${column.type}`).join(',\n'));
+        sql.push(')');
+      } else if (Number(this.tableInfo.partitionCount || 0) > 0) {
+        sql.push('-- PARTITIONED BY (...) -- 分区存在，但当前采集结果无法推断分区字段名');
+      }
+      if (this.tableInfo.storageFormat) {
+        sql.push(`STORED AS ${String(this.tableInfo.storageFormat).toUpperCase()}`);
+      }
+      if (this.tableInfo.locationPath) {
+        sql.push(`LOCATION '${this.escapeHiveString(this.tableInfo.locationPath)}'`);
+      }
+      return `${sql.join('\n')};`;
+    },
+    inferPartitionColumns() {
+      const specs = (this.partitionData || [])
+        .map(item => item.partitionSpec || item.partitionName || '')
+        .filter(Boolean);
+      if (!specs.length) {
+        return [];
+      }
+      const names = [];
+      specs[0].split('/').forEach(part => {
+        const eqIndex = part.indexOf('=');
+        const name = eqIndex > 0 ? part.slice(0, eqIndex) : '';
+        if (name && !names.includes(name)) {
+          names.push(name);
+        }
+      });
+      return names.map(name => ({
+        name,
+        type: this.inferPartitionType(name, specs)
+      }));
+    },
+    inferPartitionType(name, specs) {
+      const values = specs
+        .map(spec => (spec.split('/').find(part => part.startsWith(`${name}=`)) || '').slice(name.length + 1))
+        .filter(Boolean);
+      if (!values.length) {
+        return 'string';
+      }
+      if (values.every(value => /^\d{4}-\d{2}-\d{2}$/.test(value))) {
+        return 'date';
+      }
+      if (values.every(value => /^-?\d+$/.test(value))) {
+        return 'bigint';
+      }
+      return 'string';
+    },
+    shouldUseExternalTable() {
+      const location = String(this.tableInfo.locationPath || '').toLowerCase();
+      return location.includes('/external/') || location.includes('/external_') || location.includes('/external.');
+    },
+    getSchemaSqlLineClass(line, previousLine) {
+      if (/^\s*`[^`]+`\s+/.test(line)) {
+        return 'schema-field-line';
+      }
+      if (/^(COMMENT|PARTITIONED|STORED|LOCATION)\b/.test(line)) {
+        return 'schema-ddl-line';
+      }
+      return '';
+    },
+    highlightSqlLine(line) {
+      const placeholders = [];
+      const token = html => {
+        const key = `__SQL_TOKEN_${placeholders.length}__`;
+        placeholders.push({ key, html });
+        return key;
+      };
+      let html = this.escapeHtml(line)
+        .replace(/(`[^`]+`)/g, match => token(`<span class="sql-identifier">${match}</span>`))
+        .replace(/'([^']*)'/g, match => token(`<span class="sql-string">${match}</span>`))
+        .replace(/\b(CREATE|EXTERNAL|TABLE|IF|NOT|EXISTS|COMMENT|PARTITIONED|BY|STORED|AS|LOCATION)\b/g, '<span class="sql-keyword">$1</span>')
+        .replace(/\b(string|timestamp|bigint|int|double|float|decimal|date|boolean|array|map|struct)\b/gi, '<span class="sql-type">$1</span>');
+      placeholders.forEach(item => {
+        html = html.replace(item.key, item.html);
+      });
+      return html;
+    },
+    escapeHtml(value) {
+      return String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+    },
+    resolveErrorMessage(error) {
+      const data = error && error.response && error.response.data;
+      if (typeof data === 'string' && data.trim()) {
+        return data;
+      }
+      if (data && data.message && data.message !== 'An unexpected error occurred') {
+        return data.message;
+      }
+      if (data && data.error) {
+        return data.error;
+      }
+      if (error && error.message) {
+        return error.message;
+      }
+      return '未知错误';
+    },
+    quoteHiveIdentifier(value) {
+      const raw = String(value || '').replace(/`/g, '``');
+      return `\`${raw}\``;
+    },
+    escapeHiveString(value) {
+      return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    },
+    async copyHiveCreateSql() {
+      const text = this.hiveCreateSql;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const textarea = document.createElement('textarea');
+          textarea.value = text;
+          textarea.setAttribute('readonly', 'readonly');
+          textarea.style.position = 'fixed';
+          textarea.style.left = '-9999px';
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand('copy');
+          document.body.removeChild(textarea);
+        }
+        this.$message.success('已复制 Hive 建表 SQL');
+      } catch (e) {
+        this.$message.error('复制失败，请手动选择复制');
+      }
+    },
     showOwnerModal() {
       this.ownerForm.owner = this.tableInfo.owner || '';
       this.ownerModalVisible = true;
@@ -925,8 +1344,62 @@ export default {
   background: #fff;
   min-height: 100%;
 }
+.metadata-detail >>> .ant-descriptions-bordered .ant-descriptions-item-label {
+  background: #fafafa;
+  color: #344054;
+  text-align: right;
+  white-space: nowrap;
+  width: 116px;
+}
+.metadata-detail >>> .ant-descriptions-bordered .ant-descriptions-item-content {
+  color: #475467;
+  min-width: 180px;
+  text-align: left;
+}
 .break-text {
   word-break: break-all;
+}
+.size-value {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+}
+.size-help-icon {
+  color: #98a2b3;
+  font-size: 12px;
+}
+.size-inline-note {
+  color: #98a2b3;
+  font-size: 12px;
+  margin-left: 8px;
+}
+.partition-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.partition-summary-item {
+  min-height: 78px;
+  padding: 14px 16px;
+  background: #f8fafc;
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+}
+.partition-summary-item span,
+.partition-summary-item small {
+  display: block;
+  color: #667085;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.partition-summary-item strong {
+  display: block;
+  margin: 4px 0;
+  color: #1f2937;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
 }
 .path-cell {
   display: inline-block;
@@ -942,6 +1415,76 @@ export default {
 .table-toolbar {
   margin-bottom: 12px;
   text-align: right;
+}
+.schema-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.schema-source-alert {
+  flex: 1;
+  min-width: 0;
+}
+.schema-json {
+  min-height: 420px;
+  max-height: 680px;
+  margin: 0;
+  padding: 18px 20px;
+  overflow: auto;
+  color: #dbeafe;
+  font-size: 13px;
+  line-height: 1.7;
+  text-align: left;
+  background: #0f172a;
+  border: 1px solid #26344f;
+  border-radius: 10px;
+  box-shadow: 0 14px 28px rgba(15, 23, 42, 0.18);
+  white-space: pre;
+}
+.schema-code-line {
+  display: block;
+  min-height: 22px;
+  padding: 0 10px;
+  border-left: 3px solid transparent;
+  font-family: Menlo, Monaco, Consolas, "Courier New", monospace;
+}
+.schema-code-line:hover {
+  background: rgba(148, 163, 184, 0.12);
+}
+.schema-field-line {
+  margin: 2px 0;
+  background: rgba(14, 165, 233, 0.12);
+  border-left-color: #38bdf8;
+  border-radius: 6px;
+}
+.schema-field-detail-line {
+  background: rgba(14, 165, 233, 0.07);
+  border-left-color: rgba(56, 189, 248, 0.6);
+}
+.schema-ddl-line {
+  margin-top: 10px;
+  padding-top: 8px;
+  color: #fef3c7;
+  background: rgba(245, 158, 11, 0.12);
+  border-left-color: #f59e0b;
+  border-radius: 6px;
+}
+.schema-json >>> .sql-identifier {
+  color: #93c5fd;
+  font-weight: 700;
+}
+.schema-json >>> .sql-string {
+  color: #86efac;
+}
+.schema-json >>> .sql-type {
+  color: #c4b5fd;
+  font-weight: 600;
+}
+.schema-json >>> .sql-keyword {
+  color: #fbbf24;
+  font-weight: 700;
 }
 .lineage-toolbar {
   display: flex;
@@ -960,5 +1503,10 @@ export default {
   text-overflow: ellipsis;
   vertical-align: middle;
   white-space: nowrap;
+}
+@media (max-width: 768px) {
+  .partition-summary {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

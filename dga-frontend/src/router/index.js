@@ -12,7 +12,9 @@ import UserProfile from '../views/UserProfile.vue';
 import ResourceManagement from '../views/ResourceManagement.vue';
 import ClusterManagement from '../views/system/ClusterManagement.vue';
 import PlatformUsers from '../views/system/PlatformUsers.vue';
+import SettingsCenter from '../views/system/SettingsCenter.vue';
 import AuthorizationCenter from '../views/access/AuthorizationCenter.vue';
+import { clearAuthCache, hasAuthSession } from '../utils/currentUser';
 
 Vue.use(VueRouter);
 
@@ -101,6 +103,12 @@ const routes = [
         name: 'PlatformUsers',
         component: PlatformUsers,
         meta: { title: '平台用户' }
+      },
+      {
+        path: 'settings',
+        name: 'SettingsCenter',
+        component: SettingsCenter,
+        meta: { title: '设置中心' }
       }
     ]
   }
@@ -116,7 +124,11 @@ const router = new VueRouter({
 router.beforeEach((to, from, next) => {
   const publicPages = ['/login'];
   const authRequired = !publicPages.includes(to.path);
-  const loggedIn = localStorage.getItem('user');
+  const loggedIn = hasAuthSession();
+
+  if (to.path === '/login' && !to.query.token) {
+    clearAuthCache();
+  }
 
   if (authRequired && !loggedIn) {
     return next('/login');

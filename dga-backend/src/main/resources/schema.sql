@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS `data_source_config` (
   `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   `is_deleted` BOOLEAN DEFAULT FALSE,
   PRIMARY KEY (`id`),
-  UNIQUE KEY `uk_cluster_endpoint_type` (`cluster_code`, `endpoint_id`, `type`)
+  UNIQUE KEY `uk_cluster_endpoint_type` (`cluster_code`, `endpoint_id`, `type`),
+  INDEX `idx_ds_search_scope` (`type`, `endpoint_id`, `is_deleted`, `id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 2. Metadata: Table Info
@@ -48,7 +49,10 @@ CREATE TABLE IF NOT EXISTS `meta_table_info` (
   `sync_time` DATETIME,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_ds_db_tbl` (`datasource_id`, `db_name`, `table_name`),
-  INDEX `idx_cluster_db_tbl` (`cluster_code`, `db_name`, `table_name`)
+  INDEX `idx_cluster_db_tbl` (`cluster_code`, `db_name`, `table_name`),
+  INDEX `idx_meta_search_filters` (`datasource_id`, `db_name`, `owner`, `lifecycle_status`, `sync_time`),
+  INDEX `idx_meta_source_owner` (`source_owner`),
+  INDEX `idx_meta_table_name` (`table_name`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 3. Metadata: Column Info
@@ -62,7 +66,8 @@ CREATE TABLE IF NOT EXISTS `meta_column_info` (
   `is_primary_key` BOOLEAN DEFAULT FALSE,
   `security_level` VARCHAR(20) COMMENT 'L1, L2, L3, L4',
   PRIMARY KEY (`id`),
-  INDEX `idx_table_col` (`table_id`, `column_name`)
+  INDEX `idx_table_col` (`table_id`, `column_name`),
+  INDEX `idx_col_name_table` (`column_name`, `table_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 CREATE TABLE IF NOT EXISTS `meta_partition_info` (
@@ -130,7 +135,8 @@ CREATE TABLE IF NOT EXISTS `dga_metric_definition` (
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_metric_code` (`metric_code`),
   INDEX `idx_metric_table` (`table_id`),
-  INDEX `idx_metric_status` (`status`)
+  INDEX `idx_metric_status` (`status`),
+  INDEX `idx_metric_table_status` (`table_id`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='指标定义';
 
 CREATE TABLE IF NOT EXISTS `dga_metadata_tag` (
@@ -184,24 +190,76 @@ CREATE TABLE IF NOT EXISTS `dga_metadata_collection_task` (
 CREATE TABLE IF NOT EXISTS `dga_quality_rule` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `table_id` BIGINT NOT NULL,
+  `datasource_id` BIGINT,
+  `db_name` VARCHAR(255),
+  `table_name` VARCHAR(255),
+  `rule_name` VARCHAR(255),
   `column_name` VARCHAR(100),
-  `rule_type` VARCHAR(50) NOT NULL COMMENT 'NULL_CHECK, UNIQUENESS, etc.',
+  `rule_type` VARCHAR(50) NOT NULL COMMENT 'NULL_RATE, UNIQUE_RATE, VALUE_RANGE, ROW_COUNT, FRESHNESS, REGEX_MATCH',
+  `severity` VARCHAR(20) DEFAULT 'MEDIUM',
+  `status` VARCHAR(20) DEFAULT 'ACTIVE',
+  `scan_scope` VARCHAR(50) DEFAULT 'LATEST_PARTITION',
   `threshold` DOUBLE COMMENT 'Failure rate threshold e.g. 0.05',
+  `expected_value` VARCHAR(100),
+  `min_value` DOUBLE,
+  `max_value` DOUBLE,
+  `regex_pattern` VARCHAR(1000),
   `action_type` VARCHAR(50) COMMENT 'ALARM, BLOCK_JOB',
+  `owner` VARCHAR(100),
+  `last_execution_status` VARCHAR(20),
+  `last_result_value` DOUBLE,
+  `last_error_message` VARCHAR(1000),
+  `last_executed_at` DATETIME,
+  `created_by` VARCHAR(100),
+  `updated_at` DATETIME,
   `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY (`id`)
+  PRIMARY KEY (`id`),
+  INDEX `idx_quality_rule_table` (`table_id`),
+  INDEX `idx_quality_rule_datasource` (`datasource_id`),
+  INDEX `idx_quality_rule_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 5. Data Quality Executions
 CREATE TABLE IF NOT EXISTS `dga_quality_execution` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `rule_id` BIGINT NOT NULL,
+  `table_id` BIGINT,
   `status` VARCHAR(20) NOT NULL COMMENT 'SUCCESS, FAILED, WARNING',
   `result_value` DOUBLE,
+  `threshold` DOUBLE,
+  `scan_scope` VARCHAR(50),
+  `scan_filter` VARCHAR(1000),
+  `executed_sql` VARCHAR(4000),
   `error_message` TEXT,
+  `executed_by` VARCHAR(100),
+  `duration_ms` BIGINT,
   `executed_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
-  INDEX `idx_rule_exec` (`rule_id`)
+  INDEX `idx_rule_exec` (`rule_id`),
+  INDEX `idx_quality_exec_table` (`table_id`),
+  INDEX `idx_quality_exec_status_time` (`status`, `executed_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 5.1 Data Quality Issues
+CREATE TABLE IF NOT EXISTS `dga_quality_issue` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `rule_id` BIGINT NOT NULL,
+  `table_id` BIGINT,
+  `issue_title` VARCHAR(255),
+  `issue_description` VARCHAR(1000),
+  `status` VARCHAR(20) DEFAULT 'OPEN',
+  `severity` VARCHAR(20),
+  `owner` VARCHAR(100),
+  `result_value` DOUBLE,
+  `threshold` DOUBLE,
+  `last_execution_id` BIGINT,
+  `first_seen_at` DATETIME,
+  `last_seen_at` DATETIME,
+  `resolved_at` DATETIME,
+  PRIMARY KEY (`id`),
+  INDEX `idx_quality_issue_rule_status` (`rule_id`, `status`),
+  INDEX `idx_quality_issue_table_status` (`table_id`, `status`),
+  INDEX `idx_quality_issue_owner` (`owner`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 6. Access Management Logs
@@ -229,6 +287,7 @@ CREATE TABLE IF NOT EXISTS `dga_users` (
   `cluster_name` VARCHAR(255),
   `create_time` DATETIME NOT NULL,
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  `is_protected` BOOLEAN DEFAULT NULL COMMENT 'NULL means use built-in protection defaults; true/false means admin override',
   `is_deleted` BOOLEAN DEFAULT FALSE,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_cluster_username` (`cluster_name`, `username`)
@@ -240,10 +299,12 @@ CREATE TABLE IF NOT EXISTS `dga_user_recent_views` (
   `username` VARCHAR(100) NOT NULL,
   `view_type` VARCHAR(50) NOT NULL COMMENT 'TABLE, DATASOURCE, DATABASE, COLUMN',
   `view_content` VARCHAR(500) NOT NULL COMMENT 'e.g. db_name.table_name',
+  `resource_id` BIGINT COMMENT 'Target resource id, e.g. meta_table_info.id',
   `datasource_id` BIGINT COMMENT 'FK to data_source_config.id',
   `viewed_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   INDEX `idx_user_view` (`username`, `viewed_at` DESC),
+  INDEX `idx_resource` (`resource_id`),
   INDEX `idx_datasource` (`datasource_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户最近浏览记录';
 
@@ -341,6 +402,7 @@ CREATE TABLE IF NOT EXISTS `user_resource_access` (
   `source` VARCHAR(50) COMMENT 'DGA_GRANT, SYNC',
   `status` VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
   `granted_by` VARCHAR(100),
+  `revoked_by` VARCHAR(100),
   `grant_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
   `revoke_time` DATETIME,
   `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -348,6 +410,23 @@ CREATE TABLE IF NOT EXISTS `user_resource_access` (
   PRIMARY KEY (`id`),
   INDEX `idx_user_resource_access` (`username`, `cluster_code`, `database_name`, `table_name`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Generalized access records across engines';
+
+-- 15. System and User Settings
+CREATE TABLE IF NOT EXISTS `dga_system_setting` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `scope` VARCHAR(100) NOT NULL COMMENT 'SYSTEM or USER:{username}',
+  `setting_group` VARCHAR(100) NOT NULL COMMENT 'system, dataMap, metadataCollection, notification, personal',
+  `setting_key` VARCHAR(100) NOT NULL,
+  `setting_value` TEXT,
+  `value_type` VARCHAR(30) DEFAULT 'STRING' COMMENT 'STRING, NUMBER, BOOLEAN, JSON',
+  `updated_by` VARCHAR(100),
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_setting_scope_group_key` (`scope`, `setting_group`, `setting_key`),
+  INDEX `idx_setting_scope_group` (`scope`, `setting_group`),
+  INDEX `idx_setting_key` (`setting_key`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统与用户设置';
 
 
 CREATE TABLE `users` (

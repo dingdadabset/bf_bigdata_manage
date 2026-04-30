@@ -1,8 +1,11 @@
 package com.dga.quality.entity;
 
+import lombok.Data;
+
 import javax.persistence.*;
 import java.time.LocalDateTime;
 
+@Data
 @Entity
 @Table(name = "dga_quality_execution")
 public class QualityExecution {
@@ -14,14 +17,35 @@ public class QualityExecution {
     @Column(name = "rule_id", nullable = false)
     private Long ruleId;
 
+    @Column(name = "table_id")
+    private Long tableId;
+
     @Column(name = "status", nullable = false)
     private String status; // SUCCESS, FAILED, WARNING
 
     @Column(name = "result_value")
     private Double resultValue; // Actual metric value
 
+    @Column(name = "threshold")
+    private Double threshold;
+
+    @Column(name = "scan_scope")
+    private String scanScope;
+
+    @Column(name = "scan_filter", length = 1000)
+    private String scanFilter;
+
+    @Column(name = "executed_sql", length = 4000)
+    private String executedSql;
+
     @Column(name = "error_message")
     private String errorMessage;
+
+    @Column(name = "executed_by")
+    private String executedBy;
+
+    @Column(name = "duration_ms")
+    private Long durationMs;
 
     @Column(name = "executed_at")
     private LocalDateTime executedAt;
