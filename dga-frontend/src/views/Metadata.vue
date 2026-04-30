@@ -105,6 +105,12 @@
             @select="onCatalogSelect"
           >
             <a-icon slot="switcherIcon" type="down" />
+            <template slot="catalogTitle" slot-scope="node">
+              <span class="catalog-node" :title="node.title">
+                <a-icon :type="catalogIcon(node.type)" class="catalog-node-icon" />
+                <span class="catalog-node-text">{{ node.title }}</span>
+              </span>
+            </template>
           </a-tree>
         </a-card>
       </a-col>
@@ -234,7 +240,7 @@ export default {
         { title: '生命周期', dataIndex: 'lifecycleStatus', key: 'lifecycleStatus', scopedSlots: { customRender: 'lifecycleStatus' }, width: 120 },
         { title: 'Hive Owner', dataIndex: 'sourceOwner', key: 'sourceOwner', width: 130 },
         { title: '存储格式', dataIndex: 'storageFormat', key: 'storageFormat', scopedSlots: { customRender: 'storageFormat' }, width: 120 },
-        { title: '大小', dataIndex: 'totalSize', key: 'totalSize', scopedSlots: { customRender: 'size' }, width: 110 },
+        { title: '元数据大小', dataIndex: 'totalSize', key: 'totalSize', scopedSlots: { customRender: 'size' }, width: 130 },
         { title: '记录数', dataIndex: 'recordCount', key: 'recordCount', width: 110 },
         { title: '同步时间', dataIndex: 'syncTime', key: 'syncTime', scopedSlots: { customRender: 'syncTime' }, width: 150 },
         { title: '操作', key: 'action', scopedSlots: { customRender: 'action' }, width: 120, fixed: 'right' }
@@ -348,12 +354,29 @@ export default {
         const params = {};
         if (this.filters.dataSourceId) params.dataSourceId = this.filters.dataSourceId;
         const res = await axios.get('/api/metadata/catalog/tree', { params });
-        this.catalogTree = res.data || [];
+        const filteredTree = (res.data || []).filter(node => {
+          const title = String(node.title || '').trim().toUpperCase();
+          return title && title !== 'UNKNOWN';
+        });
+        this.catalogTree = this.decorateCatalogTree(filteredTree);
       } catch (e) {
         this.$message.error('加载资产目录失败');
       } finally {
         this.catalogLoading = false;
       }
+    },
+    decorateCatalogTree(nodes) {
+      return (nodes || []).map(node => ({
+        ...node,
+        scopedSlots: { ...(node.scopedSlots || {}), title: 'catalogTitle' },
+        children: this.decorateCatalogTree(node.children || [])
+      }));
+    },
+    catalogIcon(type) {
+      if (type === 'table') return 'table';
+      if (type === 'database') return 'database';
+      if (type === 'datasource') return 'hdd';
+      return 'cluster';
     },
     onCatalogSelect(selectedKeys, info) {
       const node = info && info.node && info.node.dataRef;
@@ -456,6 +479,49 @@ export default {
 }
 .catalog-card {
   margin-bottom: 16px;
+}
+.catalog-card >>> .ant-card-body {
+  padding: 12px 8px;
+}
+.catalog-card >>> .ant-tree {
+  overflow-x: auto;
+}
+.catalog-card >>> .ant-tree li {
+  padding: 2px 0;
+}
+.catalog-card >>> .ant-tree li .ant-tree-switcher {
+  height: 32px;
+  line-height: 32px;
+}
+.catalog-card >>> .ant-tree li .ant-tree-node-content-wrapper {
+  height: 32px;
+  line-height: 32px;
+  max-width: calc(100% - 28px);
+  padding: 0 8px;
+  vertical-align: top;
+}
+.catalog-card >>> .ant-tree li .ant-tree-node-content-wrapper:hover {
+  background: #f5faff;
+}
+.catalog-node {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
+  min-width: 0;
+  width: 100%;
+}
+.catalog-node-icon {
+  color: #1890ff;
+  flex: 0 0 auto;
+  font-size: 13px;
+}
+.catalog-node-text {
+  display: inline-block;
+  max-width: 145px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  white-space: nowrap;
 }
 .metadata-table >>> .ant-table-body {
   overflow-x: auto !important;

@@ -1,8 +1,11 @@
 package com.dga.metadata.controller;
 
 import com.dga.access.service.AdminGuard;
+import com.dga.access.security.CurrentUser;
 import com.dga.access.entity.UserResourceAccess;
 import com.dga.access.repository.UserResourceAccessRepository;
+import com.dga.cluster.entity.ClusterEndpoint;
+import com.dga.cluster.repository.ClusterEndpointRepository;
 import com.dga.lineage.service.LineageGraphService;
 import com.dga.metadata.entity.ColumnMetadata;
 import com.dga.metadata.entity.DataTheme;
@@ -42,15 +45,22 @@ import org.springframework.web.server.ResponseStatusException;
 
 import javax.servlet.http.HttpServletRequest;
 import javax.persistence.criteria.Predicate;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -58,6 +68,8 @@ import java.util.stream.Collectors;
 @RestController
 @RequestMapping("/api/metadata")
 public class MetadataController {
+    private static final Set<String> SYSTEM_HIVE_DATABASES = new LinkedHashSet<>(
+            Arrays.asList("information_schema", "sys", "mysql", "performance_schema", "_statistics_"));
 
     @Autowired
     private TableMetadataRepository tableMetadataRepository;
@@ -110,16 +122,21 @@ public class MetadataController {
     @Autowired
     private AdminGuard adminGuard;
 
+    @Autowired
+    private ClusterEndpointRepository clusterEndpointRepository;
+
     @GetMapping("/stats")
     public Map<String, Object> getStats() {
         Map<String, Object> stats = new HashMap<>();
         
-        long tableCount = tableMetadataRepository.count();
-        Long totalSize = tableMetadataRepository.sumTotalSize();
-        Double avgScore = tableMetadataRepository.avgGovernanceScore();
-        long todaySyncCount = tableMetadataRepository.countBySyncTimeAfter(LocalDateTime.now().with(LocalTime.MIN));
+        long tableCount = tableMetadataRepository.countManagedHiveTables();
+        Long totalSize = tableMetadataRepository.sumManagedHiveTotalSize();
+        Double avgScore = tableMetadataRepository.avgManagedHiveGovernanceScore();
+        long todaySyncCount = tableMetadataRepository.countManagedHiveBySyncTimeAfter(LocalDateTime.now().with(LocalTime.MIN));
+        long databaseCount = tableMetadataRepository.countDistinctManagedHiveDbName();
 
         stats.put("tableCount", tableCount);
+        stats.put("databaseCount", databaseCount);
         stats.put("totalSize", totalSize != null ? totalSize : 0L);
         stats.put("avgScore", avgScore != null ? Math.round(avgScore * 10.0) / 10.0 : 0.0);
         stats.put("todaySyncCount", todaySyncCount);
@@ -129,10 +146,13 @@ public class MetadataController {
 
     @GetMapping("/tables")
     public List<TableMetadata> getTables(@RequestParam(required = false) Long dataSourceId) {
+        List<TableMetadata> tables;
         if (dataSourceId != null) {
-            return tableMetadataRepository.findByDataSourceId(dataSourceId);
+            tables = tableMetadataRepository.findByDataSourceId(dataSourceId);
+        } else {
+            tables = tableMetadataRepository.findAll();
         }
-        return tableMetadataRepository.findAll();
+        return tables.stream().filter(this::isUserHiveTable).collect(Collectors.toList());
     }
 
     @GetMapping("/tables/page")
@@ -160,6 +180,7 @@ public class MetadataController {
             if (dataSourceId != null) {
                 predicates.add(cb.equal(root.get("dataSourceId"), dataSourceId));
             }
+            predicates.add(cb.not(cb.lower(root.get("dbName")).in(SYSTEM_HIVE_DATABASES)));
             if (dbName != null && !dbName.isEmpty()) {
                 predicates.add(cb.equal(root.get("dbName"), dbName));
             }
@@ -213,13 +234,22 @@ public class MetadataController {
         }
 
         Map<Long, DataSourceConfig> dataSourceMap = dataSourceRepository.findAllById(
-                tables.stream().map(TableMetadata::getDataSourceId).collect(Collectors.toSet()))
+                tables.stream().map(TableMetadata::getDataSourceId).filter(Objects::nonNull).collect(Collectors.toSet()))
                 .stream().collect(Collectors.toMap(DataSourceConfig::getId, item -> item));
 
         Map<String, Map<String, Object>> clusters = new LinkedHashMap<>();
         for (TableMetadata table : tables) {
             DataSourceConfig ds = dataSourceMap.get(table.getDataSourceId());
-            String resolvedClusterCode = firstNonBlank(table.getClusterCode(), ds == null ? null : ds.getClusterCode(), "UNKNOWN");
+            if (!isManagedHiveDataSource(ds)) {
+                continue;
+            }
+            if (!isUserHiveTable(table)) {
+                continue;
+            }
+            String resolvedClusterCode = firstNonBlank(table.getClusterCode(), ds.getClusterCode());
+            if (resolvedClusterCode.isEmpty()) {
+                continue;
+            }
             String clusterTitle = ds != null && ds.getClusterName() != null ? ds.getClusterName() : resolvedClusterCode;
             Map<String, Object> clusterNode = clusters.computeIfAbsent(resolvedClusterCode,
                     key -> node("cluster-" + key, clusterTitle, "cluster"));
@@ -254,13 +284,49 @@ public class MetadataController {
         return columnMetadataRepository.findByTableId(id);
     }
 
-    @GetMapping("/table/{id}/partitions")
-    public Map<String, Object> getPartitions(@PathVariable Long id) {
+    @GetMapping("/table/{id}/create-ddl")
+    public Map<String, Object> getCreateDdl(@PathVariable Long id) {
         TableMetadata table = getTableOrThrow(id);
+        ClusterEndpoint endpoint = resolveHiveServer2Endpoint(table);
+        String showCreateSql = "SHOW CREATE TABLE " + quoteHiveIdentifier(table.getDbName()) + "." + quoteHiveIdentifier(table.getTableName());
+        List<String> ddlLines = new ArrayList<>();
+        try {
+            Class.forName("org.apache.hive.jdbc.HiveDriver");
+            DriverManager.setLoginTimeout(30);
+            try (Connection connection = DriverManager.getConnection(
+                    endpoint.getUrl(),
+                    nullToEmpty(endpoint.getUsername()),
+                    nullToEmpty(endpoint.getPassword()));
+                 Statement statement = connection.createStatement();
+                 ResultSet rs = statement.executeQuery(showCreateSql)) {
+                while (rs.next()) {
+                    ddlLines.add(rs.getString(1));
+                }
+            }
+        } catch (ClassNotFoundException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "缺少 Hive JDBC 驱动: " + readableMessage(e), e);
+        } catch (SQLException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "HIVE_SERVER2 查询失败: " + readableMessage(e), e);
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("source", "HIVE_SERVER2");
+        result.put("clusterCode", endpoint.getClusterCode());
+        result.put("endpointType", endpoint.getEndpointType());
+        result.put("sql", String.join("\n", ddlLines));
+        return result;
+    }
+
+    @GetMapping("/table/{id}/partitions")
+    public Map<String, Object> getPartitions(@PathVariable Long id,
+                                             @RequestParam(defaultValue = "10") int limit) {
+        TableMetadata table = getTableOrThrow(id);
+        int displayLimit = Math.max(1, Math.min(limit, 50));
+        long partitionCount = table.getPartitionCount() == null ? 0L : table.getPartitionCount();
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("tableId", id);
-        result.put("partitionCount", table.getPartitionCount() == null ? 0L : table.getPartitionCount());
-        result.put("items", partitionMetadataRepository.findByTableIdOrderByLastModifyTimeDescIdDesc(id));
+        result.put("partitionCount", partitionCount);
+        result.put("displayLimit", displayLimit);
+        result.put("items", partitionMetadataRepository.findByTableIdOrderByLastModifyTimeDescIdDesc(id, PageRequest.of(0, displayLimit)));
         return result;
     }
 
@@ -519,6 +585,23 @@ public class MetadataController {
         return "";
     }
 
+    private boolean isManagedHiveDataSource(DataSourceConfig dataSource) {
+        if (dataSource == null || dataSource.getEndpointId() == null) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(dataSource.getDeleted())) {
+            return false;
+        }
+        return "HIVE".equalsIgnoreCase(firstNonBlank(dataSource.getType()));
+    }
+
+    private boolean isUserHiveTable(TableMetadata table) {
+        if (table == null || table.getDbName() == null) {
+            return false;
+        }
+        return !SYSTEM_HIVE_DATABASES.contains(table.getDbName().trim().toLowerCase());
+    }
+
     private TableMetadata getTableOrThrow(Long id) {
         return tableMetadataRepository.findById(id)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Table not found: " + id));
@@ -613,8 +696,47 @@ public class MetadataController {
         return Long.valueOf(String.valueOf(value));
     }
 
+    private ClusterEndpoint resolveHiveServer2Endpoint(TableMetadata table) {
+        String clusterCode = table.getClusterCode();
+        if ((clusterCode == null || clusterCode.trim().isEmpty()) && table.getDataSourceId() != null) {
+            Optional<DataSourceConfig> dataSource = dataSourceRepository.findById(table.getDataSourceId());
+            if (dataSource.isPresent()) {
+                clusterCode = dataSource.get().getClusterCode();
+            }
+        }
+        if (clusterCode == null || clusterCode.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前表缺少集群编码，无法定位 HIVE_SERVER2 端点");
+        }
+        List<ClusterEndpoint> endpoints = clusterEndpointRepository.findByClusterCodeAndEndpointTypeAndStatus(
+                clusterCode, ClusterEndpoint.TYPE_HIVE_SERVER2, "ACTIVE");
+        if (endpoints.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "集群未配置 ACTIVE HIVE_SERVER2 端点: " + clusterCode);
+        }
+        return endpoints.get(0);
+    }
+
+    private String quoteHiveIdentifier(String value) {
+        return "`" + firstNonBlank(value).replace("`", "``") + "`";
+    }
+
+    private String nullToEmpty(String value) {
+        return value == null ? "" : value;
+    }
+
+    private String readableMessage(Exception e) {
+        if (e == null) {
+            return "未知错误";
+        }
+        if (e.getMessage() != null && !e.getMessage().trim().isEmpty()) {
+            return e.getMessage();
+        }
+        if (e.getCause() != null && e.getCause().getMessage() != null && !e.getCause().getMessage().trim().isEmpty()) {
+            return e.getCause().getMessage();
+        }
+        return e.getClass().getSimpleName();
+    }
+
     private String currentUsername(HttpServletRequest request) {
-        String username = request == null ? null : request.getHeader("X-DGA-Username");
-        return username == null || username.trim().isEmpty() ? "unknown" : username.trim();
+        return CurrentUser.usernameOrUnknown();
     }
 }

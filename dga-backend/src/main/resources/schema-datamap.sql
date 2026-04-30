@@ -9,10 +9,12 @@ CREATE TABLE IF NOT EXISTS `dga_user_recent_views` (
   `username` VARCHAR(100) NOT NULL,
   `view_type` VARCHAR(50) NOT NULL COMMENT 'TABLE, DATASOURCE, DATABASE, COLUMN',
   `view_content` VARCHAR(500) NOT NULL COMMENT 'e.g. db_name.table_name',
+  `resource_id` BIGINT COMMENT 'Target resource id, e.g. meta_table_info.id',
   `datasource_id` BIGINT COMMENT 'FK to data_source_config.id',
   `viewed_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   INDEX `idx_user_view` (`username`, `viewed_at` DESC),
+  INDEX `idx_resource` (`resource_id`),
   INDEX `idx_datasource` (`datasource_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户最近浏览记录';
 

@@ -20,6 +20,12 @@ public class UserRecentView {
     @Column(name = "view_content", nullable = false)
     private String viewContent; // e.g. db_name.table_name
 
+    @Column(name = "resource_id")
+    private Long resourceId;
+
+    @Column(name = "datasource_id")
+    private Long datasourceId;
+
     @Column(name = "viewed_at")
     private LocalDateTime viewedAt;
 
@@ -58,6 +64,22 @@ public class UserRecentView {
 
     public void setViewContent(String viewContent) {
         this.viewContent = viewContent;
+    }
+
+    public Long getResourceId() {
+        return resourceId;
+    }
+
+    public void setResourceId(Long resourceId) {
+        this.resourceId = resourceId;
+    }
+
+    public Long getDatasourceId() {
+        return datasourceId;
+    }
+
+    public void setDatasourceId(Long datasourceId) {
+        this.datasourceId = datasourceId;
     }
 
     public LocalDateTime getViewedAt() {

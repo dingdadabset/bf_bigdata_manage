@@ -9,6 +9,7 @@ import com.dga.metadata.repository.PartitionMetadataRepository;
 import com.dga.metadata.repository.TableMetadataRepository;
 import com.dga.metadata.service.MetadataCollector;
 import com.dga.metadata.service.MetadataCollectionResult;
+import com.dga.settings.service.SettingsService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -19,14 +20,19 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 @Service
 public class HiveMetadataCollector implements MetadataCollector {
+    private static final Set<String> SYSTEM_HIVE_DATABASES = new LinkedHashSet<>(
+            Arrays.asList("information_schema", "sys", "mysql", "performance_schema", "_statistics_"));
 
     @Autowired
     private TableMetadataRepository tableRepository;
@@ -39,6 +45,9 @@ public class HiveMetadataCollector implements MetadataCollector {
 
     @Value("${dga.metadata.partition.latest-limit:200}")
     private int partitionLatestLimit;
+
+    @Autowired
+    private SettingsService settingsService;
 
     @Override
     public boolean testConnection(DataSourceConfig config) {
@@ -64,7 +73,10 @@ public class HiveMetadataCollector implements MetadataCollector {
                 try (Statement stmt = conn.createStatement();
                      ResultSet rs = stmt.executeQuery("SELECT NAME FROM DBS")) {
                     while (rs.next()) {
-                        databases.add(rs.getString("NAME"));
+                        String dbName = rs.getString("NAME");
+                        if (!isSystemHiveDatabase(dbName)) {
+                            databases.add(dbName);
+                        }
                     }
                 }
 
@@ -103,6 +115,10 @@ public class HiveMetadataCollector implements MetadataCollector {
     @Transactional
     public MetadataCollectionResult collectTable(DataSourceConfig config, String dbName, String tableName) {
         MetadataCollectionResult result = new MetadataCollectionResult();
+        if (isSystemHiveDatabase(dbName)) {
+            result.addFailure(dbName + "." + tableName + ": system Hive database is skipped");
+            return result;
+        }
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
             try (Connection conn = DriverManager.getConnection(config.getUrl(), config.getUsername(), config.getPassword())) {
@@ -347,7 +363,8 @@ public class HiveMetadataCollector implements MetadataCollector {
         partitionRepository.deleteByTableId(tableMetadata.getId());
         partitionRepository.flush();
 
-        if (partitionLatestLimit <= 0 || tableMetadata.getPartitionCount() == null || tableMetadata.getPartitionCount() <= 0) {
+        int effectivePartitionLatestLimit = settingsService.getInt("metadataCollection", "partitionLatestLimit", partitionLatestLimit);
+        if (effectivePartitionLatestLimit <= 0 || tableMetadata.getPartitionCount() == null || tableMetadata.getPartitionCount() <= 0) {
             return;
         }
 
@@ -360,7 +377,7 @@ public class HiveMetadataCollector implements MetadataCollector {
                 "LIMIT ?";
         try (PreparedStatement stmt = conn.prepareStatement(partitionSql)) {
             stmt.setLong(1, metastoreTableId);
-            stmt.setInt(2, partitionLatestLimit);
+            stmt.setInt(2, effectivePartitionLatestLimit);
             try (ResultSet rs = stmt.executeQuery()) {
                 while (rs.next()) {
                     long partitionId = rs.getLong("PART_ID");
@@ -436,6 +453,10 @@ public class HiveMetadataCollector implements MetadataCollector {
         if (a == null && b == null) return true;
         if (a == null || b == null) return false;
         return a.equals(b);
+    }
+
+    private boolean isSystemHiveDatabase(String dbName) {
+        return dbName != null && SYSTEM_HIVE_DATABASES.contains(dbName.trim().toLowerCase());
     }
 
     @Override

@@ -1,295 +1,187 @@
 <template>
   <div :class="$style['data-map']">
-    <!-- Search Header Section -->
-    <div :class="$style['search-header']">
-      <div :class="$style['search-container']">
-        <a-space :size="16" align="center" :class="$style['title-row']">
-          <a-icon type="cloud-server" :class="$style['title-icon']" />
-          <h1 :class="$style['page-title']">数据地图</h1>
-        </a-space>
-        
-        <div :class="$style['search-wrapper']">
-          <a-input
-            v-model="searchQuery"
-            :placeholder="searchPlaceholder"
-            size="large"
-            :class="$style['search-input']"
-            @pressEnter="handleSearch"
+    <section :class="$style['search-stage']">
+      <div :class="$style['stage-title']">
+        <span :class="$style['stage-icon']"><a-icon type="search" /></span>
+        <h1>搜索 Hive 表</h1>
+      </div>
+
+      <a-input
+        v-model="filters.keyword"
+        allow-clear
+        size="large"
+        :placeholder="searchPlaceholder"
+        :class="$style['main-search']"
+        @pressEnter="handleSearch"
+      >
+        <a-icon slot="prefix" type="search" :class="$style['search-prefix']" />
+        <a-tooltip slot="suffix" title="按 Enter 搜索">
+          <a-icon type="enter" :class="$style['search-suffix']" @click="handleSearch" />
+        </a-tooltip>
+      </a-input>
+
+      <div :class="$style['shortcut-row']">
+        <span :class="$style['shortcut-label']">热门搜索</span>
+        <button v-for="word in hotSearches" :key="word" type="button" @click="applyKeyword(word)">
+          {{ word }}
+        </button>
+      </div>
+      <div :class="$style['shortcut-row']">
+        <span :class="$style['shortcut-label']">我的常用</span>
+        <button v-for="word in commonSearches" :key="word" type="button" @click="applyKeyword(word)">
+          {{ word }}
+        </button>
+      </div>
+
+      <div :class="$style['filter-tools']">
+        <div :class="$style['filter-line']">
+          <span :class="$style['filter-label']">数据源</span>
+          <button
+            type="button"
+            :class="{ [$style['active-chip']]: !filters.dataSourceId }"
+            @click="setDataSource(undefined)"
           >
-            <a-select
-              slot="addonBefore"
-              v-model="selectedDataSource"
-              :class="$style['datasource-select']"
-              style="width: 180px"
-              allow-clear
-              placeholder="全部数据源"
-            >
-              <a-icon slot="suffixIcon" type="database" />
-              <a-select-option v-for="ds in dataSources" :key="ds.id" :value="ds.id">
-                <a-icon type="hdd" style="color: #fa8c16" />
-                {{ ds.name }}
-              </a-select-option>
-            </a-select>
-            
-            <a-space slot="suffix" :size="8">
-              <a-tooltip title="AI搜索">
-                <a-icon 
-                  type="robot" 
-                  :class="$style['search-icon']"
-                  @click="toggleAISearch"
-                />
-              </a-tooltip>
-              <a-tooltip title="大小写">
-                <span :class="$style['case-toggle']" @click="toggleCase">
-                  {{ caseSensitive ? 'AB' : 'ab' }}
-                </span>
-              </a-tooltip>
-            </a-space>
-          </a-input>
-          
-          <a-button 
-            type="primary" 
-            size="large" 
-            :class="$style['search-button']"
-            @click="handleSearch"
+            全部
+          </button>
+          <button
+            v-for="ds in visibleDataSources"
+            :key="ds.id"
+            type="button"
+            :class="{ [$style['active-chip']]: Number(filters.dataSourceId) === Number(ds.id) }"
+            :title="formatDataSourceLabel(ds)"
+            @click="setDataSource(ds.id)"
           >
-            搜索
-          </a-button>
+            {{ ds.name || ds.clusterCode || ds.id }}
+          </button>
+        </div>
+
+        <div :class="$style['filter-line']">
+          <span :class="$style['filter-label']">数据库</span>
+          <button
+            type="button"
+            :class="{ [$style['active-chip']]: !filters.dbName }"
+            @click="setDbName('')"
+          >
+            全部
+          </button>
+          <button
+            v-for="db in databaseChips"
+            :key="db"
+            type="button"
+            :class="{ [$style['active-chip']]: filters.dbName === db }"
+            @click="setDbName(db)"
+          >
+            {{ db }}
+          </button>
+        </div>
+
+        <div v-if="dataMapSettings.showSensitiveFields" :class="$style['filter-line']">
+          <span :class="$style['filter-label']">负责人</span>
+          <button
+            type="button"
+            :class="{ [$style['active-chip']]: !filters.owner }"
+            @click="setOwner('')"
+          >
+            全部
+          </button>
+          <button
+            v-for="owner in ownerChips"
+            :key="owner"
+            type="button"
+            :class="{ [$style['active-chip']]: filters.owner === owner }"
+            @click="setOwner(owner)"
+          >
+            {{ owner }}
+          </button>
         </div>
       </div>
-    </div>
 
-    <!-- Main Content -->
-    <div :class="$style['content-wrapper']">
-      <a-row :gutter="24">
-        <!-- Left Section: Data Usage -->
-        <a-col :xs="24" :lg="16">
-          <a-card 
-            :bordered="false" 
-            :class="$style['content-card']"
-          >
-            <div slot="title" :class="$style['card-header']">
-              <span :class="$style['card-title']">数据使用</span>
-              <a-space :size="16">
-                <a href="#" :class="$style['action-link']">
-                  <a-icon type="setting" />
-                  设置
-                </a>
-                <a href="#" :class="$style['action-link']" @click.prevent="refreshRecentViews">
-                  <a-icon type="reload" />
-                  刷新
-                </a>
-              </a-space>
-            </div>
-            
-            <div :class="$style['filters-section']">
-              <a-space :size="16">
-                <span>类型:</span>
-                <a-select v-model="viewType" style="width: 120px">
-                  <a-icon slot="suffixIcon" type="table" />
-                  <a-select-option value="table">
-                    <a-icon type="table" />
-                    表
-                  </a-select-option>
-                  <a-select-option value="datasource">
-                    <a-icon type="database" />
-                    数据源
-                  </a-select-option>
-                </a-select>
-                
-                <span style="margin-left: 16px">数据源:</span>
-                <a-select v-model="filterDataSource" style="width: 180px" allow-clear placeholder="全部数据源">
-                  <a-icon slot="suffixIcon" type="database" />
-                  <a-select-option v-for="ds in dataSources" :key="ds.id" :value="ds.id">
-                    <a-icon type="hdd" style="color: #fa8c16" />
-                    {{ ds.name }}
-                  </a-select-option>
-                </a-select>
-              </a-space>
-              
-              <span :class="$style['section-subtitle']">最近浏览</span>
-            </div>
+      <div v-if="hasActiveFilters" :class="$style['active-scope']">
+        <a-tag v-if="filters.keyword" color="green">关键词: {{ filters.keyword }}</a-tag>
+        <a-tag color="blue">{{ selectedDataSourceText }}</a-tag>
+        <a-tag :color="filters.dbName ? 'purple' : 'default'">{{ filters.dbName ? `数据库: ${filters.dbName}` : '全部数据库' }}</a-tag>
+        <a-tag v-if="filters.owner && dataMapSettings.showSensitiveFields" color="orange">负责人: {{ filters.owner }}</a-tag>
+        <a-button type="link" size="small" icon="close-circle" @click="resetFilters">清空筛选</a-button>
+      </div>
+      <div v-if="loading || hasSearched" :class="[$style['search-feedback'], loading ? $style['searching'] : $style['searched']]">
+        <a-icon :type="loading ? 'loading' : 'check-circle'" />
+        <span>{{ searchFeedbackText }}</span>
+      </div>
+    </section>
 
-            <div :class="$style['recent-views']">
-              <a-empty 
-                v-if="recentViews.length === 0"
-                :class="$style['empty-state']"
-                :image="emptyImage"
-              >
-                <span slot="description" :class="$style['empty-description']">
-                  暂无最近浏览数据
-                  <br />
-                  请前往搜索并查看感兴趣的数据
+    <section v-if="!hasSearched" :class="$style['governance-placeholder']">
+      <div :class="$style['placeholder-main']">
+        <span :class="$style['placeholder-icon']"><a-icon type="dashboard" /></span>
+        <div>
+          <h2>数据治理看板预留区</h2>
+          <p>这里后续可以放资产覆盖率、质量问题、负责人维护率、同步趋势等治理报表；当前先保持为查表入口。</p>
+        </div>
+      </div>
+      <div :class="$style['placeholder-grid']">
+        <div v-for="item in governanceCards" :key="item.title" :class="$style['placeholder-card']">
+          <a-icon :type="item.icon" />
+          <strong>{{ item.title }}</strong>
+          <span>{{ item.desc }}</span>
+        </div>
+      </div>
+    </section>
+
+    <a-card v-else :bordered="false" :class="$style['result-card']">
+      <div slot="title" :class="$style['result-title']">
+        <span>找到 {{ pagination.total }} 张表</span>
+        <em>{{ resultRangeText }}</em>
+      </div>
+      <div slot="extra" :class="$style['result-actions']">
+        <a-button size="small" icon="reload" :loading="loading" @click="fetchAssets()">刷新</a-button>
+      </div>
+
+      <a-table
+        :columns="columns"
+        :data-source="assets"
+        :loading="loading"
+        :pagination="pagination"
+        :scroll="{ x: 900 }"
+        row-key="id"
+        size="middle"
+        :class="$style['asset-table']"
+        :locale="{ emptyText: emptyText }"
+        @change="handleTableChange"
+      >
+        <span slot="asset" slot-scope="text, record">
+          <div class="asset-cell">
+            <span class="asset-icon"><a-icon type="table" /></span>
+            <span class="asset-main">
+              <a class="asset-link" :title="record.tableName" @click="openAsset(record)">
+                {{ record.tableName }}
+              </a>
+              <span class="asset-subline">
+                <a-tag color="purple">{{ record.dbName || '-' }}</a-tag>
+                <span :title="record.tableComment || ''">{{ record.tableComment || '暂无表备注' }}</span>
+              </span>
+              <span class="asset-meta-line">
+                <span v-if="dataMapSettings.showSensitiveFields">
+                  <a-icon type="user" /> {{ record.owner || record.sourceOwner || '未维护负责人' }}
                 </span>
-              </a-empty>
-              
-              <a-list 
-                v-else
-                :data-source="recentViews"
-                :class="$style['recent-list']"
-              >
-                <a-list-item 
-                  slot="renderItem" 
-                  slot-scope="item"
-                  :class="$style['list-item']"
-                >
-                  <a-list-item-meta>
-                    <a-avatar 
-                      slot="avatar" 
-                      :style="{ backgroundColor: '#1890ff' }"
-                    >
-                      <a-icon type="table" />
-                    </a-avatar>
-                    <a 
-                      slot="title" 
-                      href="#"
-                      :class="$style['item-title']"
-                      @click.prevent="viewItem(item)"
-                    >
-                      {{ item.viewContent }}
-                    </a>
-                    <template slot="description">
-                      <span :class="$style['item-meta']">
-                        {{ formatViewTime(item.viewedAt) }}
-                      </span>
-                    </template>
-                  </a-list-item-meta>
-                </a-list-item>
-              </a-list>
-            </div>
-          </a-card>
-        </a-col>
-
-        <!-- Right Section: Data Management Stats -->
-        <a-col :xs="24" :lg="8">
-          <a-card 
-            :bordered="false"
-            :class="$style['content-card']"
-          >
-            <div slot="title" :class="$style['card-header']">
-              <span :class="$style['card-title']">数据管理</span>
-              <a-space :size="16">
-                <a href="#" :class="$style['action-link']">
-                  <a-icon type="setting" />
-                  设置
-                </a>
-                <a href="#" :class="$style['action-link']" @click.prevent="refreshStats">
-                  <a-icon type="reload" />
-                  刷新
-                </a>
-              </a-space>
-            </div>
-
-            <a-tabs 
-              v-model="activeTab" 
-              :class="$style['management-tabs']"
-              :tabBarStyle="{ marginBottom: '16px' }"
-            >
-              <a-tab-pane key="overview" tab="我的数据">
-                <!-- Category Navigation -->
-                <div :class="$style['stats-section']">
-                  <h3 :class="$style['section-title']">类目导航</h3>
-                  <a-row :gutter="[8, 16]">
-                    <a-col :span="24">
-                      <a-statistic 
-                        title="总采集表数量" 
-                        :value="stats.tableCount"
-                        :class="$style['stat-item']"
-                      />
-                    </a-col>
-                    <a-col :span="24">
-                      <a-statistic 
-                        title="关目管理表数量" 
-                        :value="stats.managedCount"
-                        :class="$style['stat-item']"
-                      />
-                    </a-col>
-                    <a-col :span="24">
-                      <a-statistic 
-                        title="纳管比例" 
-                        :value="stats.coverage"
-                        :class="$style['stat-item']"
-                      />
-                    </a-col>
-                  </a-row>
-                </div>
-
-                <a-divider />
-
-                <!-- Metadata Collection -->
-                <div :class="$style['stats-section']">
-                  <a-space :class="$style['section-header']">
-                    <h3 :class="$style['section-title']">元数据采集</h3>
-                    <a-space :size="8">
-                      <a href="#" :class="$style['action-link-sm']">
-                        <a-icon type="setting" />
-                        设置
-                      </a>
-                      <a href="#" :class="$style['action-link-sm']" @click.prevent="refreshStats">
-                        <a-icon type="reload" />
-                        刷新
-                      </a>
-                      <a href="#" :class="$style['action-link-sm']">
-                        数据总览
-                      </a>
-                    </a-space>
-                  </a-space>
-
-                  <div :class="$style['datasource-stats']">
-                    <div :class="$style['datasource-header']">
-                      <a-icon type="hdd" style="color: #fa8c16" />
-                      <span :class="$style['datasource-name']">{{ selectedDataSourceName }}</span>
-                    </div>
-                    
-                    <a-row :gutter="[8, 16]">
-                      <a-col :span="12">
-                        <a-statistic 
-                          title="实例数量" 
-                          :value="stats.instanceCount"
-                          :class="$style['stat-item-sm']"
-                        />
-                      </a-col>
-                      <a-col :span="12">
-                        <a-statistic 
-                          title="数据库数量" 
-                          :value="stats.databaseCount"
-                          :class="$style['stat-item-sm']"
-                        />
-                      </a-col>
-                      <a-col :span="12">
-                        <a-statistic 
-                          title="表数量" 
-                          :value="stats.tableCount"
-                          :class="$style['stat-item-sm']"
-                        />
-                      </a-col>
-                      <a-col :span="12">
-                        <a-statistic 
-                          title="API数量" 
-                          :value="stats.apiCount"
-                          :class="$style['stat-item-sm']"
-                        />
-                      </a-col>
-                      <a-col :span="24">
-                        <a-statistic 
-                          title="采集器数量" 
-                          :value="stats.collectorCount"
-                          :class="$style['stat-item-sm']"
-                        />
-                      </a-col>
-                    </a-row>
-                  </div>
-                </div>
-              </a-tab-pane>
-              
-              <a-tab-pane key="permission" tab="权限管理">
-                <a-empty description="暂无权限管理数据" />
-              </a-tab-pane>
-            </a-tabs>
-          </a-card>
-        </a-col>
-      </a-row>
-    </div>
+                <a-tag :color="getFormatColor(record.storageFormat)">{{ record.storageFormat || '未知格式' }}</a-tag>
+                <span>{{ formatSize(record.totalSize) }}</span>
+                <a-tooltip :title="formatDateTime(record.syncTime)">
+                  <span><a-icon type="clock-circle" /> {{ formatDate(record.syncTime) }}</span>
+                </a-tooltip>
+              </span>
+            </span>
+          </div>
+        </span>
+        <span slot="location" slot-scope="text, record">
+          <div :class="$style['location-cell']">
+            <strong :title="getDataSourceName(record)">{{ getDataSourceName(record) }}</strong>
+            <span><a-icon type="environment" /> {{ getDataSourceCluster(record) }}</span>
+          </div>
+        </span>
+        <span slot="action" slot-scope="text, record">
+          <a-button type="link" size="small" icon="eye" @click="openAsset(record)">查看详情</a-button>
+        </span>
+      </a-table>
+    </a-card>
   </div>
 </template>
 
@@ -300,142 +192,313 @@ export default {
   name: 'DataMap',
   data() {
     return {
-      // Search
-      searchQuery: '',
-      searchPlaceholder: '请输入关键字或描述，按"Enter"触发搜索，使用"Tab"切换AI搜索',
-      selectedDataSource: undefined,
-      aiSearchEnabled: false,
-      caseSensitive: false,
-      
-      // Filters
-      viewType: 'table',
-      filterDataSource: undefined,
-      
-      // Data
+      loading: false,
+      hasSearched: false,
+      lastSearchSummary: '',
       dataSources: [],
-      recentViews: [],
-      stats: {
-        instanceCount: 0,
-        databaseCount: 0,
-        tableCount: 0,
-        apiCount: 0,
-        collectorCount: 0,
-        managedCount: 0,
-        coverage: '0%'
+      assets: [],
+      hotSearches: ['user', 'order', 'payment'],
+      commonSearches: ['user_info', 'order_detail'],
+      dataMapSettings: {
+        hotKeywords: ['user', 'order', 'payment'],
+        defaultSearchScope: 'ALL',
+        resultSort: 'RELEVANCE',
+        showSensitiveFields: false,
+        defaultPageSize: 10
       },
-      
-      // UI State
-      activeTab: 'overview',
-      currentUser: '',
-      emptyImage: 'https://gw.alipayobjects.com/mdn/miniapp_social/afts/img/A*pevERLJC9v0AAAAAAAAAAABjAQAAAQ/original'
+      defaultDatabaseChips: ['default', 'baofoo_fi', 'aggr_prod', 'aggr_pay'],
+      defaultOwnerChips: ['yarn', 'hive'],
+      governanceCards: [
+        { title: '资产覆盖', desc: '展示各集群纳管进度', icon: 'deployment-unit' },
+        { title: '质量问题', desc: '汇总待处理异常', icon: 'warning' },
+        { title: '负责人维护', desc: '跟踪资产责任人覆盖', icon: 'team' },
+        { title: '同步趋势', desc: '观察采集成功率变化', icon: 'line-chart' }
+      ],
+      filters: {
+        keyword: '',
+        dataSourceId: undefined,
+        dbName: '',
+        owner: ''
+      },
+      pagination: {
+        current: 1,
+        pageSize: 10,
+        total: 0,
+        showTotal: total => `共 ${total} 条`
+      },
+      columns: [
+        { title: '表资产', dataIndex: 'tableName', key: 'asset', scopedSlots: { customRender: 'asset' }, width: 520 },
+        { title: '位置', key: 'location', scopedSlots: { customRender: 'location' }, width: 230 },
+        { title: '操作', key: 'action', scopedSlots: { customRender: 'action' }, width: 120 }
+      ]
     };
   },
-  
-  mounted() {
-    this.getCurrentUser();
-    this.fetchDataSources();
-    this.fetchStats();
-    this.fetchRecentViews();
-  },
   computed: {
-    selectedDataSourceName() {
-      const id = this.selectedDataSource || this.filterDataSource;
-      const item = this.dataSources.find(ds => ds.id === id);
-      return item ? item.name : '全部 Hive 数据源';
+    hasActiveFilters() {
+      return Boolean(this.filters.keyword || this.filters.dbName || this.filters.dataSourceId || this.filters.owner);
+    },
+    visibleDataSources() {
+      return this.dataSources.slice(0, 8);
+    },
+    databaseChips() {
+      return this.uniqueFromAssets('dbName', this.filters.dbName, this.defaultDatabaseChips).slice(0, 8);
+    },
+    ownerChips() {
+      if (!this.dataMapSettings.showSensitiveFields) {
+        return [];
+      }
+      const values = this.assets.map(item => item.owner || item.sourceOwner).filter(Boolean);
+      const current = this.filters.owner ? [this.filters.owner] : [];
+      return Array.from(new Set([...current, ...this.defaultOwnerChips, ...values])).slice(0, 8);
+    },
+    selectedDataSourceText() {
+      if (!this.filters.dataSourceId) return '全部数据源';
+      const item = this.dataSources.find(ds => Number(ds.id) === Number(this.filters.dataSourceId));
+      return item ? `数据源: ${item.name || item.id}` : '已选数据源';
+    },
+    resultRangeText() {
+      if (!this.pagination.total) return '暂无结果';
+      const start = (this.pagination.current - 1) * this.pagination.pageSize + 1;
+      const end = Math.min(this.pagination.current * this.pagination.pageSize, this.pagination.total);
+      return `当前 ${start}-${end}`;
+    },
+    emptyText() {
+      return this.hasActiveFilters ? '没有找到匹配表，清空筛选后再试' : '暂无表资产，请先采集 Hive 元数据';
+    },
+    searchPlaceholder() {
+      const scopeMap = {
+        ALL: '搜索表名 / 字段 / 业务（如：订单、用户）',
+        TABLE: '按表名搜索（如：order_detail）',
+        COLUMN: '按字段搜索（如：user_id、create_time）',
+        BUSINESS: '按备注 / 主题 / 标签搜索'
+      };
+      return scopeMap[this.dataMapSettings.defaultSearchScope] || scopeMap.ALL;
+    },
+    searchFeedbackText() {
+      if (this.loading) {
+        return `正在搜索${this.lastSearchSummary ? `：${this.lastSearchSummary}` : ''}，请稍候...`;
+      }
+      return `搜索完成，找到 ${this.pagination.total} 张表${this.lastSearchSummary ? `（${this.lastSearchSummary}）` : ''}`;
     }
   },
-  
+  created() {
+    this.initFiltersFromRoute();
+    this.bootstrap();
+  },
+  watch: {
+    '$route.query': {
+      handler() {
+        this.initFiltersFromRoute();
+        if (this.hasActiveFilters) {
+          this.fetchAssets(1, this.pagination.pageSize);
+        } else {
+          this.clearResults();
+        }
+      }
+    }
+  },
   methods: {
-    getCurrentUser() {
-      const userStr = localStorage.getItem('user');
-      if (userStr) {
-        const user = JSON.parse(userStr);
-        this.currentUser = user.user?.username || user.username;
+    async bootstrap() {
+      await Promise.all([this.fetchSettings(), this.fetchDataSources()]);
+      if (this.hasActiveFilters) {
+        await this.fetchAssets(1, this.pagination.pageSize);
       }
     },
-
-    async fetchStats() {
-      try {
-        const response = await axios.get('/api/datamap/stats');
-        this.stats = response.data;
-      } catch (error) {
-        console.error('Failed to fetch stats:', error);
-      }
+    initFiltersFromRoute() {
+      const query = this.$route.query || {};
+      this.filters.keyword = query.q || query.keyword || '';
+      this.filters.dbName = query.dbName || '';
+      this.filters.owner = query.owner || '';
+      this.filters.dataSourceId = query.dataSourceId ? Number(query.dataSourceId) : undefined;
     },
-
     async fetchDataSources() {
       try {
-        const response = await axios.get('/api/datasource');
-        this.dataSources = response.data || [];
-      } catch (error) {
-        console.error('Failed to fetch data sources:', error);
+        const res = await axios.get('/api/datasource');
+        this.dataSources = res.data || [];
+      } catch (e) {
+        this.$message.error('加载数据源失败');
       }
     },
-
-    async fetchRecentViews() {
-      if (!this.currentUser) return;
+    async fetchSettings() {
       try {
-        const response = await axios.get('/api/datamap/recent', {
-          params: { username: this.currentUser }
-        });
-        this.recentViews = response.data;
-      } catch (error) {
-        console.error('Failed to fetch recent views:', error);
+        const res = await axios.get('/api/settings');
+        const dataMap = (res.data && res.data.dataMap) || {};
+        const pageSize = Number(dataMap.defaultPageSize) || this.pagination.pageSize;
+        this.dataMapSettings = {
+          ...this.dataMapSettings,
+          ...dataMap,
+          hotKeywords: this.normalizeArray(dataMap.hotKeywords || this.dataMapSettings.hotKeywords),
+          showSensitiveFields: Boolean(dataMap.showSensitiveFields),
+          defaultPageSize: pageSize
+        };
+        this.hotSearches = this.dataMapSettings.hotKeywords.length
+          ? this.dataMapSettings.hotKeywords
+          : ['user', 'order', 'payment'];
+        this.pagination = {
+          ...this.pagination,
+          pageSize
+        };
+        if (!this.dataMapSettings.showSensitiveFields) {
+          this.filters.owner = '';
+        }
+      } catch (e) {
+        console.error('Failed to fetch data map settings', e);
       }
     },
-    
-    refreshStats() {
-      this.fetchStats();
+    async fetchAssets(page = this.pagination.current, pageSize = this.pagination.pageSize) {
+      if (!this.hasActiveFilters) {
+        this.$message.info('请输入关键词或选择筛选条件后再搜索');
+        this.clearResults();
+        return;
+      }
+      this.hasSearched = true;
+      this.lastSearchSummary = this.buildSearchSummary();
+      this.loading = true;
+      try {
+        const params = {
+          page: page - 1,
+          size: pageSize,
+          keyword: this.filters.keyword,
+          dataSourceId: this.filters.dataSourceId,
+          dbName: this.filters.dbName,
+          owner: this.filters.owner
+        };
+        Object.keys(params).forEach(key => {
+          if (params[key] === undefined || params[key] === '') delete params[key];
+        });
+        const res = await axios.get('/api/metadata/search', { params });
+        const pageData = res.data || {};
+        this.assets = this.sortAssets(pageData.content || []);
+        this.pagination = {
+          ...this.pagination,
+          current: page,
+          pageSize,
+          total: pageData.totalElements || 0
+        };
+      } catch (e) {
+        this.$message.error('获取表资产失败');
+      } finally {
+        this.loading = false;
+      }
     },
-    
-    refreshRecentViews() {
-      this.fetchRecentViews();
-    },
-    
     handleSearch() {
-      if (this.searchQuery.trim()) {
-        this.$router.push({ 
-          path: '/metadata', 
-          query: { 
-            q: this.searchQuery,
-            dataSourceId: this.selectedDataSource,
-            ai: this.aiSearchEnabled
-          } 
-        });
+      this.fetchAssets(1, this.pagination.pageSize);
+    },
+    resetFilters() {
+      this.filters = {
+        keyword: '',
+        dataSourceId: undefined,
+        dbName: '',
+        owner: ''
+      };
+      this.clearResults();
+    },
+    applyKeyword(keyword) {
+      this.filters.keyword = keyword;
+      this.handleSearch();
+    },
+    setDataSource(dataSourceId) {
+      this.filters.dataSourceId = dataSourceId;
+      if (this.hasSearched) this.handleSearch();
+    },
+    setDbName(dbName) {
+      this.filters.dbName = dbName;
+      if (this.hasSearched) this.handleSearch();
+    },
+    setOwner(owner) {
+      if (!this.dataMapSettings.showSensitiveFields) return;
+      this.filters.owner = owner;
+      if (this.hasSearched) this.handleSearch();
+    },
+    handleTableChange(pagination) {
+      this.fetchAssets(pagination.current, pagination.pageSize);
+    },
+    openAsset(record) {
+      if (!record || !record.id) return;
+      this.$router.push(`/metadata/detail/${record.id}`);
+    },
+    normalizeArray(value) {
+      if (Array.isArray(value)) {
+        return value.filter(Boolean);
       }
-    },
-    
-    toggleAISearch() {
-      this.aiSearchEnabled = !this.aiSearchEnabled;
-      if (this.aiSearchEnabled) {
-        this.$message.info('AI搜索已启用');
+      if (!value) {
+        return [];
       }
+      return String(value).split(/[,，]/).map(item => item.trim()).filter(Boolean);
     },
-    
-    toggleCase() {
-      this.caseSensitive = !this.caseSensitive;
+    sortAssets(items) {
+      const sortType = this.dataMapSettings.resultSort || 'RELEVANCE';
+      if (sortType === 'SYNC_TIME_DESC') {
+        return [...items].sort((a, b) => new Date(b.syncTime || 0) - new Date(a.syncTime || 0));
+      }
+      if (sortType === 'NAME_ASC') {
+        return [...items].sort((a, b) => String(a.tableName || '').localeCompare(String(b.tableName || '')));
+      }
+      return items;
     },
-    
-    viewItem(item) {
-      // Navigate to detail view
-      this.$router.push({
-        path: '/metadata',
-        query: { resource: item.viewContent }
-      });
+    uniqueFromAssets(field, currentValue, defaults = []) {
+      const current = currentValue ? [currentValue] : [];
+      const values = this.assets.map(item => item[field]).filter(Boolean);
+      return Array.from(new Set([...current, ...defaults, ...values]));
     },
-    
-    formatViewTime(timestamp) {
-      if (!timestamp) return '';
-      const date = new Date(timestamp);
-      const now = new Date();
-      const diff = Math.floor((now - date) / 1000); // seconds
-      
-      if (diff < 60) return '刚刚';
-      if (diff < 3600) return `${Math.floor(diff / 60)}分钟前`;
-      if (diff < 86400) return `${Math.floor(diff / 3600)}小时前`;
-      if (diff < 2592000) return `${Math.floor(diff / 86400)}天前`;
-      
-      return date.toLocaleDateString('zh-CN');
+    clearResults() {
+      this.hasSearched = false;
+      this.assets = [];
+      this.pagination = {
+        ...this.pagination,
+        current: 1,
+        total: 0
+      };
+      this.lastSearchSummary = '';
+    },
+    buildSearchSummary() {
+      const parts = [];
+      if (this.filters.keyword) parts.push(`关键词 ${this.filters.keyword}`);
+      if (this.filters.dataSourceId) parts.push(this.selectedDataSourceText.replace('数据源: ', '数据源 '));
+      if (this.filters.dbName) parts.push(`数据库 ${this.filters.dbName}`);
+      if (this.filters.owner && this.dataMapSettings.showSensitiveFields) parts.push(`负责人 ${this.filters.owner}`);
+      return parts.length ? parts.join(' / ') : '全部条件';
+    },
+    formatDataSourceLabel(ds) {
+      if (!ds) return '-';
+      const cluster = ds.clusterCode || ds.clusterName;
+      return `${ds.name || '-'}${cluster ? ` / ${cluster}` : ''}${ds.type ? ` (${ds.type})` : ''}`;
+    },
+    getDataSource(record) {
+      if (!record || !record.dataSourceId) return null;
+      return this.dataSources.find(ds => Number(ds.id) === Number(record.dataSourceId)) || null;
+    },
+    getDataSourceName(record) {
+      const ds = this.getDataSource(record);
+      if (ds && ds.name) return ds.name;
+      return record.clusterCode || record.dataSourceId || '-';
+    },
+    getDataSourceCluster(record) {
+      const ds = this.getDataSource(record);
+      return record.clusterCode || (ds && (ds.clusterCode || ds.clusterName)) || '未绑定集群';
+    },
+    formatSize(bytes) {
+      if (!bytes && bytes !== 0) return '-';
+      if (bytes === 0) return '0 B';
+      const k = 1024;
+      const sizes = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+      const i = Math.min(Math.floor(Math.log(bytes) / Math.log(k)), sizes.length - 1);
+      return `${parseFloat((bytes / Math.pow(k, i)).toFixed(2))} ${sizes[i]}`;
+    },
+    formatDate(value) {
+      if (!value) return '-';
+      return new Date(value).toLocaleDateString('zh-CN');
+    },
+    formatDateTime(value) {
+      if (!value) return '';
+      return new Date(value).toLocaleString('zh-CN');
+    },
+    getFormatColor(format) {
+      const value = String(format || '').toUpperCase();
+      if (value.includes('ORC')) return 'blue';
+      if (value.includes('PARQUET')) return 'green';
+      if (value.includes('TEXT')) return 'orange';
+      return 'default';
     }
   }
 };
@@ -444,249 +507,467 @@ export default {
 <style module>
 .data-map {
   min-height: 100vh;
-  background-color: #f0f2f5;
+  padding: 24px;
+  background: #f5f6f8;
 }
 
-.search-header {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  padding: 48px 24px 64px;
-  position: relative;
-}
-
-.search-header::after {
-  content: '';
-  position: absolute;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  height: 40px;
-  background: linear-gradient(to bottom, transparent, #f0f2f5);
-}
-
-.search-container {
-  max-width: 900px;
-  margin: 0 auto;
-  position: relative;
-  z-index: 1;
-}
-
-.title-row {
-  margin-bottom: 24px;
-  justify-content: center;
-}
-
-.title-icon {
-  font-size: 32px;
-  color: #fff;
-}
-
-.page-title {
-  margin: 0;
-  font-size: 28px;
-  font-weight: 600;
-  color: #fff;
-  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
-}
-
-.search-wrapper {
-  display: flex;
-  gap: 12px;
-  align-items: flex-start;
-}
-
-.search-input {
-  flex: 1;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-}
-
-.datasource-select {
-  background-color: transparent;
-  border-right: 1px solid #d9d9d9;
-}
-
-.search-icon {
-  font-size: 18px;
-  color: #8c8c8c;
-  cursor: pointer;
-  transition: color 0.3s;
-}
-
-.search-icon:hover {
-  color: #1890ff;
-}
-
-.case-toggle {
-  display: inline-block;
-  width: 28px;
-  height: 28px;
-  line-height: 28px;
-  text-align: center;
-  font-size: 12px;
-  font-weight: 600;
-  color: #8c8c8c;
-  border: 1px solid #d9d9d9;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.3s;
-  user-select: none;
-}
-
-.case-toggle:hover {
-  color: #1890ff;
-  border-color: #1890ff;
-}
-
-.search-button {
-  min-width: 100px;
-  height: 40px;
-  box-shadow: 0 2px 8px rgba(24, 144, 255, 0.3);
-}
-
-.content-wrapper {
-  max-width: 1400px;
-  margin: -40px auto 0;
-  padding: 0 24px 24px;
-  position: relative;
-  z-index: 2;
-}
-
-.content-card {
+.search-stage {
+  margin-bottom: 16px;
+  padding: 24px;
+  border: 1px solid #eeeeee;
   border-radius: 8px;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
-  margin-bottom: 24px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
 }
 
-.card-header {
+.stage-title {
   display: flex;
-  justify-content: space-between;
+  justify-content: center;
   align-items: center;
-  width: 100%;
+  gap: 10px;
+  margin-bottom: 18px;
+  color: #102a43;
 }
 
-.card-title {
-  font-size: 16px;
-  font-weight: 600;
-  color: #262626;
+.stage-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: #eef6ff;
+  color: #1677ff;
+  font-size: 18px;
 }
 
-.action-link {
-  color: #1890ff;
-  font-size: 14px;
-  transition: color 0.3s;
+.stage-title h1 {
+  margin: 0;
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: 0;
 }
 
-.action-link:hover {
-  color: #40a9ff;
-}
-
-.action-link-sm {
-  color: #1890ff;
-  font-size: 12px;
-  transition: color 0.3s;
-}
-
-.action-link-sm:hover {
-  color: #40a9ff;
-}
-
-.filters-section {
-  margin-bottom: 24px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.section-subtitle {
+.main-search {
   display: block;
-  margin-top: 16px;
+  max-width: 860px;
+  margin: 0 auto;
+}
+
+.main-search :global(.ant-input) {
+  height: 54px;
+  padding-right: 44px;
+  padding-left: 42px;
+  border-color: #dce8f5;
+  border-radius: 12px;
+  font-size: 16px;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+}
+
+.main-search :global(.ant-input:hover),
+.main-search :global(.ant-input:focus) {
+  border-color: #85bfff;
+  box-shadow: 0 8px 22px rgba(22, 119, 255, 0.12);
+}
+
+.search-prefix {
+  color: #8a94a6;
+  font-size: 17px;
+}
+
+.search-suffix {
+  color: #98a2b3;
+  cursor: pointer;
+  font-size: 17px;
+}
+
+.search-suffix:hover {
+  color: #1677ff;
+}
+
+.shortcut-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  margin-top: 12px;
+}
+
+.shortcut-label {
+  color: #667085;
+  font-size: 13px;
+}
+
+.shortcut-row button,
+.filter-line button {
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid #e5e7eb;
+  border-radius: 12px;
+  background: #fff;
+  color: #475467;
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 26px;
+  transition: all 0.18s ease;
+}
+
+.shortcut-row button:hover,
+.filter-line button:hover {
+  border-color: #91caff;
+  color: #1677ff;
+}
+
+.filter-tools {
+  display: grid;
+  gap: 10px;
+  max-width: 960px;
+  margin: 18px auto 0;
+  padding-top: 16px;
+  border-top: 1px solid #f0f0f0;
+}
+
+.filter-line {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.filter-label {
+  width: 54px;
+  color: #667085;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.filter-line .active-chip {
+  border-color: #1677ff;
+  background: #e8f4ff;
+  color: #0f6fdc;
+  font-weight: 600;
+}
+
+.active-scope {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  justify-content: center;
+  max-width: 960px;
+  margin: 14px auto 0;
+}
+
+.search-feedback {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: center;
+  max-width: 860px;
+  margin: 14px auto 0;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+
+.searching {
+  border: 1px solid #d8e9ff;
+  background: #f0f7ff;
+  color: #0f6fdc;
+}
+
+.searched {
+  border: 1px solid #d9f7be;
+  background: #f6ffed;
+  color: #389e0d;
+}
+
+.governance-placeholder {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(360px, 1fr);
+  gap: 16px;
+  align-items: stretch;
+  padding: 24px;
+  border: 1px solid #eeeeee;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
+}
+
+.placeholder-main {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  min-height: 150px;
+  padding: 22px;
+  border: 1px dashed #d9e8ff;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+
+.placeholder-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  background: #e8f4ff;
+  color: #1677ff;
+  font-size: 20px;
+}
+
+.placeholder-main h2 {
+  margin: 0 0 8px;
+  color: #1f2937;
+  font-size: 18px;
+  font-weight: 650;
+  letter-spacing: 0;
+}
+
+.placeholder-main p {
+  max-width: 680px;
+  margin: 0;
+  color: #667085;
   font-size: 14px;
-  font-weight: 500;
-  color: #595959;
+  line-height: 1.8;
 }
 
-.recent-views {
-  min-height: 300px;
+.placeholder-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.empty-state {
-  padding: 60px 20px;
+.placeholder-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 112px;
+  padding: 16px;
+  border: 1px solid #eeeeee;
+  border-radius: 8px;
+  background: #fff;
 }
 
-.empty-description {
-  color: #8c8c8c;
+.placeholder-card :global(.anticon) {
+  color: #1677ff;
+  font-size: 18px;
+}
+
+.placeholder-card strong {
+  color: #1f2937;
+  font-size: 15px;
+}
+
+.placeholder-card span {
+  color: #98a2b3;
+  font-size: 13px;
   line-height: 1.6;
 }
 
-.recent-list {
+.result-card {
+  border: 1px solid #eeeeee;
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.04);
 }
 
-.list-item {
-  padding: 12px 0;
-  transition: background-color 0.3s;
+.result-card :global(.ant-card-head) {
+  border-bottom-color: #eeeeee;
 }
 
-.list-item:hover {
-  background-color: #fafafa;
-}
-
-.item-title {
-  font-weight: 500;
-  color: #262626;
-}
-
-.item-title:hover {
-  color: #1890ff;
-}
-
-.item-meta {
-  font-size: 12px;
-  color: #8c8c8c;
-}
-
-.management-tabs {
-}
-
-.stats-section {
-  margin-bottom: 24px;
-}
-
-.section-title {
-  font-size: 14px;
-  font-weight: 600;
-  color: #262626;
-  margin-bottom: 16px;
-}
-
-.section-header {
+.result-title {
   display: flex;
-  justify-content: space-between;
-  align-items: center;
-  width: 100%;
-  margin-bottom: 16px;
-}
-
-.stat-item {
-}
-
-.stat-item-sm {
-}
-
-.datasource-stats {
-  margin-top: 16px;
-}
-
-.datasource-header {
-  display: flex;
-  align-items: center;
   gap: 8px;
-  margin-bottom: 16px;
-  padding: 8px 12px;
-  background-color: #fff7e6;
-  border-radius: 4px;
-  border-left: 3px solid #fa8c16;
+  align-items: center;
 }
 
-.datasource-name {
-  font-weight: 500;
-  color: #262626;
+.result-title em {
+  color: #98a2b3;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.result-actions {
+  display: flex;
+  align-items: center;
+}
+
+.asset-table :global(.ant-table-thead > tr > th) {
+  color: #52606d;
+  font-weight: 600;
+  background: #fafafa;
+}
+
+.asset-table :global(.ant-table-tbody > tr > td) {
+  transition: background 0.2s ease;
+}
+
+.asset-table :global(.ant-table-tbody > tr:hover > td) {
+  background: #f7fbff;
+}
+
+.asset-table :global(.asset-cell) {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  min-width: 0;
+}
+
+.asset-table :global(.asset-icon) {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid #d8e9ff;
+  border-radius: 10px;
+  background: #f0f7ff;
+  color: #1677ff;
+  font-size: 16px;
+}
+
+.asset-table :global(.asset-main) {
+  min-width: 0;
+}
+
+.asset-table :global(.asset-link) {
+  display: block;
+  max-width: 390px;
+  overflow: hidden;
+  color: #0f6fdc;
+  font-size: 15px;
+  font-weight: 600;
+  line-height: 22px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.asset-table :global(.asset-subline) {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  max-width: 390px;
+  margin-top: 5px;
+  color: #667085;
+  font-size: 12px;
+}
+
+.asset-table :global(.asset-meta-line) {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  max-width: 460px;
+  margin-top: 6px;
+  color: #98a2b3;
+  font-size: 12px;
+}
+
+.asset-table :global(.asset-meta-line span) {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+}
+
+.asset-table :global(.asset-subline > span:last-child) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.location-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  max-width: 200px;
+}
+
+.location-cell strong {
+  max-width: 200px;
+  overflow: hidden;
+  color: #1f2937;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.location-cell span {
+  max-width: 200px;
+  overflow: hidden;
+  color: #98a2b3;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owner-chip,
+.owner-empty {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.owner-chip {
+  color: #1f2937;
+}
+
+.owner-empty {
+  color: #98a2b3;
+}
+
+.tech-cell {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  color: #667085;
+  font-size: 12px;
+}
+
+.tech-cell span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (max-width: 768px) {
+  .data-map {
+    padding: 14px;
+  }
+
+  .search-stage {
+    padding: 18px;
+  }
+
+  .stage-title h1 {
+    font-size: 24px;
+  }
+
+  .main-search :global(.ant-input) {
+    height: 50px;
+    font-size: 14px;
+  }
+
+  .filter-label {
+    width: 100%;
+  }
+
+  .governance-placeholder {
+    grid-template-columns: 1fr;
+    padding: 18px;
+  }
+
+  .placeholder-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

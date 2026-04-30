@@ -3,6 +3,7 @@ package com.dga.lineage.controller;
 import java.util.List;
 import java.util.Map;
 import javax.servlet.http.HttpServletRequest;
+import com.dga.access.security.CurrentUser;
 import com.dga.lineage.entity.LineageParseTask;
 import com.dga.lineage.service.LineageCollectionService;
 import com.dga.lineage.service.AzkabanLineageService;
@@ -64,8 +65,7 @@ public class LineageController {
     }
 
     private String currentUsername(HttpServletRequest request) {
-        String username = request == null ? null : request.getHeader("X-DGA-Username");
-        return username == null || username.trim().isEmpty() ? "unknown" : username.trim();
+        return CurrentUser.usernameOrUnknown();
     }
 
     public static class AzkabanConnectionRequest {

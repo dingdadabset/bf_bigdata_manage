@@ -4,6 +4,8 @@ import com.dga.datasource.entity.DataSourceConfig;
 import com.dga.datasource.repository.DataSourceConfigRepository;
 import com.dga.metadata.entity.MetadataCollectionTask;
 import com.dga.metadata.repository.MetadataCollectionTaskRepository;
+import com.dga.settings.service.NotificationService;
+import com.dga.settings.service.SettingsService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -25,6 +27,12 @@ public class MetadataCollectionService {
 
     @Autowired
     private MetadataCollectorFactory collectorFactory;
+
+    @Autowired
+    private SettingsService settingsService;
+
+    @Autowired
+    private NotificationService notificationService;
 
     @Transactional
     public MetadataCollectionTask createTask(Long dataSourceId, String triggerType, String triggeredBy) {
@@ -57,7 +65,10 @@ public class MetadataCollectionService {
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "采集任务不存在: " + taskId));
         DataSourceConfig config = dataSourceRepository.findById(task.getDataSourceId())
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "数据源不存在: " + task.getDataSourceId()));
-        try {
+        int retryTimes = Math.max(0, settingsService.getInt("metadataCollection", "retryTimes", 1));
+        Exception lastException = null;
+        for (int attempt = 0; attempt <= retryTimes; attempt++) {
+            try {
             MetadataCollector collector = collectorFactory.getCollector(config.getType());
             if (collector == null) {
                 throw new IllegalStateException("不支持的数据源类型: " + config.getType());
@@ -75,7 +86,19 @@ public class MetadataCollectionService {
             config.setLastSyncTime(task.getFinishedAt());
             config.setLastSyncMessage(task.getMessage());
             dataSourceRepository.save(config);
-        } catch (Exception e) {
+            if ("FAILED".equals(task.getStatus())) {
+                notificationService.notifyCollectionFailure(task.getDataSourceName() + "：" + task.getMessage());
+            }
+            return;
+            } catch (Exception e) {
+                lastException = e;
+                if (attempt >= retryTimes) {
+                    break;
+                }
+            }
+        }
+        if (lastException != null) {
+            Exception e = lastException;
             task.setStatus("FAILED");
             task.setMessage(e.getMessage());
             task.setErrorDetail(stacklessMessage(e));
@@ -86,6 +109,7 @@ public class MetadataCollectionService {
             config.setLastSyncTime(task.getFinishedAt());
             config.setLastSyncMessage(e.getMessage());
             dataSourceRepository.save(config);
+            notificationService.notifyCollectionFailure(task.getDataSourceName() + "：" + stacklessMessage(e));
         }
     }
 

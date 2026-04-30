@@ -66,6 +66,10 @@ public class DataSourceSyncService {
             }
         }
 
-        return dataSourceRepository.findActiveDataSources();
+        return dataSourceRepository.findActiveHiveMetastoreDataSources();
+    }
+
+    public List<DataSourceConfig> getManagedHiveDataSources() {
+        return dataSourceRepository.findActiveHiveMetastoreDataSources();
     }
 }

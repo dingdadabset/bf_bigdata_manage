@@ -3,7 +3,7 @@
     <div class="module-header">
       <div>
         <h1>数据源接入</h1>
-        <p>展示历史数据源连接，并自动同步环境资源中的 HIVE_METASTORE_DB 采集端点</p>
+        <p>展示环境资源中的 HIVE_METASTORE_DB 采集端点</p>
       </div>
       <div class="header-actions">
         <a-button icon="apartment" @click="$router.push('/environment-resources')">配置环境资源</a-button>
@@ -63,7 +63,7 @@
       </template>
       <template slot="source" slot-scope="text, record">
         <a-tag :color="record.endpointId ? 'green' : 'default'">
-          {{ record.endpointId ? '环境资源' : '历史配置' }}
+          {{ record.endpointId ? '环境资源' : '未绑定' }}
         </a-tag>
       </template>
       <template slot="url" slot-scope="text">
@@ -155,11 +155,13 @@ export default {
       this.loading = true;
       try {
         const res = await axios.get('/api/datasource');
-        this.dataSources = (res.data || []).map(item => ({
-          ...item,
-          _testing: false,
-          _collecting: false
-        }));
+        this.dataSources = (res.data || [])
+          .filter(item => item && item.endpointId && String(item.type || '').toUpperCase() === 'HIVE')
+          .map(item => ({
+            ...item,
+            _testing: false,
+            _collecting: false
+          }));
       } catch (e) {
         this.$message.error('加载数据源失败');
       } finally {

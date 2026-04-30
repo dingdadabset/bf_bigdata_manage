@@ -1,6 +1,7 @@
 package com.dga.datasource.controller;
 
 import com.dga.access.service.AdminGuard;
+import com.dga.access.security.CurrentUser;
 import com.dga.datasource.entity.DataSourceConfig;
 import com.dga.datasource.repository.DataSourceConfigRepository;
 import com.dga.datasource.service.DataSourceSyncService;
@@ -101,7 +102,6 @@ public class DataSourceController {
     }
 
     private String currentUsername(HttpServletRequest request) {
-        String username = request == null ? null : request.getHeader("X-DGA-Username");
-        return username == null || username.trim().isEmpty() ? "unknown" : username.trim();
+        return CurrentUser.usernameOrUnknown();
     }
 }

@@ -375,7 +375,9 @@ public class ClusterService {
         if (value == null) {
             return baseDn;
         }
-        if (isBlank(baseDn) || value.toLowerCase(Locale.ROOT).endsWith("," + baseDn.toLowerCase(Locale.ROOT))) {
+        if (isBlank(baseDn)
+                || value.toLowerCase(Locale.ROOT).equals(baseDn.toLowerCase(Locale.ROOT))
+                || value.toLowerCase(Locale.ROOT).endsWith("," + baseDn.toLowerCase(Locale.ROOT))) {
             return value;
         }
         return value + "," + baseDn;
