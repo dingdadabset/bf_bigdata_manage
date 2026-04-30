@@ -14,6 +14,7 @@ dga-backend/target/
 dga-frontend/dist/
 dga-frontend/node_modules/
 dga-frontend/node_modules/.vite/
+dga-backend/src/main/resources/static/
 
 # Logs
 *.log
