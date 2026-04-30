@@ -2,6 +2,7 @@ package com.dga.access.config;
 
 import com.dga.access.entity.User;
 import com.dga.access.repository.UserRepository;
+import com.dga.access.security.JwtService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.security.core.Authentication;
 import org.springframework.security.oauth2.client.authentication.OAuth2AuthenticationToken;
@@ -21,6 +22,9 @@ public class OAuth2LoginSuccessHandler extends SimpleUrlAuthenticationSuccessHan
 
     @Autowired
     private UserRepository userRepository;
+
+    @Autowired
+    private JwtService jwtService;
 
     @Override
     public void onAuthenticationSuccess(HttpServletRequest request, HttpServletResponse response, Authentication authentication) throws IOException, ServletException {
@@ -56,7 +60,7 @@ public class OAuth2LoginSuccessHandler extends SimpleUrlAuthenticationSuccessHan
             userRepository.save(user);
         }
 
-        String authToken = "mock-token-" + user.getUsername();
+        String authToken = jwtService.createToken(user);
 
         // Redirect to frontend with token
         String targetUrl = UriComponentsBuilder.fromUriString("http://localhost:3000/login")

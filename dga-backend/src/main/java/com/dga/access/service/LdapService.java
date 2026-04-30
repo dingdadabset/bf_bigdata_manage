@@ -184,6 +184,22 @@ public class LdapService {
         });
     }
 
+    public Map<String, Object> describeUserSearch(String clusterIdentifier) {
+        Cluster cluster = resolveCluster(clusterIdentifier);
+        Map<String, Object> info = new HashMap<>();
+        info.put("filter", "(uid=*)");
+        if (cluster == null) {
+            return info;
+        }
+        ClusterEndpoint endpoint = getLdapEndpoint(cluster);
+        String baseDn = endpoint == null ? null : trimToNull(endpoint.getBaseDn());
+        String searchBase = resolveUserBaseDn(cluster);
+        info.put("baseDn", baseDn);
+        info.put("searchBase", searchBase);
+        info.put("searchBaseDn", absoluteSearchBase(searchBase, baseDn));
+        return info;
+    }
+
     private LdapTemplate getLdapTemplate(Cluster cluster) {
         ClusterEndpoint endpoint = getLdapEndpoint(cluster);
         if (endpoint == null || endpoint.getUrl() == null || endpoint.getUrl().isEmpty()) {
@@ -243,9 +259,16 @@ public class LdapService {
         if (endpoint != null && endpoint.getUserBaseDn() != null && !endpoint.getUserBaseDn().isEmpty()) {
             String userBaseDn = endpoint.getUserBaseDn().trim();
             String baseDn = endpoint.getBaseDn();
-            if (baseDn != null && !baseDn.trim().isEmpty()
-                    && userBaseDn.toLowerCase().endsWith("," + baseDn.trim().toLowerCase())) {
-                return userBaseDn.substring(0, userBaseDn.length() - baseDn.trim().length() - 1);
+            String normalizedBaseDn = trimToNull(baseDn);
+            if (normalizedBaseDn != null) {
+                String userBaseLower = userBaseDn.toLowerCase(Locale.ROOT);
+                String baseLower = normalizedBaseDn.toLowerCase(Locale.ROOT);
+                if (userBaseLower.equals(baseLower)) {
+                    return "";
+                }
+                if (userBaseLower.endsWith("," + baseLower)) {
+                    return userBaseDn.substring(0, userBaseDn.length() - normalizedBaseDn.length() - 1);
+                }
             }
             return userBaseDn;
         }
@@ -282,10 +305,29 @@ public class LdapService {
         if (value == null) {
             return baseDn;
         }
-        if (baseDn == null || value.toLowerCase(Locale.ROOT).endsWith("," + baseDn.toLowerCase(Locale.ROOT))) {
+        if (baseDn == null
+                || value.toLowerCase(Locale.ROOT).equals(baseDn.toLowerCase(Locale.ROOT))
+                || value.toLowerCase(Locale.ROOT).endsWith("," + baseDn.toLowerCase(Locale.ROOT))) {
             return value;
         }
         return value + "," + baseDn;
+    }
+
+    private String absoluteSearchBase(String searchBase, String baseDn) {
+        String base = trimToNull(baseDn);
+        String search = trimToNull(searchBase);
+        if (search == null) {
+            return base;
+        }
+        if (base == null) {
+            return search;
+        }
+        String searchLower = search.toLowerCase(Locale.ROOT);
+        String baseLower = base.toLowerCase(Locale.ROOT);
+        if (searchLower.equals(baseLower) || searchLower.endsWith("," + baseLower)) {
+            return search;
+        }
+        return search + "," + base;
     }
 
     private String trimToNull(String value) {

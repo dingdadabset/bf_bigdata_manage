@@ -45,6 +45,9 @@ public class DgaUser {
     @Column(name = "is_deleted", columnDefinition = "boolean default false")
     private Boolean isDeleted = false;
 
+    @Column(name = "is_protected")
+    private Boolean protectedUser;
+
     public Long getId() {
         return id;
     }
@@ -131,6 +134,14 @@ public class DgaUser {
 
     public void setDeleted(Boolean deleted) {
         isDeleted = deleted;
+    }
+
+    public Boolean getProtectedUser() {
+        return protectedUser;
+    }
+
+    public void setProtectedUser(Boolean protectedUser) {
+        this.protectedUser = protectedUser;
     }
 
     @PrePersist

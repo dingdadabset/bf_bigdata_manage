@@ -5,20 +5,31 @@ import axios from 'axios';
 import App from './App.vue'
 import router from './router'
 import './style.css'
-import { getCurrentUsername } from './utils/currentUser'
+import { clearAuthCache, getAuthToken } from './utils/currentUser'
 
 Vue.config.productionTip = false
 
 Vue.use(Antd);
 
 axios.interceptors.request.use(config => {
-  const username = getCurrentUsername();
-  if (username) {
+  const token = getAuthToken();
+  if (token) {
     config.headers = config.headers || {};
-    config.headers['X-DGA-Username'] = username;
+    config.headers.Authorization = `Bearer ${token}`;
   }
   return config;
 });
+
+axios.interceptors.response.use(
+  response => response,
+  error => {
+    if (error.response && error.response.status === 401 && router.currentRoute.path !== '/login') {
+      clearAuthCache();
+      router.push('/login');
+    }
+    return Promise.reject(error);
+  }
+);
 
 new Vue({
   router,

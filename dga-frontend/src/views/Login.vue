@@ -68,6 +68,11 @@
                     登录
                   </a-button>
                 </a-form-model-item>
+                <div class="login-helper-row">
+                  <a @click="openForgotPassword">忘记密码</a>
+                  <a-divider type="vertical" />
+                  <a @click="openChangePassword">修改密码</a>
+                </div>
               </a-form-model>
             </a-tab-pane>
             <a-tab-pane key="2" tab="注册账号">
@@ -93,6 +98,60 @@
             </a-tab-pane>
           </a-tabs>
         </a-card>
+
+        <a-modal
+          title="忘记密码"
+          :visible="forgotVisible"
+          :confirm-loading="forgotLoading"
+          ok-text="重置密码"
+          @ok="handleForgotPassword"
+          @cancel="forgotVisible = false"
+        >
+          <a-alert
+            message="仅支持 DGA 平台本地账号。请输入账号绑定邮箱后设置新密码。"
+            type="info"
+            show-icon
+            style="margin-bottom: 16px"
+          />
+          <a-form-model ref="forgotForm" :model="forgotForm" :rules="forgotRules" layout="vertical">
+            <a-form-model-item label="用户名" prop="username">
+              <a-input v-model="forgotForm.username" placeholder="请输入用户名" />
+            </a-form-model-item>
+            <a-form-model-item label="注册邮箱" prop="email">
+              <a-input v-model="forgotForm.email" placeholder="请输入账号绑定邮箱" />
+            </a-form-model-item>
+            <a-form-model-item label="新密码" prop="newPassword">
+              <a-input-password v-model="forgotForm.newPassword" placeholder="至少 6 位" />
+            </a-form-model-item>
+            <a-form-model-item label="确认新密码" prop="confirmPassword">
+              <a-input-password v-model="forgotForm.confirmPassword" placeholder="再次输入新密码" />
+            </a-form-model-item>
+          </a-form-model>
+        </a-modal>
+
+        <a-modal
+          title="修改密码"
+          :visible="changeVisible"
+          :confirm-loading="changeLoading"
+          ok-text="保存新密码"
+          @ok="handleChangePassword"
+          @cancel="changeVisible = false"
+        >
+          <a-form-model ref="changeForm" :model="changeForm" :rules="changeRules" layout="vertical">
+            <a-form-model-item label="用户名" prop="username">
+              <a-input v-model="changeForm.username" placeholder="请输入用户名" />
+            </a-form-model-item>
+            <a-form-model-item label="原密码" prop="oldPassword">
+              <a-input-password v-model="changeForm.oldPassword" placeholder="请输入原密码" />
+            </a-form-model-item>
+            <a-form-model-item label="新密码" prop="newPassword">
+              <a-input-password v-model="changeForm.newPassword" placeholder="至少 6 位" />
+            </a-form-model-item>
+            <a-form-model-item label="确认新密码" prop="confirmPassword">
+              <a-input-password v-model="changeForm.confirmPassword" placeholder="再次输入新密码" />
+            </a-form-model-item>
+          </a-form-model>
+        </a-modal>
       </section>
     </div>
   </div>
@@ -100,6 +159,7 @@
 
 <script>
 import axios from 'axios';
+import { clearAuthCache, saveAuthSession } from '../utils/currentUser';
 
 export default {
   data() {
@@ -107,6 +167,10 @@ export default {
       activeTab: '1',
       loading: false,
       registering: false,
+      forgotVisible: false,
+      forgotLoading: false,
+      changeVisible: false,
+      changeLoading: false,
       form: {
         username: '',
         password: ''
@@ -115,6 +179,18 @@ export default {
         username: '',
         email: '',
         password: '',
+        confirmPassword: ''
+      },
+      forgotForm: {
+        username: '',
+        email: '',
+        newPassword: '',
+        confirmPassword: ''
+      },
+      changeForm: {
+        username: '',
+        oldPassword: '',
+        newPassword: '',
         confirmPassword: ''
       },
       rules: {
@@ -126,17 +202,29 @@ export default {
         email: [{ required: true, message: '请输入邮箱', trigger: 'blur' }, { type: 'email', message: '邮箱格式不正确', trigger: 'blur' }],
         password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
         confirmPassword: [{ required: true, message: '请确认密码', trigger: 'blur' }, { validator: this.validateConfirmPassword, trigger: 'blur' }]
+      },
+      forgotRules: {
+        username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+        email: [{ required: true, message: '请输入注册邮箱', trigger: 'blur' }, { type: 'email', message: '邮箱格式不正确', trigger: 'blur' }],
+        newPassword: [{ required: true, message: '请输入新密码', trigger: 'blur' }, { min: 6, message: '新密码至少 6 位', trigger: 'blur' }],
+        confirmPassword: [{ required: true, message: '请确认新密码', trigger: 'blur' }, { validator: this.validateForgotConfirmPassword, trigger: 'blur' }]
+      },
+      changeRules: {
+        username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
+        oldPassword: [{ required: true, message: '请输入原密码', trigger: 'blur' }],
+        newPassword: [{ required: true, message: '请输入新密码', trigger: 'blur' }, { min: 6, message: '新密码至少 6 位', trigger: 'blur' }],
+        confirmPassword: [{ required: true, message: '请确认新密码', trigger: 'blur' }, { validator: this.validateChangeConfirmPassword, trigger: 'blur' }]
       }
     };
   },
   mounted() {
     const token = this.$route.query.token;
     const username = this.$route.query.username;
+    clearAuthCache();
     if (token) {
-      localStorage.setItem('token', token);
-      localStorage.setItem('user', JSON.stringify({ username }));
+      saveAuthSession({ username }, token);
       this.$message.success('登录成功');
-      this.$router.push('/');
+      this.goDefaultHome();
     }
   },
   methods: {
@@ -147,20 +235,107 @@ export default {
         callback();
       }
     },
+    validateForgotConfirmPassword(rule, value, callback) {
+      if (value && value !== this.forgotForm.newPassword) {
+        callback(new Error('两次输入的新密码不一致'));
+      } else {
+        callback();
+      }
+    },
+    validateChangeConfirmPassword(rule, value, callback) {
+      if (value && value !== this.changeForm.newPassword) {
+        callback(new Error('两次输入的新密码不一致'));
+      } else {
+        callback();
+      }
+    },
+    openForgotPassword() {
+      this.forgotForm = {
+        username: this.form.username || '',
+        email: '',
+        newPassword: '',
+        confirmPassword: ''
+      };
+      this.forgotVisible = true;
+      this.$nextTick(() => this.$refs.forgotForm && this.$refs.forgotForm.clearValidate());
+    },
+    openChangePassword() {
+      this.changeForm = {
+        username: this.form.username || '',
+        oldPassword: '',
+        newPassword: '',
+        confirmPassword: ''
+      };
+      this.changeVisible = true;
+      this.$nextTick(() => this.$refs.changeForm && this.$refs.changeForm.clearValidate());
+    },
     handleSubmit() {
       this.$refs.loginForm.validate(async valid => {
         if (valid) {
           this.loading = true;
           try {
             const response = await axios.post('/api/auth/login', this.form);
-            localStorage.setItem('user', JSON.stringify(response.data));
+            saveAuthSession(response.data);
             this.$message.success('登录成功');
-            this.$router.push('/');
+            this.goDefaultHome();
           } catch (e) {
             this.$message.error('登录失败: ' + (e.response?.data || '用户名或密码错误'));
           } finally {
             this.loading = false;
           }
+        }
+      });
+    },
+    async goDefaultHome() {
+      try {
+        const res = await axios.get('/api/settings/me');
+        const home = (res.data && res.data.defaultHome) || '/datamap';
+        this.$router.push(home);
+      } catch (e) {
+        this.$router.push('/datamap');
+      }
+    },
+    handleForgotPassword() {
+      this.$refs.forgotForm.validate(async valid => {
+        if (!valid) return;
+        this.forgotLoading = true;
+        try {
+          await axios.post('/api/auth/forgot-password', {
+            username: this.forgotForm.username,
+            email: this.forgotForm.email,
+            newPassword: this.forgotForm.newPassword
+          });
+          this.$message.success('密码已重置，请使用新密码登录');
+          this.form.username = this.forgotForm.username;
+          this.form.password = '';
+          this.forgotVisible = false;
+          this.activeTab = '1';
+        } catch (e) {
+          this.$message.error(e.response?.data?.message || e.response?.data || '密码重置失败');
+        } finally {
+          this.forgotLoading = false;
+        }
+      });
+    },
+    handleChangePassword() {
+      this.$refs.changeForm.validate(async valid => {
+        if (!valid) return;
+        this.changeLoading = true;
+        try {
+          await axios.post('/api/auth/change-password', {
+            username: this.changeForm.username,
+            oldPassword: this.changeForm.oldPassword,
+            newPassword: this.changeForm.newPassword
+          });
+          this.$message.success('密码已修改，请重新登录');
+          this.form.username = this.changeForm.username;
+          this.form.password = '';
+          this.changeVisible = false;
+          this.activeTab = '1';
+        } catch (e) {
+          this.$message.error(e.response?.data?.message || e.response?.data || '密码修改失败');
+        } finally {
+          this.changeLoading = false;
         }
       });
     },
@@ -438,6 +613,19 @@ export default {
 
 ::v-deep .ant-tabs-bar {
   margin-bottom: 24px;
+}
+
+.login-helper-row {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-top: -6px;
+  color: #667085;
+  font-size: 13px;
+}
+
+.login-helper-row a {
+  color: #1677c8;
 }
 
 /* Enhancing Input Styles */
