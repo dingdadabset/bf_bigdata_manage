@@ -18,6 +18,7 @@ import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
 import com.dga.cluster.repository.ClusterEndpointRepository;
 import com.dga.cluster.repository.ClusterRepository;
+import com.dga.cluster.service.HiveServer2ConnectionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -108,6 +109,9 @@ public class AccessGovernanceService {
 
     @Autowired
     private AuthorizationService authorizationService;
+
+    @Autowired
+    private HiveServer2ConnectionService hiveServer2ConnectionService;
 
     @Transactional
     public Map<String, Object> scan(String cluster, int inactiveDays, int reviewDays, String sourceText) {
@@ -731,6 +735,10 @@ public class AccessGovernanceService {
     }
 
     private JdbcTemplate sqlJdbcTemplate(ClusterEndpoint endpoint, String driverClassName) {
+        if (ClusterEndpoint.TYPE_HIVE_SERVER2.equalsIgnoreCase(endpoint.getEndpointType())
+                || "org.apache.hive.jdbc.HiveDriver".equals(driverClassName)) {
+            return hiveServer2ConnectionService.jdbcTemplate(endpoint);
+        }
         DriverManagerDataSource dataSource = new DriverManagerDataSource();
         dataSource.setDriverClassName(driverClassName);
         dataSource.setUrl(endpoint.getUrl());

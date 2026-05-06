@@ -26,6 +26,11 @@ public class ClusterEndpoint {
     public static final String AUTH_STARROCKS_SQL = "STARROCKS_SQL";
     public static final String AUTH_DORIS_SQL = "DORIS_SQL";
     public static final String AUTH_RANGER = "RANGER";
+    public static final String DRIVER_PROFILE_MODERN = "MODERN";
+    public static final String DRIVER_PROFILE_LEGACY_CDH5 = "LEGACY_CDH5";
+    public static final String DRIVER_PROFILE_AUTO = "AUTO";
+    public static final String DRIVER_KEY_MODERN = "builtin-modern";
+    public static final String DRIVER_KEY_LEGACY_CDH5 = "legacy-cdh5";
 
     @Id
     @GeneratedValue(strategy = GenerationType.IDENTITY)
@@ -52,6 +57,12 @@ public class ClusterEndpoint {
 
     @Column(name = "service_name")
     private String serviceName;
+
+    @Column(name = "driver_profile")
+    private String driverProfile;
+
+    @Column(name = "driver_key")
+    private String driverKey;
 
     @Column(name = "base_dn")
     private String baseDn;
@@ -147,6 +158,22 @@ public class ClusterEndpoint {
 
     public void setServiceName(String serviceName) {
         this.serviceName = serviceName;
+    }
+
+    public String getDriverProfile() {
+        return driverProfile;
+    }
+
+    public void setDriverProfile(String driverProfile) {
+        this.driverProfile = driverProfile;
+    }
+
+    public String getDriverKey() {
+        return driverKey;
+    }
+
+    public void setDriverKey(String driverKey) {
+        this.driverKey = driverKey;
     }
 
     public String getBaseDn() {

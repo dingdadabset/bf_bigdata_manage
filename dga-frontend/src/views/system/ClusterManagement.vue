@@ -213,6 +213,41 @@
                   <a-input v-model="activeEndpoint.url" :placeholder="endpointUrlPlaceholder" />
                 </a-form-model-item>
 
+                <a-row v-if="activeEndpoint.endpointType === 'HIVE_SERVER2'" :gutter="16">
+                  <a-col :span="12">
+                    <a-form-model-item label="驱动策略">
+                      <a-select v-model="activeEndpoint.driverProfile" @change="onDriverProfileChange(activeEndpoint)">
+                        <a-select-option value="MODERN">默认现代驱动</a-select-option>
+                        <a-select-option value="LEGACY_CDH5">指定旧版驱动</a-select-option>
+                        <a-select-option value="AUTO">自动回退旧驱动</a-select-option>
+                      </a-select>
+                    </a-form-model-item>
+                  </a-col>
+                  <a-col :span="12">
+                    <a-form-model-item label="驱动版本">
+                      <a-select
+                        v-model="activeEndpoint.driverKey"
+                        :disabled="activeEndpoint.driverProfile === 'MODERN' || !customHiveDriverOptions.length"
+                        :placeholder="customHiveDriverOptions.length ? '选择旧版 Hive JDBC 驱动' : '未配置可选旧驱动'"
+                      >
+                        <a-select-option v-for="item in customHiveDriverOptions" :key="item.key" :value="item.key">
+                          {{ item.name }}
+                        </a-select-option>
+                      </a-select>
+                    </a-form-model-item>
+                  </a-col>
+                </a-row>
+
+                <a-row v-if="activeEndpoint.endpointType === 'HIVE_SERVER2'" :gutter="16">
+                  <a-col :span="24">
+                    <a-form-model-item label="策略说明">
+                      <div class="driver-profile-hint">
+                        默认现代驱动适用于新集群；指定旧版驱动用于老集群；自动回退会先用 modern，只有命中协议不兼容时才切到所选旧驱动。
+                      </div>
+                    </a-form-model-item>
+                  </a-col>
+                </a-row>
+
                 <a-row :gutter="16">
                   <a-col :span="12">
                     <a-form-model-item label="账号">
@@ -278,6 +313,7 @@ export default {
       submitting: false,
       editingId: null,
       currentCluster: null,
+      hiveDriverOptions: [],
       endpointForm: [],
       activeEndpointIndex: -1,
       form: {
@@ -309,6 +345,7 @@ export default {
   },
   created() {
     this.fetchClusters();
+    this.fetchHiveDriverOptions();
   },
   computed: {
     endpointCount() {
@@ -325,6 +362,17 @@ export default {
     },
     activeEndpoint() {
       return this.endpointForm[this.activeEndpointIndex] || null;
+    },
+    customHiveDriverOptions() {
+      return this.hiveDriverOptions.filter(item => !item.builtIn);
+    },
+    defaultHiveDriverKey() {
+      const explicitDefault = this.hiveDriverOptions.find(item => item.defaultOption);
+      return explicitDefault ? explicitDefault.key : 'builtin-modern';
+    },
+    defaultLegacyHiveDriverKey() {
+      const explicitDefault = this.customHiveDriverOptions.find(item => item.defaultLegacy);
+      return explicitDefault ? explicitDefault.key : ((this.customHiveDriverOptions[0] && this.customHiveDriverOptions[0].key) || 'legacy-cdh5');
     },
     endpointUrlPlaceholder() {
       if (!this.activeEndpoint) return '请输入连接地址';
@@ -374,6 +422,32 @@ export default {
     }
   },
   methods: {
+    async fetchHiveDriverOptions() {
+      try {
+        const res = await axios.get('/api/clusters/endpoint-driver-options', {
+          params: { endpointType: 'HIVE_SERVER2' }
+        });
+        this.hiveDriverOptions = Array.isArray(res.data) && res.data.length
+          ? res.data
+          : [{
+            key: 'builtin-modern',
+            name: '默认现代驱动',
+            description: '内置 Hive JDBC 驱动，适用于较新的 HiveServer2 集群',
+            builtIn: true,
+            defaultOption: true,
+            defaultLegacy: false
+          }];
+      } catch (e) {
+        this.hiveDriverOptions = [{
+          key: 'builtin-modern',
+          name: '默认现代驱动',
+          description: '内置 Hive JDBC 驱动，适用于较新的 HiveServer2 集群',
+          builtIn: true,
+          defaultOption: true,
+          defaultLegacy: false
+        }];
+      }
+    },
     async fetchClusters() {
       this.loading = true;
       try {
@@ -422,6 +496,8 @@ export default {
       this.currentCluster = record;
       this.endpointForm = (record.endpoints || []).map(endpoint => ({
         ...endpoint,
+        driverProfile: endpoint.endpointType === 'HIVE_SERVER2' ? (endpoint.driverProfile || 'MODERN') : endpoint.driverProfile,
+        driverKey: this.resolveEndpointDriverKey(endpoint),
         password: '',
         _rowKey: endpoint.id || `${endpoint.endpointType}-${Date.now()}-${Math.random()}`
       }));
@@ -437,6 +513,8 @@ export default {
       const endpoint = {
         _rowKey: `new-${Date.now()}-${Math.random()}`,
         endpointType,
+        driverProfile: endpointType === 'HIVE_SERVER2' ? 'MODERN' : undefined,
+        driverKey: endpointType === 'HIVE_SERVER2' ? this.defaultHiveDriverKey : undefined,
         authBackend: endpointType === 'STARROCKS_JDBC' ? 'STARROCKS_SQL'
           : endpointType === 'DORIS_JDBC' ? 'DORIS_SQL'
           : 'SENTRY',
@@ -458,13 +536,61 @@ export default {
         record.authBackend = 'DORIS_SQL';
       } else if (record.endpointType === 'HIVE_SERVER2') {
         record.authBackend = 'SENTRY';
+        if (!record.driverProfile) {
+          record.driverProfile = 'MODERN';
+        }
+        if (!record.driverKey || record.driverKey === 'builtin-modern') {
+          record.driverKey = record.driverProfile === 'MODERN' ? this.defaultHiveDriverKey : this.defaultLegacyHiveDriverKey;
+        }
       } else if (['HIVE_METASTORE_DB', 'AZKABAN_DB', 'DOLPHINSCHEDULER_DB', 'RANGER_DB', 'HDFS', 'YARN', 'HUE'].includes(record.endpointType)) {
         record.authBackend = undefined;
+        record.driverProfile = undefined;
+        record.driverKey = undefined;
       } else if (record.endpointType === 'RANGER') {
         record.authBackend = 'RANGER';
+        record.driverProfile = undefined;
+        record.driverKey = undefined;
       } else if (record.endpointType === 'LDAP') {
         record.authBackend = undefined;
+        record.driverProfile = undefined;
+        record.driverKey = undefined;
       }
+    },
+    onDriverProfileChange(record) {
+      if (!record || record.endpointType !== 'HIVE_SERVER2') {
+        return;
+      }
+      if (record.driverProfile === 'MODERN') {
+        record.driverKey = this.defaultHiveDriverKey;
+        return;
+      }
+      if (!record.driverKey || record.driverKey === this.defaultHiveDriverKey) {
+        record.driverKey = this.defaultLegacyHiveDriverKey || this.defaultHiveDriverKey;
+      }
+    },
+    resolveEndpointDriverKey(endpoint) {
+      if (!endpoint || endpoint.endpointType !== 'HIVE_SERVER2') {
+        return undefined;
+      }
+      if (endpoint.driverProfile === 'MODERN' || !endpoint.driverProfile) {
+        return endpoint.driverKey || this.defaultHiveDriverKey;
+      }
+      return endpoint.driverKey || this.defaultLegacyHiveDriverKey || this.defaultHiveDriverKey;
+    },
+    normalizeEndpointDriverSelection(record) {
+      if (!record || record.endpointType !== 'HIVE_SERVER2') {
+        record.driverProfile = undefined;
+        record.driverKey = undefined;
+        return;
+      }
+      if (!record.driverProfile) {
+        record.driverProfile = 'MODERN';
+      }
+      if (record.driverProfile === 'MODERN') {
+        record.driverKey = this.defaultHiveDriverKey;
+        return;
+      }
+      record.driverKey = record.driverKey || this.defaultLegacyHiveDriverKey || this.defaultHiveDriverKey;
     },
     generateClusterCode(name) {
       const source = (name || 'CLUSTER').trim().toUpperCase();
@@ -473,6 +599,7 @@ export default {
     },
     sanitizeEndpointPayload(record) {
       const payload = { ...record };
+      this.normalizeEndpointDriverSelection(payload);
       delete payload._rowKey;
       delete payload._saving;
       delete payload._testing;
@@ -530,6 +657,8 @@ export default {
           this.currentCluster = refreshed;
           this.endpointForm = (refreshed.endpoints || []).map(endpoint => ({
             ...endpoint,
+            driverProfile: endpoint.endpointType === 'HIVE_SERVER2' ? (endpoint.driverProfile || 'MODERN') : endpoint.driverProfile,
+            driverKey: this.resolveEndpointDriverKey(endpoint),
             password: '',
             _rowKey: endpoint.id || `${endpoint.endpointType}-${Date.now()}-${Math.random()}`
           }));
@@ -832,6 +961,12 @@ export default {
   gap: 12px;
   padding-top: 12px;
   border-top: 1px solid #edf0f5;
+}
+.driver-profile-hint {
+  min-height: 32px;
+  padding-top: 5px;
+  color: #667085;
+  line-height: 20px;
 }
 @media (max-width: 900px) {
   .summary-row {

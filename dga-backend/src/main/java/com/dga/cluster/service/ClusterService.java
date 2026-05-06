@@ -45,6 +45,9 @@ public class ClusterService {
     @Autowired
     private DataLineageRepository dataLineageRepository;
 
+    @Autowired
+    private HiveServer2ConnectionService hiveServer2ConnectionService;
+
     private static final Pattern NON_CODE_CHARS = Pattern.compile("[^A-Z0-9_]+");
 
     public List<Cluster> getAllClusters() {
@@ -138,6 +141,24 @@ public class ClusterService {
         return endpointRepository.findByClusterCodeAndStatusNot(clusterCode, "DELETED");
     }
 
+    public List<Map<String, Object>> listEndpointDriverOptions(String endpointType) {
+        if (!ClusterEndpoint.TYPE_HIVE_SERVER2.equalsIgnoreCase(nullToEmpty(endpointType))) {
+            return Collections.emptyList();
+        }
+        List<Map<String, Object>> options = new ArrayList<>();
+        hiveServer2ConnectionService.listDriverOptions().forEach(driver -> {
+            Map<String, Object> item = new HashMap<>();
+            item.put("key", driver.getKey());
+            item.put("name", driver.getName());
+            item.put("description", driver.getDescription());
+            item.put("builtIn", driver.isBuiltIn());
+            item.put("defaultOption", driver.isDefaultOption());
+            item.put("defaultLegacy", driver.isDefaultLegacy());
+            options.add(item);
+        });
+        return options;
+    }
+
     public Map<String, Object> testEndpoint(String clusterCode, ClusterEndpoint endpoint) {
         long start = System.currentTimeMillis();
         Map<String, Object> result = new HashMap<>();
@@ -152,7 +173,7 @@ public class ClusterService {
 
             switch (testEndpoint.getEndpointType()) {
                 case ClusterEndpoint.TYPE_HIVE_SERVER2:
-                    testJdbc("org.apache.hive.jdbc.HiveDriver", testEndpoint);
+                    testHiveServer2(testEndpoint);
                     break;
                 case ClusterEndpoint.TYPE_HIVE_METASTORE_DB:
                     testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
@@ -207,9 +228,11 @@ public class ClusterService {
             existing.setUrl(endpoint.getUrl());
             existing.setUsername(endpoint.getUsername());
             if (endpoint.getPassword() != null && !endpoint.getPassword().isEmpty()) {
-                existing.setPassword(endpoint.getPassword());
+            existing.setPassword(endpoint.getPassword());
             }
             existing.setServiceName(endpoint.getServiceName());
+            existing.setDriverProfile(normalizeDriverProfile(endpoint));
+            existing.setDriverKey(normalizeDriverKey(endpoint));
             existing.setBaseDn(endpoint.getBaseDn());
             existing.setUserBaseDn(endpoint.getUserBaseDn());
             existing.setStatus(endpoint.getStatus());
@@ -218,6 +241,8 @@ public class ClusterService {
             expireLineageIfSchedulerDisabled(saved);
             return saved;
         }
+        endpoint.setDriverProfile(normalizeDriverProfile(endpoint));
+        endpoint.setDriverKey(normalizeDriverKey(endpoint));
         ClusterEndpoint saved = endpointRepository.save(endpoint);
         expireLineageIfSchedulerDisabled(saved);
         return saved;
@@ -311,6 +336,12 @@ public class ClusterService {
         if (isBlank(endpoint.getServiceName())) {
             endpoint.setServiceName(stored.getServiceName());
         }
+        if (isBlank(endpoint.getDriverProfile())) {
+            endpoint.setDriverProfile(stored.getDriverProfile());
+        }
+        if (isBlank(endpoint.getDriverKey())) {
+            endpoint.setDriverKey(stored.getDriverKey());
+        }
         return endpoint;
     }
 
@@ -323,6 +354,30 @@ public class ClusterService {
                 nullToEmpty(endpoint.getPassword()))) {
             // Opening and closing a connection is enough for endpoint reachability.
         }
+    }
+
+    private void testHiveServer2(ClusterEndpoint endpoint) throws Exception {
+        hiveServer2ConnectionService.testConnection(endpoint);
+    }
+
+    private String normalizeDriverProfile(ClusterEndpoint endpoint) {
+        if (endpoint == null) {
+            return null;
+        }
+        if (!ClusterEndpoint.TYPE_HIVE_SERVER2.equalsIgnoreCase(endpoint.getEndpointType())) {
+            return null;
+        }
+        return hiveServer2ConnectionService.normalizeDriverProfile(endpoint);
+    }
+
+    private String normalizeDriverKey(ClusterEndpoint endpoint) {
+        if (endpoint == null) {
+            return null;
+        }
+        if (!ClusterEndpoint.TYPE_HIVE_SERVER2.equalsIgnoreCase(endpoint.getEndpointType())) {
+            return null;
+        }
+        return hiveServer2ConnectionService.normalizeDriverKey(endpoint);
     }
 
     private void testLdap(ClusterEndpoint endpoint) {

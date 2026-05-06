@@ -28,6 +28,11 @@ public class ClusterController {
         return clusterService.getAllClusters();
     }
 
+    @GetMapping("/endpoint-driver-options")
+    public List<Map<String, Object>> listEndpointDriverOptions(@RequestParam String endpointType) {
+        return clusterService.listEndpointDriverOptions(endpointType);
+    }
+
     @GetMapping("/{id}")
     public ResponseEntity<Cluster> getClusterById(@PathVariable Long id) {
         Cluster cluster = clusterService.getClusterById(id);

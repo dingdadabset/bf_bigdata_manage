@@ -3,6 +3,7 @@ package com.dga.quality.service;
 import com.dga.access.security.CurrentUser;
 import com.dga.cluster.entity.ClusterEndpoint;
 import com.dga.cluster.repository.ClusterEndpointRepository;
+import com.dga.cluster.service.HiveServer2ConnectionService;
 import com.dga.datasource.entity.DataSourceConfig;
 import com.dga.datasource.repository.DataSourceConfigRepository;
 import com.dga.metadata.entity.ColumnMetadata;
@@ -27,7 +28,6 @@ import org.springframework.web.server.ResponseStatusException;
 
 import javax.persistence.criteria.Predicate;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.Statement;
 import java.time.Duration;
@@ -72,6 +72,9 @@ public class QualityExecutionService {
 
     @Autowired
     private NotificationService notificationService;
+
+    @Autowired
+    private HiveServer2ConnectionService hiveServer2ConnectionService;
 
     public List<QualityRule> findRules(Long dataSourceId, Long tableId, String status) {
         return ruleRepository.findAll((Specification<QualityRule>) (root, query, cb) -> {
@@ -274,12 +277,7 @@ public class QualityExecutionService {
 
     private Double executeMetricSql(TableMetadata table, String sql) throws Exception {
         ClusterEndpoint endpoint = resolveHiveServer2Endpoint(table);
-        Class.forName("org.apache.hive.jdbc.HiveDriver");
-        DriverManager.setLoginTimeout(30);
-        try (Connection connection = DriverManager.getConnection(
-                endpoint.getUrl(),
-                nullToEmpty(endpoint.getUsername()),
-                nullToEmpty(endpoint.getPassword()));
+        try (Connection connection = hiveServer2ConnectionService.openConnection(endpoint);
              Statement statement = connection.createStatement();
              ResultSet rs = statement.executeQuery(sql)) {
             if (!rs.next()) {

@@ -59,6 +59,7 @@ public class SecurityConfig {
                 .antMatchers("/api/auth/login", "/api/auth/register",
                         "/api/auth/forgot-password", "/api/auth/change-password",
                         "/api/health").permitAll()
+                .antMatchers("/swagger-ui.html", "/swagger-ui/**", "/v3/api-docs/**").permitAll()
                 .antMatchers("/oauth2/**", "/login/oauth2/**").permitAll()
                 .antMatchers("/api/**").authenticated()
                 .anyRequest().permitAll()

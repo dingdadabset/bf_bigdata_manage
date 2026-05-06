@@ -5,6 +5,13 @@ import com.dga.access.repository.UserRepository;
 import com.dga.access.dto.CreateUserRequest;
 import com.dga.access.security.JwtService;
 import com.dga.access.service.AdminGuard;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.media.Content;
+import io.swagger.v3.oas.annotations.media.ExampleObject;
+import io.swagger.v3.oas.annotations.responses.ApiResponse;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpStatus;
@@ -22,6 +29,7 @@ import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/auth")
+@Tag(name = "认证管理", description = "登录、注册、密码维护与平台登录账号管理")
 public class AuthController {
 
     @Autowired
@@ -40,6 +48,20 @@ public class AuthController {
     private boolean allowAdminBootstrap;
 
     @PostMapping("/login")
+    @Operation(
+            summary = "账号登录",
+            description = "使用本地账号密码登录，成功后返回 JWT Bearer Token。",
+            requestBody = @io.swagger.v3.oas.annotations.parameters.RequestBody(
+                    required = true,
+                    content = @Content(
+                            mediaType = "application/json",
+                            examples = @ExampleObject(value = "{\"username\":\"admin\",\"password\":\"admin\"}")
+                    )
+            ),
+            security = {}
+    )
+    @ApiResponse(responseCode = "200", description = "登录成功")
+    @ApiResponse(responseCode = "401", description = "账号或密码错误")
     public ResponseEntity<?> login(@RequestBody Map<String, String> loginRequest) {
         String username = loginRequest.get("username");
         String password = loginRequest.get("password");
@@ -81,6 +103,7 @@ public class AuthController {
     }
 
     @PostMapping("/register")
+    @Operation(summary = "注册本地账号", description = "创建 DGA 平台本地登录账号。", security = {})
     public ResponseEntity<?> register(@RequestBody CreateUserRequest request) {
         if (userRepository.findByUsername(request.getUsername()) != null) {
             return ResponseEntity.badRequest().body("Username already exists");
@@ -112,6 +135,7 @@ public class AuthController {
     }
 
     @PostMapping("/forgot-password")
+    @Operation(summary = "忘记密码重置", description = "通过用户名和邮箱校验后重置本地密码。", security = {})
     public ResponseEntity<?> forgotPassword(@RequestBody Map<String, String> request) {
         String username = normalize(request.get("username"));
         String email = normalize(request.get("email"));
@@ -127,6 +151,7 @@ public class AuthController {
     }
 
     @PostMapping("/change-password")
+    @Operation(summary = "修改密码", description = "校验原密码后修改本地账号密码。", security = {})
     public ResponseEntity<?> changePassword(@RequestBody Map<String, String> request) {
         String username = normalize(request.get("username"));
         String oldPassword = request.get("oldPassword");
@@ -142,6 +167,11 @@ public class AuthController {
     }
 
     @GetMapping("/platform-users")
+    @Operation(
+            summary = "查询平台登录账号",
+            description = "仅 root admin 可查看 DGA 平台登录账号列表。",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
     public List<Map<String, Object>> listPlatformUsers(HttpServletRequest request) {
         adminGuard.requireRootAdmin(request);
         return userRepository.findAll().stream()
@@ -150,8 +180,13 @@ public class AuthController {
     }
 
     @PutMapping("/platform-users/{username}/super-admin")
-    public Map<String, Object> setSuperAdmin(@PathVariable String username,
-                                             @RequestParam(defaultValue = "true") boolean enabled,
+    @Operation(
+            summary = "设置超级管理员",
+            description = "仅 root admin 可将指定平台登录账号设置或取消为超级管理员。",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
+    public Map<String, Object> setSuperAdmin(@Parameter(description = "平台登录用户名") @PathVariable String username,
+                                             @Parameter(description = "是否启用超级管理员权限，默认 true") @RequestParam(defaultValue = "true") boolean enabled,
                                              HttpServletRequest request) {
         adminGuard.requireRootAdmin(request);
         if ("admin".equals(username)) {

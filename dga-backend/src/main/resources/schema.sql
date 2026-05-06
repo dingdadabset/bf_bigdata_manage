@@ -381,6 +381,8 @@ CREATE TABLE IF NOT EXISTS `dga_cluster_endpoint` (
   `username` VARCHAR(255),
   `password` VARCHAR(255),
   `service_name` VARCHAR(255) COMMENT 'Ranger serviceName or SQL engine audit table name',
+  `driver_profile` VARCHAR(50) DEFAULT 'MODERN' COMMENT 'MODERN, LEGACY_CDH5, AUTO; only for HIVE_SERVER2',
+  `driver_key` VARCHAR(100) DEFAULT 'builtin-modern' COMMENT 'Selected Hive JDBC driver key for HIVE_SERVER2',
   `base_dn` VARCHAR(500),
   `user_base_dn` VARCHAR(500),
   `status` VARCHAR(20) DEFAULT 'ACTIVE',

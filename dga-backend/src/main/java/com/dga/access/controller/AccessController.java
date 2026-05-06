@@ -22,6 +22,10 @@ import com.dga.access.service.authorization.RevokeCommand;
 import com.dga.access.entity.UserHiveAccess;
 import com.dga.access.repository.UserHiveAccessRepository;
 import com.dga.access.repository.UserResourceAccessRepository;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
@@ -52,6 +56,8 @@ import java.util.regex.Pattern;
 @RestController
 @RequestMapping("/api/access")
 @CrossOrigin
+@Tag(name = "权限管理", description = "OpenLDAP 用户管理、授权查询、权限授予回收与同步")
+@SecurityRequirement(name = "bearerAuth")
 public class AccessController {
 
     private static final Set<String> PROTECTED_BIGDATA_USERS = new HashSet<>(java.util.Arrays.asList(
@@ -233,6 +239,7 @@ public class AccessController {
     }
     
     @PostMapping("/import")
+    @Operation(summary = "按集群导入 LDAP 用户", description = "从指定集群的 OpenLDAP 端点拉取用户，并执行新增、更新和历史修复。")
     public Map<String, Object> importUsers(@RequestParam(required = false) String cluster,
                                            HttpServletRequest request) {
         adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可导入 OpenLDAP 用户");
@@ -325,6 +332,7 @@ public class AccessController {
     }
 
     @PostMapping("/sync/{username}")
+    @Operation(summary = "同步用户权限", description = "从集群授权后端重新拉取指定用户的当前权限，并同步到本地授权记录。")
     public String syncUserPermissions(@PathVariable String username, @RequestParam(required = false) String cluster) {
         String targetCluster = (cluster != null && !cluster.isEmpty()) ? cluster : "CDH-Cluster-01";
         
@@ -415,6 +423,7 @@ public class AccessController {
     }
 
     @GetMapping("/users")
+    @Operation(summary = "分页查询权限用户", description = "按集群和关键词分页查询权限管理页展示的用户列表。")
     public Page<DgaUser> listUsers(@RequestParam(defaultValue = "0") int page, 
                                    @RequestParam(defaultValue = "20") int size,
                                    @RequestParam(required = false) String cluster,
@@ -440,6 +449,7 @@ public class AccessController {
     }
 
     @PutMapping("/user/{username}/protection")
+    @Operation(summary = "设置保护用户", description = "仅 root admin 可将指定权限用户设置或取消为保护用户。")
     public DgaUser updateUserProtection(@PathVariable String username,
                                         @RequestParam(required = false) String cluster,
                                         @RequestParam("protected") boolean protectedUser,
@@ -503,6 +513,7 @@ public class AccessController {
     }
 
     @GetMapping("/capabilities")
+    @Operation(summary = "查询集群授权能力", description = "返回指定集群当前的授权引擎、依赖端点与可用能力。")
     public AuthorizationCapability authorizationCapability(@RequestParam(required = false) String cluster) {
         return authorizationService.capability(cluster);
     }
@@ -555,8 +566,9 @@ public class AccessController {
     }
 
     @GetMapping("/resources/permissions")
+    @Operation(summary = "查询用户实时权限", description = "查询指定集群授权后端中的实时权限明细，包含库、表和权限类型。")
     public Map<String, Object> listResourcePermissions(@RequestParam("username") String username,
-                                                       @RequestParam(required = false) String cluster) {
+                                                       @Parameter(description = "集群编码或集群名称") @RequestParam(required = false) String cluster) {
         try {
             List<Map<String, Object>> rawPermissions = authorizationService.getUserPermissions(username, cluster);
             Map<String, Object> res = new HashMap<>();
@@ -574,6 +586,7 @@ public class AccessController {
     }
 
     @PostMapping("/grant/batch")
+    @Operation(summary = "批量授予 Hive 权限", description = "批量授予数据库或表级 Hive 权限，并写入本地授权记录。")
     public String batchGrant(@RequestBody BatchGrantRequest request) {
         String username = request.getUsername();
         List<String> permissions = resolvePermissionsOrThrow(request);
@@ -680,6 +693,7 @@ public class AccessController {
     }
     
     @GetMapping("/user/access")
+    @Operation(summary = "查询本地授权记录", description = "按用户、集群与状态查询 DGA 本地保存的授权记录。")
     public List<UserHiveAccess> listUserAccess(@RequestParam("username") String username,
                                                @RequestParam(value = "status", required = false) String status,
                                                @RequestParam(value = "cluster", required = false) String cluster,
@@ -723,6 +737,7 @@ public class AccessController {
     }
 
     @PostMapping("/revoke/batch")
+    @Operation(summary = "批量回收 Hive 权限", description = "批量回收数据库或表级 Hive 权限，并更新本地授权记录状态。")
     @org.springframework.transaction.annotation.Transactional
     public String batchRevoke(@RequestBody BatchGrantRequest request) {
         String username = request.getUsername();
@@ -805,6 +820,7 @@ public class AccessController {
     }
     
     @DeleteMapping("/user/{username}")
+    @Operation(summary = "删除权限用户", description = "回收权限、删除 LDAP 用户并软删除 DGA 用户记录。")
     @org.springframework.transaction.annotation.Transactional
     public String deleteUser(@PathVariable String username,
                              @RequestParam(required = false) String cluster,

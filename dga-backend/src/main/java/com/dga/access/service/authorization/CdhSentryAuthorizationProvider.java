@@ -2,6 +2,8 @@ package com.dga.access.service.authorization;
 
 import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
+import com.dga.cluster.service.HiveServer2ConnectionService;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
@@ -22,6 +24,9 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
 
     @Value("${hive.server2.password}")
     private String fallbackHivePassword;
+
+    @Autowired
+    private HiveServer2ConnectionService hiveServer2ConnectionService;
 
     @Override
     public boolean supports(AuthorizationContext context) {
@@ -166,15 +171,15 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
 
     private JdbcTemplate jdbcTemplate(AuthorizationContext context) {
         ClusterEndpoint endpoint = AuthorizationSupport.firstEndpoint(context, ClusterEndpoint.TYPE_HIVE_SERVER2);
-        String url = endpoint != null && endpoint.getUrl() != null ? endpoint.getUrl() : fallbackHiveUrl;
-        String username = endpoint != null && endpoint.getUsername() != null ? endpoint.getUsername() : fallbackHiveUser;
-        String password = endpoint != null && endpoint.getPassword() != null ? endpoint.getPassword() : fallbackHivePassword;
+        if (endpoint != null && endpoint.getUrl() != null && !endpoint.getUrl().trim().isEmpty()) {
+            return hiveServer2ConnectionService.jdbcTemplate(endpoint);
+        }
 
         DriverManagerDataSource dataSource = new DriverManagerDataSource();
         dataSource.setDriverClassName("org.apache.hive.jdbc.HiveDriver");
-        dataSource.setUrl(url);
-        dataSource.setUsername(username);
-        dataSource.setPassword(password);
+        dataSource.setUrl(fallbackHiveUrl);
+        dataSource.setUsername(fallbackHiveUser);
+        dataSource.setPassword(fallbackHivePassword);
         return new JdbcTemplate(dataSource);
     }
 

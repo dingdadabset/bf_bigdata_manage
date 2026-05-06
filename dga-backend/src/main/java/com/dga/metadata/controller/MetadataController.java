@@ -6,6 +6,7 @@ import com.dga.access.entity.UserResourceAccess;
 import com.dga.access.repository.UserResourceAccessRepository;
 import com.dga.cluster.entity.ClusterEndpoint;
 import com.dga.cluster.repository.ClusterEndpointRepository;
+import com.dga.cluster.service.HiveServer2ConnectionService;
 import com.dga.lineage.service.LineageGraphService;
 import com.dga.metadata.entity.ColumnMetadata;
 import com.dga.metadata.entity.DataTheme;
@@ -34,6 +35,10 @@ import com.dga.metadata.service.MetadataCollectionAsyncRunner;
 import com.dga.metadata.service.MetadataCollectionResult;
 import com.dga.metadata.service.MetadataCollectionService;
 import com.dga.metadata.service.MetadataCollectorFactory;
+import io.swagger.v3.oas.annotations.Operation;
+import io.swagger.v3.oas.annotations.Parameter;
+import io.swagger.v3.oas.annotations.security.SecurityRequirement;
+import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -46,7 +51,6 @@ import org.springframework.web.server.ResponseStatusException;
 import javax.servlet.http.HttpServletRequest;
 import javax.persistence.criteria.Predicate;
 import java.sql.Connection;
-import java.sql.DriverManager;
 import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Statement;
@@ -67,6 +71,8 @@ import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/metadata")
+@Tag(name = "元数据管理", description = "Hive 表资产检索、详情查询、权限查看与采集任务")
+@SecurityRequirement(name = "bearerAuth")
 public class MetadataController {
     private static final Set<String> SYSTEM_HIVE_DATABASES = new LinkedHashSet<>(
             Arrays.asList("information_schema", "sys", "mysql", "performance_schema", "_statistics_"));
@@ -125,7 +131,11 @@ public class MetadataController {
     @Autowired
     private ClusterEndpointRepository clusterEndpointRepository;
 
+    @Autowired
+    private HiveServer2ConnectionService hiveServer2ConnectionService;
+
     @GetMapping("/stats")
+    @Operation(summary = "查询元数据统计", description = "返回纳管 Hive 表资产的数量、大小、评分与今日同步统计。")
     public Map<String, Object> getStats() {
         Map<String, Object> stats = new HashMap<>();
         
@@ -206,6 +216,7 @@ public class MetadataController {
     }
 
     @GetMapping("/search")
+    @Operation(summary = "搜索表资产", description = "按关键词、数据源、数据库、负责人等条件分页搜索 Hive 表资产。")
     public Page<TableMetadata> search(
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) Long dataSourceId,
@@ -222,6 +233,7 @@ public class MetadataController {
     }
 
     @GetMapping("/catalog/tree")
+    @Operation(summary = "查询技术资产目录", description = "按集群、数据源、数据库构建技术资产目录树。")
     public List<Map<String, Object>> catalogTree(@RequestParam(required = false) String clusterCode,
                                                  @RequestParam(required = false) Long dataSourceId) {
         List<TableMetadata> tables;
@@ -274,12 +286,14 @@ public class MetadataController {
     }
 
     @GetMapping("/table/{id}")
+    @Operation(summary = "查询表详情", description = "按表 ID 查询 Hive 表资产详情。")
     public TableMetadata getTable(@PathVariable Long id) {
         return tableMetadataRepository.findById(id)
                 .orElseThrow(() -> new RuntimeException("Table not found: " + id));
     }
 
     @GetMapping("/table/{id}/columns")
+    @Operation(summary = "查询字段列表", description = "按表 ID 查询字段元数据列表。")
     public List<ColumnMetadata> getColumns(@PathVariable Long id) {
         return columnMetadataRepository.findByTableId(id);
     }
@@ -291,21 +305,16 @@ public class MetadataController {
         String showCreateSql = "SHOW CREATE TABLE " + quoteHiveIdentifier(table.getDbName()) + "." + quoteHiveIdentifier(table.getTableName());
         List<String> ddlLines = new ArrayList<>();
         try {
-            Class.forName("org.apache.hive.jdbc.HiveDriver");
-            DriverManager.setLoginTimeout(30);
-            try (Connection connection = DriverManager.getConnection(
-                    endpoint.getUrl(),
-                    nullToEmpty(endpoint.getUsername()),
-                    nullToEmpty(endpoint.getPassword()));
+            try (Connection connection = hiveServer2ConnectionService.openConnection(endpoint);
                  Statement statement = connection.createStatement();
                  ResultSet rs = statement.executeQuery(showCreateSql)) {
                 while (rs.next()) {
                     ddlLines.add(rs.getString(1));
                 }
             }
-        } catch (ClassNotFoundException e) {
-            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "缺少 Hive JDBC 驱动: " + readableMessage(e), e);
         } catch (SQLException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "HIVE_SERVER2 查询失败: " + readableMessage(e), e);
+        } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.BAD_GATEWAY, "HIVE_SERVER2 查询失败: " + readableMessage(e), e);
         }
         Map<String, Object> result = new LinkedHashMap<>();
@@ -317,6 +326,7 @@ public class MetadataController {
     }
 
     @GetMapping("/table/{id}/partitions")
+    @Operation(summary = "查询分区信息", description = "按表 ID 查询分区总数和最近采集的分区明细。")
     public Map<String, Object> getPartitions(@PathVariable Long id,
                                              @RequestParam(defaultValue = "10") int limit) {
         TableMetadata table = getTableOrThrow(id);
@@ -331,9 +341,10 @@ public class MetadataController {
     }
 
     @GetMapping("/table/{id}/lineage")
+    @Operation(summary = "查询表级血缘", description = "按表 ID 查询聚合后的表级血缘图数据。")
     public Map<String, Object> getLineage(@PathVariable Long id,
-                                          @RequestParam(required = false) String sourceType,
-                                          @RequestParam(required = false) Long sourceEndpointId) {
+                                          @Parameter(description = "调度源类型，可选 AZKABAN_DB / DOLPHINSCHEDULER_DB") @RequestParam(required = false) String sourceType,
+                                          @Parameter(description = "调度源端点 ID") @RequestParam(required = false) Long sourceEndpointId) {
         return lineageGraphService.getLineageGraph(id, sourceType, sourceEndpointId);
     }
 
@@ -399,6 +410,7 @@ public class MetadataController {
     }
 
     @GetMapping("/table/{id}/permissions")
+    @Operation(summary = "查询表权限", description = "查询指定表当前已授权的用户、权限来源和授权时间。")
     public List<UserResourceAccess> getTablePermissions(@PathVariable Long id) {
         TableMetadata table = getTableOrThrow(id);
         return userResourceAccessRepository.findActivePermissionsForTable(
@@ -500,6 +512,7 @@ public class MetadataController {
     }
 
     @PostMapping("/collect/{dataSourceId}")
+    @Operation(summary = "触发单数据源采集", description = "创建并异步执行指定数据源的元数据采集任务。")
     public MetadataCollectionTask collectDataSource(@PathVariable Long dataSourceId, HttpServletRequest request) {
         MetadataCollectionTask task = collectionService.createTask(dataSourceId, "MANUAL", currentUsername(request));
         asyncRunner.run(task.getId());
@@ -507,6 +520,7 @@ public class MetadataController {
     }
 
     @PostMapping("/collect/all")
+    @Operation(summary = "触发全部采集", description = "为全部 ACTIVE Hive 数据源创建并异步触发采集任务。")
     public List<MetadataCollectionTask> collectAll(HttpServletRequest request) {
         List<DataSourceConfig> dataSources = dataSourceSyncService.syncHiveMetastoreDataSources();
         List<MetadataCollectionTask> tasks = collectionService.createTasksForAll(dataSources, "MANUAL", currentUsername(request));
@@ -517,11 +531,13 @@ public class MetadataController {
     }
 
     @GetMapping("/collect/tasks")
+    @Operation(summary = "查询采集任务列表", description = "返回最近的元数据采集任务列表。")
     public List<MetadataCollectionTask> latestTasks() {
         return collectionService.latestTasks();
     }
 
     @PutMapping("/table/{id}/owner")
+    @Operation(summary = "维护表负责人", description = "仅 admin 或超级用户可修改表级负责人。")
     public TableMetadata updateOwner(@PathVariable Long id,
                                      @RequestBody Map<String, String> requestBody,
                                      HttpServletRequest request) {

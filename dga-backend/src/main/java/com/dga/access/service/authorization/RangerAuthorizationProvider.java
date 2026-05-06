@@ -3,6 +3,7 @@ package com.dga.access.service.authorization;
 import com.dga.access.service.RangerService;
 import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
+import com.dga.cluster.service.HiveServer2ConnectionService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
@@ -25,6 +26,9 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
 
     @Value("${hdp.hive.server2.password}")
     private String hdpHivePassword;
+
+    @Autowired
+    private HiveServer2ConnectionService hiveServer2ConnectionService;
 
     @Override
     public boolean supports(AuthorizationContext context) {
@@ -100,12 +104,15 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
 
     private org.springframework.jdbc.core.JdbcTemplate hdpJdbcTemplate(AuthorizationContext context) {
         ClusterEndpoint endpoint = AuthorizationSupport.firstEndpoint(context, ClusterEndpoint.TYPE_HIVE_SERVER2);
+        if (endpoint != null && endpoint.getUrl() != null && !endpoint.getUrl().trim().isEmpty()) {
+            return hiveServer2ConnectionService.jdbcTemplate(endpoint);
+        }
         org.springframework.jdbc.datasource.DriverManagerDataSource dataSource =
                 new org.springframework.jdbc.datasource.DriverManagerDataSource();
         dataSource.setDriverClassName("org.apache.hive.jdbc.HiveDriver");
-        dataSource.setUrl(endpoint != null && endpoint.getUrl() != null ? endpoint.getUrl() : hdpHiveUrl);
-        dataSource.setUsername(endpoint != null && endpoint.getUsername() != null ? endpoint.getUsername() : hdpHiveUser);
-        dataSource.setPassword(endpoint != null && endpoint.getPassword() != null ? endpoint.getPassword() : hdpHivePassword);
+        dataSource.setUrl(hdpHiveUrl);
+        dataSource.setUsername(hdpHiveUser);
+        dataSource.setPassword(hdpHivePassword);
         return new org.springframework.jdbc.core.JdbcTemplate(dataSource);
     }
 
