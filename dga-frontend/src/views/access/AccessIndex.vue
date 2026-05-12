@@ -1,33 +1,24 @@
 <template>
   <div class="access-management">
-    <a-tabs :active-key="activeTab" class="access-tabs" @change="activeTab = $event">
-      <a-tab-pane key="permissions" tab="用户权限">
-        <div class="access-container">
-          <!-- Left Panel: User List -->
-          <div class="access-item left-panel">
-            <user-list
-              ref="userList"
-              @select="onSelectUser"
-              @create="createUserVisible = true"
-            />
-          </div>
+    <div class="access-container">
+      <aside class="access-item left-panel">
+        <user-list
+          ref="userList"
+          @select="onSelectUser"
+          @create="createUserVisible = true"
+        />
+      </aside>
 
-          <!-- Right Panel: Control Panel -->
-          <div class="access-item right-panel">
-            <permission-panel
-              ref="permissionPanel"
-              :user="selectedUser"
-              @delete="handleDeleteUser"
-              @grant="onGrant"
-              @toggle-protection="handleToggleProtection"
-            />
-          </div>
-        </div>
-      </a-tab-pane>
-      <a-tab-pane key="governance" tab="治理风险">
-        <access-governance-panel />
-      </a-tab-pane>
-    </a-tabs>
+      <main class="access-item right-panel">
+        <permission-panel
+          ref="permissionPanel"
+          :user="selectedUser"
+          @delete="handleDeleteUser"
+          @grant="onGrant"
+          @toggle-protection="handleToggleProtection"
+        />
+      </main>
+    </div>
 
     <!-- Modals -->
     <create-user-modal 
@@ -51,7 +42,6 @@ import UserList from './components/UserList.vue';
 import PermissionPanel from './components/PermissionPanel.vue';
 import CreateUserModal from './components/CreateUserModal.vue';
 import GrantModal from './components/GrantModal.vue';
-import AccessGovernancePanel from './components/AccessGovernancePanel.vue';
 import axios from 'axios';
 import { canDelete, deleteForbiddenMessage, isRootAdmin } from '../../utils/currentUser';
 
@@ -76,12 +66,10 @@ export default {
     UserList,
     PermissionPanel,
     CreateUserModal,
-    GrantModal,
-    AccessGovernancePanel
+    GrantModal
   },
   data() {
     return {
-      activeTab: 'permissions',
       selectedUser: null,
       createUserVisible: false,
       grantModalVisible: false,
@@ -155,7 +143,7 @@ export default {
       const that = this;
       this.$confirm({
         title: '确认删除用户?',
-        content: `删除用户 ${username} (${cluster}) 会收回 Hive 权限，同时会删除 OpenLDAP 上的用户`,
+        content: `删除用户 ${username} (${cluster}) 会收回当前集群权限；只有 LDAP 用户会同步删除目录账号。`,
         okText: 'Yes',
         okType: 'danger',
         cancelText: 'No',
@@ -190,45 +178,47 @@ export default {
 <style scoped>
 .access-management {
   height: 100%;
-}
-
-.access-tabs {
-  height: 100%;
-}
-
-.access-tabs ::v-deep .ant-tabs-content {
-  height: calc(100% - 44px);
-}
-
-.access-tabs ::v-deep .ant-tabs-tabpane {
-  height: 100%;
+  min-height: 0;
+  padding: 16px;
+  background: #f5f7fb;
 }
 
 .access-container {
   display: flex;
-  flex-wrap: wrap;
-  gap: 24px;
+  gap: 16px;
   height: 100%;
+  min-height: 0;
 }
 
 .left-panel {
-  flex: 1 1 280px; /* Grow 1, Shrink 1, Basis 280px */
-  min-width: 280px;
-  /* Optional: Limit width on very wide screens so list doesn't get too wide */
-  max-width: 400px; 
+  flex: 0 0 336px;
+  min-width: 304px;
+  max-width: 360px;
+  position: sticky;
+  top: 16px;
+  height: calc(100vh - 112px);
 }
 
 .right-panel {
-  flex: 999 1 600px; /* Take remaining space, wrap if < 600px */
-  min-width: 600px;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
 }
 
-/* Adjust for smaller screens */
-@media (max-width: 768px) {
-  .left-panel, .right-panel {
+@media (max-width: 960px) {
+  .access-management {
+    padding: 12px;
+  }
+  .access-container {
+    flex-direction: column;
+  }
+  .left-panel,
+  .right-panel {
     flex: 1 1 100%;
     min-width: 100%;
     max-width: 100%;
+    height: auto;
+    position: static;
   }
 }
 </style>

@@ -165,6 +165,7 @@
               @change="fetchLineage"
             >
               <a-select-option value="AZKABAN_DB">AZKABAN_DB</a-select-option>
+              <a-select-option value="AZKABAN_WEB">AZKABAN_WEB</a-select-option>
               <a-select-option value="DOLPHINSCHEDULER_DB">DOLPHINSCHEDULER_DB</a-select-option>
               <a-select-option value="LEGACY">LEGACY</a-select-option>
             </a-select>
@@ -190,6 +191,37 @@
         />
         <div ref="lineageChart" class="lineage-chart"></div>
         <a-empty v-if="!lineageData || !lineageData.nodes || lineageData.nodes.length === 0" description="暂无血缘数据" />
+        <a-divider orientation="left">调度上下文建议</a-divider>
+        <a-table
+          :columns="contextSuggestionColumns"
+          :data-source="contextSuggestions"
+          row-key="id"
+          size="small"
+          :pagination="{ pageSize: 6 }"
+          :loading="loadingContextSuggestions"
+          :scroll="{ x: 1200 }"
+        >
+          <span slot="suggestionType" slot-scope="text">
+            <a-tag :color="text === 'COLUMN_COMMENT' ? 'blue' : 'purple'">{{ suggestionTypeLabel(text) }}</a-tag>
+          </span>
+          <span slot="suggestionValue" slot-scope="text">
+            <a-tooltip v-if="text" :title="text">
+              <span class="lineage-message">{{ text }}</span>
+            </a-tooltip>
+            <span v-else>-</span>
+          </span>
+          <span slot="suggestionStatus" slot-scope="text">
+            <a-tag :color="suggestionStatusColor(text)">{{ suggestionStatusLabel(text) }}</a-tag>
+          </span>
+          <span slot="suggestionTime" slot-scope="text">{{ text ? new Date(text).toLocaleString() : '-' }}</span>
+          <span slot="suggestionAction" slot-scope="text, record">
+            <template v-if="record.status === 'PENDING' && canManageOwner">
+              <a-button type="link" size="small" icon="check" @click="applyContextSuggestion(record)">应用</a-button>
+              <a-button type="link" size="small" icon="close" @click="rejectContextSuggestion(record)">忽略</a-button>
+            </template>
+            <span v-else>-</span>
+          </span>
+        </a-table>
         <a-divider orientation="left">解析任务</a-divider>
         <a-table
           :columns="lineageTaskColumns"
@@ -421,6 +453,7 @@ export default {
       lineageData: null,
       lineageChart: null,
       lineageTasks: [],
+      contextSuggestions: [],
       loadingColumns: false,
       loadingCreateSql: false,
       loadingPartitions: false,
@@ -428,6 +461,7 @@ export default {
       lineageLoading: false,
       lineageCollecting: false,
       lineageTasksLoading: false,
+      loadingContextSuggestions: false,
       loadingPermissions: false,
       loadingMetrics: false,
       loadingQuality: false,
@@ -493,6 +527,17 @@ export default {
         { title: '描述', dataIndex: 'comment', key: 'comment' },
         { title: '主键', dataIndex: 'isPrimaryKey', key: 'isPrimaryKey', scopedSlots: { customRender: 'isPrimaryKey' } },
         { title: '安全等级', dataIndex: 'securityLevel', key: 'securityLevel' }
+      ],
+      contextSuggestionColumns: [
+        { title: '类型', dataIndex: 'contextType', key: 'contextType', scopedSlots: { customRender: 'suggestionType' }, width: 150 },
+        { title: '建议值', dataIndex: 'suggestedValue', key: 'suggestedValue', scopedSlots: { customRender: 'suggestionValue' }, width: 260 },
+        { title: '项目', dataIndex: 'projectName', key: 'projectName', width: 180 },
+        { title: 'Flow', dataIndex: 'flowName', key: 'flowName', width: 220 },
+        { title: 'Job', dataIndex: 'jobName', key: 'jobName', width: 240 },
+        { title: '置信度', dataIndex: 'confidence', key: 'confidence', width: 100 },
+        { title: '状态', dataIndex: 'status', key: 'status', scopedSlots: { customRender: 'suggestionStatus' }, width: 110 },
+        { title: '解析时间', dataIndex: 'parsedAt', key: 'parsedAt', scopedSlots: { customRender: 'suggestionTime' }, width: 180 },
+        { title: '操作', key: 'action', scopedSlots: { customRender: 'suggestionAction' }, width: 150 }
       ],
       taskColumns: [
         { title: '问题类型', dataIndex: 'issueType', key: 'issueType' },
@@ -784,7 +829,7 @@ export default {
         const res = await axios.get('/api/clusters');
         const clusters = res.data || [];
         const currentClusterCode = this.tableInfo.clusterCode;
-        const endpointTypes = ['AZKABAN_DB', 'DOLPHINSCHEDULER_DB'];
+        const endpointTypes = ['AZKABAN_DB', 'AZKABAN_WEB', 'DOLPHINSCHEDULER_DB'];
         this.schedulerEndpoints = clusters
           .filter(cluster => !currentClusterCode || cluster.clusterCode === currentClusterCode || cluster.clusterName === currentClusterCode)
           .flatMap(cluster => (cluster.endpoints || []).map(endpoint => ({
@@ -819,6 +864,18 @@ export default {
         this.lineageTasksLoading = false;
       }
     },
+    async fetchContextSuggestions() {
+      this.loadingContextSuggestions = true;
+      try {
+        const res = await axios.get(`/api/metadata/table/${this.tableId}/context-suggestions`);
+        this.contextSuggestions = res.data || [];
+      } catch (e) {
+        this.contextSuggestions = [];
+        console.error('Fetch context suggestions failed', e);
+      } finally {
+        this.loadingContextSuggestions = false;
+      }
+    },
     handleBack() {
       this.$router.push('/metadata');
     },
@@ -827,6 +884,7 @@ export default {
       if (key === 'lineage') {
         this.fetchSchedulerEndpoints();
         this.fetchLineageTasks();
+        this.fetchContextSuggestions();
         if (!this.lineageData) {
             this.fetchLineage();
         } else {
@@ -877,7 +935,8 @@ export default {
     async refreshLineage() {
         await Promise.all([
           this.fetchLineage(),
-          this.fetchLineageTasks()
+          this.fetchLineageTasks(),
+          this.fetchContextSuggestions()
         ]);
     },
     onLineageEndpointChange(endpointId) {
@@ -917,6 +976,44 @@ export default {
         } finally {
           this.lineageCollecting = false;
         }
+    },
+    async applyContextSuggestion(record) {
+      try {
+        await axios.put(`/api/metadata/context-suggestions/${record.id}/apply`);
+        this.$message.success('已应用上下文建议');
+        await Promise.all([this.fetchContextSuggestions(), this.fetchColumns(), this.fetchBusiness()]);
+      } catch (e) {
+        this.$message.error(e.response?.data?.message || '应用建议失败');
+      }
+    },
+    async rejectContextSuggestion(record) {
+      try {
+        await axios.put(`/api/metadata/context-suggestions/${record.id}/reject`);
+        this.$message.success('已忽略上下文建议');
+        this.fetchContextSuggestions();
+      } catch (e) {
+        this.$message.error(e.response?.data?.message || '忽略建议失败');
+      }
+    },
+    suggestionTypeLabel(type) {
+      return {
+        COLUMN_COMMENT: '字段备注',
+        SCHEDULER_CONTEXT: '调度上下文'
+      }[type] || type || '-';
+    },
+    suggestionStatusLabel(status) {
+      return {
+        PENDING: '待确认',
+        APPLIED: '已应用',
+        REJECTED: '已忽略'
+      }[status] || status || '-';
+    },
+    suggestionStatusColor(status) {
+      return {
+        PENDING: 'orange',
+        APPLIED: 'green',
+        REJECTED: 'default'
+      }[status] || 'default';
     },
     initChart() {
         if (!this.$refs.lineageChart) return;

@@ -13,7 +13,9 @@ public interface DgaUserRepository extends JpaRepository<DgaUser, Long> {
     boolean existsByUsername(String username);
     DgaUser findByUsername(String username);
     boolean existsByUsernameAndClusterName(String username, String clusterName);
+    boolean existsByUsernameAndClusterNameAndIsDeletedFalse(String username, String clusterName);
     DgaUser findByUsernameAndClusterName(String username, String clusterName);
+    DgaUser findByUsernameAndClusterNameAndIsDeletedFalse(String username, String clusterName);
     List<DgaUser> findAllByUsername(String username);
     List<DgaUser> findByUsernameAndIsDeletedFalse(String username);
     
@@ -24,6 +26,20 @@ public interface DgaUserRepository extends JpaRepository<DgaUser, Long> {
     org.springframework.data.domain.Page<DgaUser> findByIsDeletedFalseAndCreationStrategyNotIn(List<String> strategies, org.springframework.data.domain.Pageable pageable);
 
     org.springframework.data.domain.Page<DgaUser> findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(String clusterName, List<String> strategies, org.springframework.data.domain.Pageable pageable);
+
+    @Query("SELECT u FROM DgaUser u WHERE u.isDeleted = false AND u.creationStrategy NOT IN :strategies " +
+            "AND (:cluster IS NULL OR :cluster = '' OR u.clusterName = :cluster OR u.clusterName IN " +
+            "(SELECT c.clusterName FROM Cluster c WHERE c.clusterCode = :cluster))")
+    org.springframework.data.domain.Page<DgaUser> findByClusterIdentifierAndIsDeletedFalseAndCreationStrategyNotIn(
+            @Param("cluster") String cluster, @Param("strategies") List<String> strategies, org.springframework.data.domain.Pageable pageable);
+
+    @Query("SELECT u FROM DgaUser u WHERE u.isDeleted = false AND u.creationStrategy NOT IN :strategies " +
+            "AND (:cluster IS NULL OR :cluster = '' OR u.clusterName = :cluster OR u.clusterName IN " +
+            "(SELECT c.clusterName FROM Cluster c WHERE c.clusterCode = :cluster)) " +
+            "AND LOWER(u.username) LIKE LOWER(CONCAT('%', :username, '%'))")
+    org.springframework.data.domain.Page<DgaUser> findByClusterIdentifierAndIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+            @Param("cluster") String cluster, @Param("strategies") List<String> strategies, @Param("username") String username,
+            org.springframework.data.domain.Pageable pageable);
 
     @Query("SELECT DISTINCT u.clusterName FROM DgaUser u WHERE u.isDeleted = false AND u.clusterName IS NOT NULL")
     List<String> findDistinctClusterNames();

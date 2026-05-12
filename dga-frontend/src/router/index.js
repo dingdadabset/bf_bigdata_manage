@@ -7,6 +7,7 @@ import DataSourceManagement from '../components/DataSourceManagement.vue';
 import Metadata from '../views/Metadata.vue';
 import MetadataDetail from '../views/MetadataDetail.vue';
 import Quality from '../views/Quality.vue';
+import SchedulerTasks from '../views/SchedulerTasks.vue';
 import DataMap from '../views/DataMap.vue';
 import UserProfile from '../views/UserProfile.vue';
 import ResourceManagement from '../views/ResourceManagement.vue';
@@ -14,6 +15,7 @@ import ClusterManagement from '../views/system/ClusterManagement.vue';
 import PlatformUsers from '../views/system/PlatformUsers.vue';
 import SettingsCenter from '../views/system/SettingsCenter.vue';
 import AuthorizationCenter from '../views/access/AuthorizationCenter.vue';
+import AccessGovernancePanel from '../views/access/components/AccessGovernancePanel.vue';
 import { clearAuthCache, hasAuthSession } from '../utils/currentUser';
 
 Vue.use(VueRouter);
@@ -63,6 +65,12 @@ const routes = [
         meta: { title: '授权中心' }
       },
       {
+        path: 'access-governance',
+        name: 'AccessGovernance',
+        component: AccessGovernancePanel,
+        meta: { title: '权限治理' }
+      },
+      {
         path: 'metadata',
         name: 'Metadata',
         component: Metadata,
@@ -79,6 +87,12 @@ const routes = [
         name: 'Quality',
         component: Quality,
         meta: { title: '数据质量中心' }
+      },
+      {
+        path: 'scheduler-tasks',
+        name: 'SchedulerTasks',
+        component: SchedulerTasks,
+        meta: { title: '调度任务管理' }
       },
       {
         path: 'resources',

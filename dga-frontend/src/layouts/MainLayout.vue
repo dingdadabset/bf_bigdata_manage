@@ -27,7 +27,6 @@
               @change="onClusterChange"
               class="custom-header-select"
             >
-              <a-select-option :value="''">全部集群</a-select-option>
               <a-select-option v-for="cluster in clusters" :key="cluster.id" :value="cluster.clusterCode || cluster.clusterName">
                 {{ cluster.clusterName }}{{ cluster.clusterCode ? ` (${cluster.clusterCode})` : '' }}
               </a-select-option>
@@ -131,6 +130,10 @@
                 <a-icon type="safety-certificate" />
                 <span>授权中心</span>
               </a-menu-item>
+              <a-menu-item key="/access-governance">
+                <a-icon type="security-scan" />
+                <span>权限治理</span>
+              </a-menu-item>
             </a-sub-menu>
             <a-menu-item key="/metadata">
               <a-icon type="table" />
@@ -139,6 +142,10 @@
             <a-menu-item key="/quality">
               <a-icon type="dashboard" />
               <span>数据质量</span>
+            </a-menu-item>
+            <a-menu-item key="/scheduler-tasks">
+              <a-icon type="schedule" />
+              <span>调度任务管理</span>
             </a-menu-item>
             <a-menu-item key="/resources">
               <a-icon type="link" />
@@ -235,7 +242,7 @@ export default {
       return isRootAdmin();
     },
     defaultOpenKeys() {
-      const authPaths = ['/environment-resources', '/access', '/authorization-center'];
+      const authPaths = ['/environment-resources', '/access', '/authorization-center', '/access-governance'];
       return authPaths.includes(this.$route.path) ? ['bigdata-auth'] : [];
     }
   },
@@ -257,6 +264,12 @@ export default {
         const res = await axios.get('/api/clusters');
         if (res.data) {
           this.clusters = res.data;
+          const stillExists = this.clusters.some(cluster => (cluster.clusterCode || cluster.clusterName) === this.selectedCluster);
+          if ((!this.selectedCluster || !stillExists) && this.clusters.length) {
+            const firstCluster = this.clusters[0].clusterCode || this.clusters[0].clusterName;
+            this.selectedCluster = firstCluster;
+            this.onClusterChange(firstCluster);
+          }
         }
       } catch (e) {
         console.error("Failed to fetch clusters", e);
@@ -317,9 +330,11 @@ export default {
     },
     onClusterChange(value) {
       mutations.setHeaderSelectedCluster(value);
+      mutations.setCluster(value);
     },
     triggerAction(type) {
-      mutations.triggerHeaderAction(type);
+      const cluster = this.clusters.find(item => (item.clusterCode || item.clusterName) === this.selectedCluster);
+      mutations.triggerHeaderAction({ type, cluster });
     },
     handleMenuClick({ key }) {
       if (['settings', 'logout'].includes(key)) return;

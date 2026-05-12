@@ -37,6 +37,16 @@ public interface DataLineageRepository extends JpaRepository<DataLineage, Long> 
     List<DataLineage> findActiveDownstream(@Param("tableId") Long tableId,
                                            @Param("sourceType") String sourceType,
                                            @Param("sourceEndpointId") Long sourceEndpointId);
+
+    @Query("SELECT d FROM DataLineage d WHERE (d.status = 'ACTIVE' OR d.status IS NULL) " +
+            "AND d.clusterCode = :clusterCode " +
+            "AND d.sourceEndpointId = :sourceEndpointId " +
+            "AND (:projectName IS NULL OR d.sourceProject = :projectName) " +
+            "AND (:flowName IS NULL OR d.sourceWorkflow = :flowName)")
+    List<DataLineage> findActiveBySchedulerContext(@Param("clusterCode") String clusterCode,
+                                                   @Param("sourceEndpointId") Long sourceEndpointId,
+                                                   @Param("projectName") String projectName,
+                                                   @Param("flowName") String flowName);
     
     // Find specific lineage edge to avoid duplicates
     Optional<DataLineage> findBySourceTableIdAndTargetTableId(Long sourceTableId, Long targetTableId);

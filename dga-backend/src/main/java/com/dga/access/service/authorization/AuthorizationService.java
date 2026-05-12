@@ -59,6 +59,11 @@ public class AuthorizationService {
         selectProvider(context).revokeAll(context, username);
     }
 
+    public void createUser(String clusterIdentifier, String username, String password) {
+        AuthorizationContext context = buildContext(clusterIdentifier);
+        selectProvider(context).createUser(context, username, password);
+    }
+
     public String engineType(String clusterIdentifier) {
         AuthorizationContext context = buildContext(clusterIdentifier);
         return selectProvider(context).engineType();

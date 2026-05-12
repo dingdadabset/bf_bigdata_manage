@@ -1,8 +1,17 @@
 <template>
   <a-card :title="title" :bordered="false" class="perm-card">
     <div slot="extra">
-      <a-button type="link" icon="sync" @click="handleSync" :loading="syncing" style="margin-right: 8px;">同步权限</a-button>
-      <a-button type="link" icon="edit" @click="$emit('edit')">编辑策略</a-button>
+      <a-button type="primary" icon="edit" @click="$emit('edit')">编辑策略</a-button>
+      <a-dropdown placement="bottomRight" style="margin-left: 8px;">
+        <a-button>
+          更多 <a-icon type="down" />
+        </a-button>
+        <a-menu slot="overlay">
+          <a-menu-item key="sync" @click="handleSync">
+            <a-icon type="sync" /> 同步权限
+          </a-menu-item>
+        </a-menu>
+      </a-dropdown>
     </div>
     <div v-if="(dbList && dbList.length) || (revokedDbList && revokedDbList.length)" class="access-sections">
       <div class="section-title">当前授权</div>

@@ -11,11 +11,18 @@ import javax.sql.DataSource;
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
 import java.util.regex.Pattern;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -38,6 +45,7 @@ public class AzkabanSchedulerLineageCollector implements SchedulerLineageCollect
         LineageCollectResult result = new LineageCollectResult();
         JdbcTemplate jdbcTemplate = new JdbcTemplate(mysqlDataSource(endpoint));
         List<Map<String, Object>> projects = jdbcTemplate.queryForList("SELECT id, name, version FROM projects WHERE active = 1");
+        String projectDir = configuredProjectDir(endpoint);
 
         for (Map<String, Object> project : projects) {
             Integer projectId = asInteger(project.get("id"));
@@ -47,6 +55,13 @@ public class AzkabanSchedulerLineageCollector implements SchedulerLineageCollect
                 continue;
             }
             try {
+                if (projectDir != null) {
+                    LineageCollectResult projectResult = parseProjectDirectory(projectName, projectId, version, projectDir);
+                    result.addEdges(projectResult.getEdges());
+                    result.addContexts(projectResult.getContexts());
+                    projectResult.getFailures().forEach(result::addFailure);
+                    continue;
+                }
                 List<byte[]> chunks = readProjectFileChunks(jdbcTemplate, projectId, version);
                 if (chunks == null || chunks.isEmpty()) {
                     continue;
@@ -57,7 +72,9 @@ public class AzkabanSchedulerLineageCollector implements SchedulerLineageCollect
                         output.write(chunk);
                     }
                 }
-                result.addEdges(parseProjectZip(projectName, output.toByteArray()));
+                LineageCollectResult projectResult = parseProjectZip(projectName, output.toByteArray());
+                result.addEdges(projectResult.getEdges());
+                result.addContexts(projectResult.getContexts());
             } catch (Exception e) {
                 result.addFailure(projectName + ": " + e.getMessage());
             }
@@ -81,7 +98,30 @@ public class AzkabanSchedulerLineageCollector implements SchedulerLineageCollect
         }
     }
 
-    private List<ParsedLineageEdge> parseProjectZip(String projectName, byte[] zipBytes) throws IOException {
+    private LineageCollectResult parseProjectDirectory(String projectName, Integer projectId, Integer version, String projectDir) throws IOException {
+        LineageCollectResult projectResult = new LineageCollectResult();
+        Path projectPath = Paths.get(projectDir, projectId + "." + version);
+        if (!Files.isDirectory(projectPath)) {
+            projectResult.addFailure(projectName + ": 项目目录不存在 " + projectPath);
+            return projectResult;
+        }
+        List<Path> jobFiles;
+        try (Stream<Path> stream = Files.walk(projectPath, 3)) {
+            jobFiles = stream
+                    .filter(Files::isRegularFile)
+                    .filter(path -> path.getFileName().toString().endsWith(".job")
+                            || path.getFileName().toString().endsWith(".flow"))
+                    .sorted(Comparator.comparing(Path::toString))
+                    .collect(Collectors.toList());
+        }
+        for (Path jobFile : jobFiles) {
+            String content = new String(Files.readAllBytes(jobFile), StandardCharsets.UTF_8);
+            parseJobContent(projectResult, projectName, projectPath.relativize(jobFile).toString(), content);
+        }
+        return projectResult;
+    }
+
+    private LineageCollectResult parseProjectZip(String projectName, byte[] zipBytes) throws IOException {
         LineageCollectResult projectResult = new LineageCollectResult();
         try (ZipInputStream zis = new ZipInputStream(new ByteArrayInputStream(zipBytes))) {
             ZipEntry entry;
@@ -90,16 +130,25 @@ public class AzkabanSchedulerLineageCollector implements SchedulerLineageCollect
                     continue;
                 }
                 String content = readZipEntry(zis);
-                String sql = extractSqlFromAzkabanJob(content);
-                if (sql != null) {
-                    projectResult.addEdges(sqlParser.parse(projectName, null, entry.getName(), projectName + ":" + entry.getName(), sql));
-                }
+                parseJobContent(projectResult, projectName, entry.getName(), content);
             }
         }
-        return projectResult.getEdges();
+        return projectResult;
     }
 
-    private String extractSqlFromAzkabanJob(String content) {
+    private void parseJobContent(LineageCollectResult projectResult, String projectName, String jobPath, String content) {
+        AzkabanJobSql jobSql = extractSqlFromAzkabanJob(content);
+        if (jobSql == null) {
+            return;
+        }
+        String taskName = stripExtension(Paths.get(jobPath).getFileName().toString());
+        String workflowName = inferWorkflowName(taskName);
+        String taskKey = projectName + ":" + taskName;
+        projectResult.addEdges(sqlParser.parse(projectName, workflowName, taskName, taskKey, jobSql.sql));
+        projectResult.addContext(sqlParser.parseContext(projectName, workflowName, taskName, taskKey, jobPath, jobSql.commandText, jobSql.sql));
+    }
+
+    private AzkabanJobSql extractSqlFromAzkabanJob(String content) {
         Properties props = new Properties();
         try {
             props.load(new java.io.StringReader(content));
@@ -114,19 +163,19 @@ public class AzkabanSchedulerLineageCollector implements SchedulerLineageCollect
         String command = props.getProperty("command");
         String query = props.getProperty("query");
         if (query != null && SQL_COMMAND_PATTERN.matcher(query).find()) {
-            return query;
+            return new AzkabanJobSql(query, query);
         }
         if (command == null) {
             return null;
         }
         if (SQL_COMMAND_PATTERN.matcher(command).find()) {
-            return command;
+            return new AzkabanJobSql(command, command);
         }
         if (command.contains("hive -e")) {
             int start = command.indexOf("\"");
             int end = command.lastIndexOf("\"");
             if (start != -1 && end > start) {
-                return command.substring(start + 1, end);
+                return new AzkabanJobSql(command.substring(start + 1, end), command);
             }
         }
         return null;
@@ -151,6 +200,56 @@ public class AzkabanSchedulerLineageCollector implements SchedulerLineageCollect
                 .build();
     }
 
+    private String configuredProjectDir(ClusterEndpoint endpoint) {
+        List<String> candidates = new ArrayList<>();
+        candidates.add(endpoint.getDescription());
+        candidates.add(endpoint.getServiceName());
+        candidates.add(endpoint.getBaseDn());
+        for (String candidate : candidates) {
+            String value = readKeyValue(candidate, "projectDir");
+            if (value == null) {
+                value = readKeyValue(candidate, "azkaban.project.dir");
+            }
+            if (value != null && Files.isDirectory(Paths.get(value))) {
+                return value;
+            }
+        }
+        return null;
+    }
+
+    private String readKeyValue(String text, String key) {
+        if (text == null || key == null) {
+            return null;
+        }
+        for (String part : text.split("[;\\n,]")) {
+            String trimmed = part.trim();
+            if (trimmed.startsWith(key + "=")) {
+                String value = trimmed.substring((key + "=").length()).trim();
+                return value.isEmpty() ? null : value;
+            }
+        }
+        return null;
+    }
+
+    private String stripExtension(String fileName) {
+        int index = fileName == null ? -1 : fileName.lastIndexOf('.');
+        return index > 0 ? fileName.substring(0, index) : fileName;
+    }
+
+    private String inferWorkflowName(String taskName) {
+        if (taskName == null || taskName.trim().isEmpty()) {
+            return null;
+        }
+        if ("start".equalsIgnoreCase(taskName) || "end".equalsIgnoreCase(taskName)) {
+            return taskName;
+        }
+        int seqIndex = taskName.lastIndexOf("_seq");
+        if (seqIndex > 0) {
+            return taskName.substring(0, seqIndex);
+        }
+        return taskName;
+    }
+
     private Integer asInteger(Object value) {
         if (value instanceof Number) {
             return ((Number) value).intValue();
@@ -163,5 +262,15 @@ public class AzkabanSchedulerLineageCollector implements SchedulerLineageCollect
 
     private String asString(Object value) {
         return value == null ? "" : String.valueOf(value);
+    }
+
+    private static class AzkabanJobSql {
+        private final String sql;
+        private final String commandText;
+
+        private AzkabanJobSql(String sql, String commandText) {
+            this.sql = sql;
+            this.commandText = commandText;
+        }
     }
 }

@@ -12,6 +12,7 @@ import com.dga.metadata.entity.ColumnMetadata;
 import com.dga.metadata.entity.DataTheme;
 import com.dga.metadata.entity.GovernanceTask;
 import com.dga.metadata.entity.MetadataTag;
+import com.dga.metadata.entity.MetadataContextSuggestion;
 import com.dga.metadata.entity.MetricDefinition;
 import com.dga.metadata.entity.MetadataCollectionTask;
 import com.dga.metadata.entity.PartitionMetadata;
@@ -22,6 +23,7 @@ import com.dga.metadata.repository.ColumnMetadataRepository;
 import com.dga.metadata.repository.DataThemeRepository;
 import com.dga.metadata.repository.GovernanceTaskRepository;
 import com.dga.metadata.repository.MetadataTagRepository;
+import com.dga.metadata.repository.MetadataContextSuggestionRepository;
 import com.dga.metadata.repository.MetricDefinitionRepository;
 import com.dga.metadata.repository.TableMetadataRepository;
 import com.dga.metadata.repository.PartitionMetadataRepository;
@@ -35,6 +37,7 @@ import com.dga.metadata.service.MetadataCollectionAsyncRunner;
 import com.dga.metadata.service.MetadataCollectionResult;
 import com.dga.metadata.service.MetadataCollectionService;
 import com.dga.metadata.service.MetadataCollectorFactory;
+import com.dga.metadata.service.MetadataContextSuggestionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -102,6 +105,9 @@ public class MetadataController {
     private MetadataTagRepository metadataTagRepository;
 
     @Autowired
+    private MetadataContextSuggestionRepository contextSuggestionRepository;
+
+    @Autowired
     private TableTagMappingRepository tableTagMappingRepository;
 
     @Autowired
@@ -115,6 +121,9 @@ public class MetadataController {
 
     @Autowired
     private MetadataCollectorFactory collectorFactory;
+
+    @Autowired
+    private MetadataContextSuggestionService contextSuggestionService;
 
     @Autowired
     private MetadataCollectionService collectionService;
@@ -296,6 +305,24 @@ public class MetadataController {
     @Operation(summary = "查询字段列表", description = "按表 ID 查询字段元数据列表。")
     public List<ColumnMetadata> getColumns(@PathVariable Long id) {
         return columnMetadataRepository.findByTableId(id);
+    }
+
+    @GetMapping("/table/{id}/context-suggestions")
+    public List<MetadataContextSuggestion> getContextSuggestions(@PathVariable Long id) {
+        getTableOrThrow(id);
+        return contextSuggestionRepository.findByTableIdOrderByStatusAscParsedAtDescIdDesc(id);
+    }
+
+    @PutMapping("/context-suggestions/{id}/apply")
+    public MetadataContextSuggestion applyContextSuggestion(@PathVariable Long id, HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可应用元数据上下文建议");
+        return contextSuggestionService.apply(id, currentUsername(request));
+    }
+
+    @PutMapping("/context-suggestions/{id}/reject")
+    public MetadataContextSuggestion rejectContextSuggestion(@PathVariable Long id, HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可忽略元数据上下文建议");
+        return contextSuggestionService.reject(id, currentUsername(request));
     }
 
     @GetMapping("/table/{id}/create-ddl")

@@ -11,7 +11,10 @@ public class CreateUserRequest {
     private String ipaHost; // optional override
     private String cluster;
     private String userType; // INTERNAL, OUTSOURCER, TEMPORARY, SERVICE
+    private String accountMode; // LDAP_ONLY or POSIX_ACCOUNT
     private java.time.LocalDateTime expiresAt;
+    private Long gidNumber;
+    private String groupName;
 
     public String getUsername() {
         return username;
@@ -85,11 +88,35 @@ public class CreateUserRequest {
         this.userType = userType;
     }
 
+    public String getAccountMode() {
+        return accountMode;
+    }
+
+    public void setAccountMode(String accountMode) {
+        this.accountMode = accountMode;
+    }
+
     public java.time.LocalDateTime getExpiresAt() {
         return expiresAt;
     }
 
     public void setExpiresAt(java.time.LocalDateTime expiresAt) {
         this.expiresAt = expiresAt;
+    }
+
+    public Long getGidNumber() {
+        return gidNumber;
+    }
+
+    public void setGidNumber(Long gidNumber) {
+        this.gidNumber = gidNumber;
+    }
+
+    public String getGroupName() {
+        return groupName;
+    }
+
+    public void setGroupName(String groupName) {
+        this.groupName = groupName;
     }
 }

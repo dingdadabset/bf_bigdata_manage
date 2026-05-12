@@ -210,7 +210,7 @@ public class HiveServer2ConnectionService {
             if (cached != null) {
                 return cached;
             }
-            URLClassLoader loader = new URLClassLoader(new URL[]{jarFile.toURI().toURL()}, null);
+            URLClassLoader loader = new URLClassLoader(new URL[]{jarFile.toURI().toURL()}, jdbcApiParentClassLoader());
             Class<?> driverClass = Class.forName(registeredDriver.getDriverClassName(), true, loader);
             Driver driver = (Driver) driverClass.getDeclaredConstructor().newInstance();
             ExternalDriverHandle handle = new ExternalDriverHandle(driver, loader);
@@ -229,6 +229,14 @@ public class HiveServer2ConnectionService {
             throw new IllegalStateException("Hive JDBC 驱动 [" + driverKey + "] 文件不存在: " + normalizedPath);
         }
         return jarFile;
+    }
+
+    private ClassLoader jdbcApiParentClassLoader() {
+        ClassLoader parent = Driver.class.getClassLoader();
+        if (parent != null) {
+            return parent;
+        }
+        return HiveServer2ConnectionService.class.getClassLoader();
     }
 
     private RegisteredDriver resolveSelectedExternalDriver(ClusterEndpoint endpoint) {

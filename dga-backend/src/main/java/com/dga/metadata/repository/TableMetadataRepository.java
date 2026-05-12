@@ -23,6 +23,7 @@ public interface TableMetadataRepository extends JpaRepository<TableMetadata, Lo
     List<TableMetadata> findByDbName(String dbName);
     List<TableMetadata> findByDbNameAndTableName(String dbName, String tableName);
     List<TableMetadata> findByDataSourceIdAndDbNameAndTableName(Long dataSourceId, String dbName, String tableName);
+    List<TableMetadata> findByDataSourceIdAndDbNameIgnoreCaseAndTableNameIgnoreCase(Long dataSourceId, String dbName, String tableName);
     List<TableMetadata> findByClusterCodeAndDbNameAndTableName(String clusterCode, String dbName, String tableName);
 
     Page<TableMetadata> findByDataSourceId(Long dataSourceId, Pageable pageable);

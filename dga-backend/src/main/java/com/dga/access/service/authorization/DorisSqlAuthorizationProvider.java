@@ -80,6 +80,15 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
     }
 
     @Override
+    public void createUser(AuthorizationContext context, String username, String password) {
+        validateUserIdentity(username);
+        if (password == null || password.isEmpty()) {
+            throw new IllegalArgumentException("Doris 用户密码不能为空");
+        }
+        jdbcTemplate(context).execute("CREATE USER " + formatUserIdentity(username) + " IDENTIFIED BY '" + escapeSqlLiteral(password) + "'");
+    }
+
+    @Override
     public void grant(AuthorizationContext context, GrantCommand command) {
         validate(command);
         jdbcTemplate(context).execute(buildSql("GRANT", "TO", command));
@@ -266,6 +275,20 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
         return normalized;
     }
 
+    private void validateUserIdentity(String username) {
+        String user = username == null ? "" : username.trim();
+        String host = "%";
+        int atIndex = user.indexOf('@');
+        if (atIndex > 0) {
+            host = user.substring(atIndex + 1).trim();
+            user = user.substring(0, atIndex).trim();
+        }
+        AuthorizationSupport.validateName(stripQuotes(user));
+        if (!"%".equals(host)) {
+            AuthorizationSupport.validateName(stripQuotes(host).replace(".", "_"));
+        }
+    }
+
     private String formatUserIdentity(String username) {
         String user = username == null ? "" : username.trim();
         String host = "%";
@@ -299,6 +322,10 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
             return null;
         }
         return value.replace("`", "").trim();
+    }
+
+    private String escapeSqlLiteral(String value) {
+        return value == null ? "" : value.replace("'", "''");
     }
 
     private String stripQuotes(String value) {

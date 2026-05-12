@@ -14,6 +14,7 @@ public class ClusterEndpoint {
     public static final String TYPE_STARROCKS_JDBC = "STARROCKS_JDBC";
     public static final String TYPE_DORIS_JDBC = "DORIS_JDBC";
     public static final String TYPE_AZKABAN_DB = "AZKABAN_DB";
+    public static final String TYPE_AZKABAN_WEB = "AZKABAN_WEB";
     public static final String TYPE_DOLPHINSCHEDULER_DB = "DOLPHINSCHEDULER_DB";
     public static final String TYPE_LDAP = "LDAP";
     public static final String TYPE_RANGER = "RANGER";

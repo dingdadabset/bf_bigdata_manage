@@ -7,8 +7,10 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 
 @Service
 public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider {
@@ -20,8 +22,11 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
                 || AuthorizationSupport.hasAuthBackend(context, ClusterEndpoint.AUTH_STARROCKS_SQL)) {
             return true;
         }
-        return cluster != null && cluster.getType() != null
-                && cluster.getType().toUpperCase().contains("STARROCKS");
+        if (cluster == null || cluster.getType() == null) {
+            return false;
+        }
+        String type = cluster.getType().toUpperCase().replaceAll("[^A-Z0-9]", "");
+        return "SR".equals(type) || type.contains("STARROCKS") || type.contains("STAR");
     }
 
     @Override
@@ -63,13 +68,23 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
 
     @Override
     public List<Map<String, Object>> getUserPermissions(AuthorizationContext context, String username) {
-        AuthorizationSupport.validateName(username);
+        validateUserIdentity(username);
         try {
-            return jdbcTemplate(context).queryForList("SHOW GRANTS FOR '" + username + "'");
+            List<Map<String, Object>> rows = jdbcTemplate(context).queryForList("SHOW GRANTS FOR " + formatUserIdentity(username));
+            return normalizeGrantRows(rows);
         } catch (Exception e) {
             System.out.println("SHOW GRANTS FOR StarRocks user failed: " + e.getMessage());
             return new ArrayList<>();
         }
+    }
+
+    @Override
+    public void createUser(AuthorizationContext context, String username, String password) {
+        validateUserIdentity(username);
+        if (password == null || password.isEmpty()) {
+            throw new IllegalArgumentException("StarRocks 用户密码不能为空");
+        }
+        jdbcTemplate(context).execute("CREATE USER " + formatUserIdentity(username) + " IDENTIFIED BY '" + escapeSqlLiteral(password) + "'");
     }
 
     @Override
@@ -150,8 +165,156 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
         return permission.toUpperCase();
     }
 
+    private List<Map<String, Object>> normalizeGrantRows(List<Map<String, Object>> rows) {
+        List<Map<String, Object>> grants = new ArrayList<>();
+        if (rows == null) {
+            return grants;
+        }
+        for (Map<String, Object> row : rows) {
+            Map<String, Object> normalized = caseInsensitive(row);
+            String grant = stringValue(normalized.get("Grants"));
+            if (isBlankOrNull(grant)) {
+                grant = firstGrantText(row);
+            }
+            parseGrantText(grants, grant, row);
+        }
+        return grants;
+    }
+
+    private void parseGrantText(List<Map<String, Object>> grants, String grantText, Map<String, Object> rawRow) {
+        if (isBlankOrNull(grantText)) {
+            return;
+        }
+        String upper = grantText.toUpperCase();
+        int grantIndex = upper.indexOf("GRANT ");
+        int onIndex = upper.indexOf(" ON ");
+        if (grantIndex < 0 || onIndex < 0 || onIndex <= grantIndex) {
+            return;
+        }
+        String privileges = grantText.substring(grantIndex + 6, onIndex).trim();
+        String afterOn = grantText.substring(onIndex + 4).trim();
+        String afterOnUpper = afterOn.toUpperCase();
+        int toIndex = afterOnUpper.indexOf(" TO ");
+        if (toIndex >= 0) {
+            afterOn = afterOn.substring(0, toIndex).trim();
+            afterOnUpper = afterOn.toUpperCase();
+        }
+        Scope scope = parseGrantScope(afterOn, afterOnUpper);
+        for (String privilege : privileges.split(",")) {
+            String permission = fromStarRocksPrivilege(privilege);
+            if (permission == null) {
+                continue;
+            }
+            Map<String, Object> grant = new HashMap<>();
+            grant.put("resourceType", scope.resourceType);
+            grant.put("database", scope.database);
+            grant.put("table", scope.table);
+            grant.put("permission", permission);
+            grant.put("grantText", grantText);
+            grant.put("raw", rawRow);
+            grants.add(grant);
+        }
+    }
+
+    private Scope parseGrantScope(String text, String upper) {
+        Scope scope = new Scope();
+        scope.resourceType = "GLOBAL";
+        scope.database = "ALL DATABASES";
+        if (upper.startsWith("ALL TABLES IN DATABASE ")) {
+            scope.resourceType = "DATABASE";
+            scope.database = stripIdentifier(text.substring("ALL TABLES IN DATABASE ".length()).trim());
+        } else if (upper.startsWith("DATABASE ")) {
+            scope.resourceType = "DATABASE";
+            scope.database = stripIdentifier(text.substring("DATABASE ".length()).trim());
+        } else if (upper.startsWith("TABLE ")) {
+            scope.resourceType = "TABLE";
+            String resource = text.substring("TABLE ".length()).trim();
+            String[] parts = resource.split("\\.", 2);
+            if (parts.length == 2) {
+                scope.database = stripIdentifier(parts[0]);
+                scope.table = stripIdentifier(parts[1]);
+            } else {
+                scope.table = stripIdentifier(resource);
+            }
+        } else if (upper.startsWith("SYSTEM")) {
+            scope.resourceType = "SYSTEM";
+            scope.database = "SYSTEM";
+        }
+        return scope;
+    }
+
+    private String fromStarRocksPrivilege(String privilege) {
+        if (privilege == null) {
+            return null;
+        }
+        String normalized = privilege.trim().toUpperCase();
+        if (normalized.isEmpty()) {
+            return null;
+        }
+        if ("CREATE TABLE".equals(normalized)) {
+            return "CREATE";
+        }
+        return normalized;
+    }
+
+    private Map<String, Object> caseInsensitive(Map<String, Object> row) {
+        Map<String, Object> normalized = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        if (row != null) {
+            normalized.putAll(row);
+        }
+        return normalized;
+    }
+
+    private String firstGrantText(Map<String, Object> row) {
+        if (row == null) {
+            return null;
+        }
+        for (Object value : row.values()) {
+            String text = stringValue(value);
+            if (!isBlankOrNull(text) && text.toUpperCase().startsWith("GRANT ")) {
+                return text;
+            }
+        }
+        return null;
+    }
+
     private String quoteIdentifier(String identifier) {
         return "`" + identifier.replace("`", "``") + "`";
+    }
+
+    private String stripIdentifier(String value) {
+        if (value == null) {
+            return null;
+        }
+        return value.replace("`", "").trim();
+    }
+
+    private boolean isBlankOrNull(String value) {
+        return value == null || value.trim().isEmpty() || "NULL".equalsIgnoreCase(value.trim());
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : value.toString().trim();
+    }
+
+    private static class Scope {
+        private String resourceType;
+        private String database;
+        private String table;
+    }
+
+    private void validateUserIdentity(String username) {
+        String user = username == null ? "" : username.trim();
+        String host = "%";
+        int atIndex = user.indexOf('@');
+        if (atIndex > 0) {
+            host = user.substring(atIndex + 1).trim();
+            user = user.substring(0, atIndex).trim();
+        }
+        AuthorizationSupport.validateName(stripQuotes(user));
+        if (!"%".equals(host)) {
+            AuthorizationSupport.validateName(stripQuotes(host).replace(".", "_"));
+        }
     }
 
     private String formatUserIdentity(String username) {
@@ -165,6 +328,10 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
         user = stripQuotes(user);
         host = stripQuotes(host);
         return "'" + user.replace("'", "''") + "'@'" + host.replace("'", "''") + "'";
+    }
+
+    private String escapeSqlLiteral(String value) {
+        return value == null ? "" : value.replace("'", "''");
     }
 
     private String stripQuotes(String value) {

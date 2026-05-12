@@ -3,7 +3,7 @@
     <div class="module-header">
       <div>
         <h1>权限治理风险</h1>
-        <p>按数据库授权明细和引擎审计记录识别未使用权限、高权限复核和无人负责权限</p>
+        <p>按授权明细识别高权限复核和无人负责权限；未使用权限仅在接入精确审计后判定</p>
       </div>
       <div class="header-actions">
         <a-select
@@ -18,7 +18,7 @@
           </a-select-option>
         </a-select>
         <a-input-number v-model="scanForm.inactiveDays" :min="1" :max="365" size="small" />
-        <span class="toolbar-label">未使用天数</span>
+        <span class="toolbar-label">未使用判定天数</span>
         <a-input-number v-model="scanForm.reviewDays" :min="1" :max="365" size="small" />
         <span class="toolbar-label">复核周期</span>
         <a-button icon="profile" @click="ruleModalVisible = true">规则示例</a-button>
@@ -44,6 +44,15 @@
       </a-tooltip>
     </div>
 
+    <a-alert
+      v-if="showHiveUnusedWarning"
+      class="capability-alert"
+      type="warning"
+      show-icon
+      message="HiveServer2 不能单独判断长期未使用权限"
+      description="当前 HiveServer2 只能提供授权明细。未使用权限需要 Ranger Audit DB、Hive 审计表或 StarRocks/Doris 审计表这类可按 user + db/table + operation 匹配的精确审计来源；HDFS/YARN 仅作为账号级辅助活动证据，不会单独生成未使用权限风险。"
+    />
+
     <div v-if="lastScanResult" class="scan-result-panel">
       <div class="scan-result-header">
         <div>
@@ -66,9 +75,16 @@
           <strong>{{ lastScanResult.evidenceCount || 0 }}</strong>
         </div>
         <div>
-          <span>未使用天数</span>
+          <span>权限审计覆盖</span>
+          <strong>{{ lastScanResult.permissionUsageCoverageCount || 0 }}</strong>
+        </div>
+        <div>
+          <span>未使用判定天数</span>
           <strong>{{ lastScanResult.inactiveDays || scanForm.inactiveDays }}</strong>
         </div>
+      </div>
+      <div v-if="lastScanResult.unusedPermissionCapability" class="scan-capability-note">
+        {{ lastScanResult.unusedPermissionCapability }}
       </div>
       <div class="scan-result-sources">
         <a-tooltip
@@ -381,8 +397,8 @@ export default {
           engine: 'Hive',
           sourceSystem: 'HIVE_SERVER2',
           source: 'Hive 强证据来自 Ranger Audit MySQL x_access_audit/xa_access_audit 或 HiveServer2 audit/query log；HDP 可配置 RANGER_DB 端点直接读取 Ranger 审计库。',
-          rules: 'Ranger Audit、HiveServer2 query log 可按 user + database + operation 精确匹配权限动作；HDFS audit、YARN application history 只作为账号级辅助证据，低置信度展示，不单独证明某个库表权限已使用。',
-          example: '用户有 tmp_db 的 SELECT 权限，Ranger/HiveServer2 审计最近 N 天无 select/query 命中，则生成未使用数据库权限；若 YARN/HDFS 有近期活动，会在证据中附加辅助说明供人工复核。'
+          rules: 'HiveServer2 授权明细只说明账号拥有哪些权限，不能说明是否长期未使用。只有 Ranger Audit、HiveServer2 query/audit log 等可按 user + database + operation 精确匹配的审计来源，才参与未使用权限判定。',
+          example: '用户有 tmp_db 的 SELECT 权限：若仅采集 HiveServer2 授权明细，只生成高权限复核/无人负责类风险；若 Ranger/Hive 审计最近 N 天无 select/query 命中，才生成未使用数据库权限。'
         },
         {
           engine: 'Hive 辅助来源',
@@ -446,6 +462,30 @@ export default {
         message: option.value === 'DGA' ? '使用平台登录和 DGA 用户时间兜底' : '未接入 endpoint',
         ...(bySource[option.value] || {})
       }));
+    },
+    directPermissionAuditReady() {
+      const selected = this.scanForm.sourceSystems || [];
+      return this.sourceStatuses.some(source => {
+        if (!selected.includes(source.sourceSystem) || !source.configured) {
+          return false;
+        }
+        const message = source.message || '';
+        if (source.sourceSystem === 'STARROCKS' || source.sourceSystem === 'DORIS') {
+          return true;
+        }
+        if (source.sourceSystem === 'RANGER') {
+          return message.includes('Ranger Audit MySQL');
+        }
+        if (source.sourceSystem === 'HIVE_SERVER2') {
+          return message.includes('直接查询');
+        }
+        return false;
+      });
+    },
+    showHiveUnusedWarning() {
+      const selected = this.scanForm.sourceSystems || [];
+      const hiveSelected = selected.includes('HIVE_SERVER2');
+      return hiveSelected && !this.directPermissionAuditReady;
     },
     scanResultSources() {
       const statuses = this.lastScanResult?.sourceStatuses || [];
@@ -791,6 +831,9 @@ export default {
   margin-bottom: 14px;
   color: #667085;
 }
+.capability-alert {
+  margin-bottom: 14px;
+}
 .scan-result-panel {
   margin-bottom: 16px;
   padding: 14px 16px;
@@ -815,7 +858,7 @@ export default {
 }
 .scan-result-metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(100px, 1fr));
+  grid-template-columns: repeat(5, minmax(100px, 1fr));
   gap: 10px;
   margin-bottom: 12px;
 }
@@ -841,6 +884,12 @@ export default {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+.scan-capability-note {
+  margin: -2px 0 10px;
+  color: #667085;
+  font-size: 12px;
+  line-height: 20px;
 }
 .summary-row {
   display: grid;

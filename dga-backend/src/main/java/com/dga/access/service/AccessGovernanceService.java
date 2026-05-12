@@ -165,6 +165,11 @@ public class AccessGovernanceService {
         result.put("sourceSystems", selectedSources);
         result.put("sourceStatuses", collection.get("sourceStatuses"));
         result.put("evidenceCount", collection.get("evidenceCount"));
+        result.put("permissionUsageCoverageCount", usageResult.directCoveredAccessIds.size());
+        result.put("auxiliaryActivityCount", usageResult.auxiliaryByAccessId.size());
+        result.put("unusedPermissionCapability", usageResult.directCoveredAccessIds.isEmpty()
+                ? "未发现可用于库表权限未使用判定的精确审计来源；HiveServer2 授权明细、HDFS/YARN 活动只用于高权限和负责人复核，不生成未使用权限风险。"
+                : "已接入精确审计来源，可按账号、库表和权限动作判断未使用权限。");
         result.put("scannedAt", now);
         return result;
     }
@@ -1259,7 +1264,6 @@ public class AccessGovernanceService {
                                       int inactiveDays,
                                       String sourceSystem,
                                       PermissionUsageResult result) {
-        LocalDateTime cutoff = LocalDateTime.now().minusDays(Math.max(inactiveDays, 1));
         for (UserResourceAccess access : accesses) {
             if (access.getId() == null) {
                 continue;
@@ -1270,13 +1274,6 @@ public class AccessGovernanceService {
                 hit.confidence = firstNonBlank(hit.confidence, "LOW");
                 putLatestAuxiliary(access.getId(), hit, result);
                 putLatestHistory(access.getId(), hit, result);
-            }
-            if (result.directCoveredAccessIds.contains(access.getId())) {
-                continue;
-            }
-            result.coveredAccessIds.add(access.getId());
-            if (hit != null && hit.lastActiveAt != null && !hit.lastActiveAt.isBefore(cutoff)) {
-                result.usedByAccessId.put(access.getId(), hit);
             }
         }
     }
@@ -1643,7 +1640,7 @@ public class AccessGovernanceService {
                                                   int inactiveDays) {
         List<UserResourceAccess> unusedAccesses = new ArrayList<>();
         for (UserResourceAccess access : accesses) {
-            if (access.getId() == null || !usageResult.coveredAccessIds.contains(access.getId())) {
+            if (access.getId() == null || !usageResult.directCoveredAccessIds.contains(access.getId())) {
                 continue;
             }
             if (!usageResult.usedByAccessId.containsKey(access.getId())) {

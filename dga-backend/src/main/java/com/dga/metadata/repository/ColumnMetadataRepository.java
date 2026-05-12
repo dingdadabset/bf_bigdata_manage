@@ -9,5 +9,6 @@ import java.util.List;
 @Repository
 public interface ColumnMetadataRepository extends JpaRepository<ColumnMetadata, Long> {
     List<ColumnMetadata> findByTableId(Long tableId);
+    List<ColumnMetadata> findByTableIdAndColumnNameIgnoreCase(Long tableId, String columnName);
     void deleteByTableId(Long tableId);
 }

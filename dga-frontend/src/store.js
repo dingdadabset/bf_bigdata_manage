@@ -36,8 +36,10 @@ export const mutations = {
   setHeaderSelectedCluster(cluster) {
     store.headerSelectedCluster = cluster;
   },
-  triggerHeaderAction(type) {
-    store.headerAction = { type, timestamp: Date.now() };
+  triggerHeaderAction(action) {
+    store.headerAction = typeof action === 'object'
+      ? { ...action, timestamp: Date.now() }
+      : { type: action, timestamp: Date.now() };
   },
   setCluster(cluster) {
     store.currentCluster = cluster;

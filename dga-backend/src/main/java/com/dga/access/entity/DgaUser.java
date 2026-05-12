@@ -28,6 +28,38 @@ public class DgaUser {
     
     private String lastName;
 
+    @Column(name = "display_name")
+    private String displayName;
+
+    @Column(name = "ldap_dn", length = 500)
+    private String ldapDn;
+
+    @Column(name = "uid_number")
+    private Long uidNumber;
+
+    @Column(name = "gid_number")
+    private Long gidNumber;
+
+    @Column(name = "home_directory")
+    private String homeDirectory;
+
+    @Column(name = "login_shell")
+    private String loginShell;
+
+    @Column(name = "primary_group_name")
+    private String primaryGroupName;
+
+    @Lob
+    @Column(name = "supplementary_groups")
+    private String supplementaryGroups;
+
+    @Column(name = "ldap_locked")
+    private Boolean ldapLocked = false;
+
+    @Lob
+    @Column(name = "ldap_attributes_json")
+    private String ldapAttributesJson;
+
     @Column(name = "creation_strategy")
     private String creationStrategy; // LDAP, IPA_SSH, IPA_HTTP
 
@@ -106,6 +138,86 @@ public class DgaUser {
 
     public void setLastName(String lastName) {
         this.lastName = lastName;
+    }
+
+    public String getDisplayName() {
+        return displayName;
+    }
+
+    public void setDisplayName(String displayName) {
+        this.displayName = displayName;
+    }
+
+    public String getLdapDn() {
+        return ldapDn;
+    }
+
+    public void setLdapDn(String ldapDn) {
+        this.ldapDn = ldapDn;
+    }
+
+    public Long getUidNumber() {
+        return uidNumber;
+    }
+
+    public void setUidNumber(Long uidNumber) {
+        this.uidNumber = uidNumber;
+    }
+
+    public Long getGidNumber() {
+        return gidNumber;
+    }
+
+    public void setGidNumber(Long gidNumber) {
+        this.gidNumber = gidNumber;
+    }
+
+    public String getHomeDirectory() {
+        return homeDirectory;
+    }
+
+    public void setHomeDirectory(String homeDirectory) {
+        this.homeDirectory = homeDirectory;
+    }
+
+    public String getLoginShell() {
+        return loginShell;
+    }
+
+    public void setLoginShell(String loginShell) {
+        this.loginShell = loginShell;
+    }
+
+    public String getPrimaryGroupName() {
+        return primaryGroupName;
+    }
+
+    public void setPrimaryGroupName(String primaryGroupName) {
+        this.primaryGroupName = primaryGroupName;
+    }
+
+    public String getSupplementaryGroups() {
+        return supplementaryGroups;
+    }
+
+    public void setSupplementaryGroups(String supplementaryGroups) {
+        this.supplementaryGroups = supplementaryGroups;
+    }
+
+    public Boolean getLdapLocked() {
+        return ldapLocked;
+    }
+
+    public void setLdapLocked(Boolean ldapLocked) {
+        this.ldapLocked = ldapLocked;
+    }
+
+    public String getLdapAttributesJson() {
+        return ldapAttributesJson;
+    }
+
+    public void setLdapAttributesJson(String ldapAttributesJson) {
+        this.ldapAttributesJson = ldapAttributesJson;
     }
 
     public String getCreationStrategy() {

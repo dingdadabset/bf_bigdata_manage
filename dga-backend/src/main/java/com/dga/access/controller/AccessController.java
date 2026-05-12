@@ -19,6 +19,7 @@ import com.dga.access.service.authorization.AuthorizationSupport;
 import com.dga.access.service.authorization.AuthorizationCapability;
 import com.dga.access.service.authorization.GrantCommand;
 import com.dga.access.service.authorization.RevokeCommand;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.dga.access.entity.UserHiveAccess;
 import com.dga.access.repository.UserHiveAccessRepository;
 import com.dga.access.repository.UserResourceAccessRepository;
@@ -114,6 +115,9 @@ public class AccessController {
     @Autowired
     private DgaUserSchemaService dgaUserSchemaService;
 
+    @Autowired
+    private ObjectMapper objectMapper;
+
     @PostMapping("/grant")
     public String grantAccess(@RequestBody AccessRequest request) {
         String operator = currentOperator();
@@ -148,20 +152,31 @@ public class AccessController {
     public String createUser(@RequestBody CreateUserRequest request) {
         dgaUserSchemaService.ensureClusterScopedUsernameConstraint();
         String clusterName = resolveClusterName(request.getCluster());
+        com.dga.cluster.entity.Cluster targetCluster = resolveCluster(request.getCluster());
+        String clusterType = targetCluster != null && targetCluster.getType() != null ? targetCluster.getType().toUpperCase() : "";
+        String sqlEngine = resolveSqlAuthEngine(request.getCluster(), targetCluster);
+        boolean sqlAuthUser = sqlEngine != null;
         String userType = normalizeGovernanceUserType(request.getUserType());
         validateUserExpiry(userType, request.getExpiresAt());
-        // Check if user exists in DB first
-        if (dgaUserRepository.existsByUsernameAndClusterName(request.getUsername(), clusterName)) {
+        DgaUser existingUser = dgaUserRepository.findByUsernameAndClusterName(request.getUsername(), clusterName);
+        // Check if an active user already exists in DB first
+        if (existingUser != null && !Boolean.TRUE.equals(existingUser.getDeleted())) {
              throw new ResponseStatusException(HttpStatus.CONFLICT, "User " + request.getUsername() + " already exists in cluster " + clusterName + ".");
         }
 
         String strategy = request.getCreationStrategy();
         String resultMsg = "User created: " + request.getUsername();
-        if (strategy == null || strategy.isEmpty() || strategy.toUpperCase().startsWith("SELF")) {
+        if (sqlAuthUser) {
+            validateSqlAuthUsername(request.getUsername(), clusterType);
+            authorizationService.createUser(request.getCluster(), request.getUsername(), request.getPassword());
+            strategy = sqlEngine;
+            resultMsg = strategy + " user created: " + request.getUsername();
+        } else if (strategy == null || strategy.isEmpty() || strategy.toUpperCase().startsWith("SELF")) {
             strategy = "OPENLDAP";
         }
         
-        if ("IPA_SSH".equalsIgnoreCase(strategy)) {
+        if (sqlAuthUser) {
+        } else if ("IPA_SSH".equalsIgnoreCase(strategy)) {
             String result = ipaService.createUser(request.getIpaHost(), request.getUsername(), request.getFirstName(), request.getLastName(), request.getPassword());
             if (!result.isEmpty()) return result; // Return error if any
             resultMsg = "User created via IPA(SSH): " + request.getUsername();
@@ -199,13 +214,17 @@ public class AccessController {
             
             resultMsg = "User created via IPA(HTTP): " + request.getUsername();
         } else {
-            ldapService.createUser(request.getCluster(), request.getUsername(), request.getPassword(), request.getEmail());
+            boolean posixAccount = !"LDAP_ONLY".equalsIgnoreCase(request.getAccountMode());
+            ldapService.createUser(request.getCluster(), request.getUsername(), request.getPassword(),
+                    request.getEmail(), request.getGidNumber(), request.getGroupName(), posixAccount);
             strategy = "OPENLDAP";
-            resultMsg = "User created via OpenLDAP: " + request.getUsername();
+            resultMsg = posixAccount
+                    ? "System account created via OpenLDAP: " + request.getUsername()
+                    : "LDAP identity created via OpenLDAP: " + request.getUsername();
         }
 
         // Persist to MySQL
-        if (!dgaUserRepository.existsByUsernameAndClusterName(request.getUsername(), clusterName)) {
+        if (existingUser == null) {
             DgaUser user = new DgaUser();
             user.setUsername(request.getUsername());
             user.setFirstName(request.getFirstName());
@@ -219,23 +238,261 @@ public class AccessController {
             user.setClusterName(clusterName);
             user.setUserType(userType);
             user.setExpiresAt(request.getExpiresAt());
+            user.setDeleted(false);
+            if ("OPENLDAP".equalsIgnoreCase(strategy) || "LDAP".equalsIgnoreCase(strategy)) {
+                syncDgaUserFromLdap(user, request.getCluster(), request.getUsername());
+            }
             dgaUserRepository.save(user);
         } else {
-             // If user exists (e.g. re-registering or different strategy), update it?
-             // For now, let's just ignore or maybe update the strategy/password if needed.
-             // But requirement says "IPA registered account, password not saved". 
-             // So if it exists, we might want to ensure password is saved if it wasn't before.
-             DgaUser user = dgaUserRepository.findByUsernameAndClusterName(request.getUsername(), clusterName);
+             DgaUser user = existingUser;
              if (user.getPassword() == null && request.getPassword() != null) {
                  user.setPassword(passwordEncoder.encode(request.getPassword()));
+             } else if (request.getPassword() != null) {
+                 user.setPassword(passwordEncoder.encode(request.getPassword()));
              }
+             user.setFirstName(request.getFirstName());
+             user.setLastName(request.getLastName());
+             user.setEmail(request.getEmail());
+             user.setCreationStrategy(strategy);
              user.setClusterName(clusterName);
              user.setUserType(userType);
              user.setExpiresAt(request.getExpiresAt());
+             user.setDeleted(false);
+             if ("OPENLDAP".equalsIgnoreCase(strategy) || "LDAP".equalsIgnoreCase(strategy)) {
+                 syncDgaUserFromLdap(user, request.getCluster(), request.getUsername());
+             }
              dgaUserRepository.save(user);
         }
 
         return resultMsg;
+    }
+
+    @GetMapping("/ldap-groups")
+    @Operation(summary = "查询 LDAP 用户组", description = "返回指定集群 LDAP 中可用于创建系统账号的 posixGroup 列表。")
+    public List<Map<String, Object>> listLdapGroups(@RequestParam(required = false) String cluster,
+                                                    HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可查询 LDAP 用户组");
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择所属集群后再查询 LDAP 用户组");
+        }
+        return ldapService.listPosixGroups(cluster);
+    }
+
+    @GetMapping("/ldap-groups/{groupName}")
+    @Operation(summary = "查询 LDAP 用户组详情", description = "返回指定 posixGroup 的 DN、gidNumber、描述和 memberUid。")
+    public Map<String, Object> getLdapGroup(@PathVariable String groupName,
+                                            @RequestParam(required = false) String cluster,
+                                            HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可查询 LDAP 用户组");
+        requireCluster(cluster, "请选择所属集群后再查询 LDAP 用户组");
+        return ldapService.getPosixGroup(cluster, groupName);
+    }
+
+    @PostMapping("/ldap-groups")
+    @Operation(summary = "创建 LDAP 用户组", description = "创建 OpenLDAP posixGroup，可指定 gidNumber 和描述。")
+    public Map<String, Object> createLdapGroup(@RequestParam(required = false) String cluster,
+                                               @RequestBody Map<String, Object> body,
+                                               HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可创建 LDAP 用户组");
+        requireCluster(cluster, "请选择所属集群后再创建 LDAP 用户组");
+        String name = stringBodyValue(body, "name");
+        Long gidNumber = longBodyValue(body, "gidNumber");
+        String description = stringBodyValue(body, "description");
+        return ldapService.createPosixGroup(cluster, name, gidNumber, description);
+    }
+
+    @PutMapping("/ldap-groups/{groupName}")
+    @Operation(summary = "更新 LDAP 用户组", description = "更新 posixGroup 的 gidNumber、描述和 memberUid。")
+    public Map<String, Object> updateLdapGroup(@PathVariable String groupName,
+                                               @RequestParam(required = false) String cluster,
+                                               @RequestBody Map<String, Object> body,
+                                               HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可更新 LDAP 用户组");
+        requireCluster(cluster, "请选择所属集群后再更新 LDAP 用户组");
+        Long gidNumber = longBodyValue(body, "gidNumber");
+        String description = body != null && body.containsKey("description") ? stringBodyValue(body, "description") : null;
+        List<String> memberUids = null;
+        if (body != null && body.get("members") instanceof List) {
+            memberUids = new ArrayList<>();
+            for (Object item : (List<?>) body.get("members")) {
+                if (item != null) {
+                    memberUids.add(String.valueOf(item));
+                }
+            }
+        }
+        return ldapService.updatePosixGroup(cluster, groupName, gidNumber, description, memberUids);
+    }
+
+    @PutMapping("/ldap-groups/{groupName}/members")
+    @Operation(summary = "更新 LDAP 用户组成员", description = "批量替换 posixGroup 的 memberUid 列表。")
+    public Map<String, Object> updateLdapGroupMembers(@PathVariable String groupName,
+                                                      @RequestParam(required = false) String cluster,
+                                                      @RequestBody Map<String, Object> body,
+                                                      HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可更新 LDAP 用户组成员");
+        requireCluster(cluster, "请选择所属集群后再更新 LDAP 用户组成员");
+        List<String> memberUids = new ArrayList<>();
+        if (body != null && body.get("members") instanceof List) {
+            for (Object item : (List<?>) body.get("members")) {
+                if (item != null) {
+                    memberUids.add(String.valueOf(item));
+                }
+            }
+        }
+        return ldapService.updatePosixGroupMembers(cluster, groupName, memberUids);
+    }
+
+    @DeleteMapping("/ldap-groups/{groupName}")
+    @Operation(summary = "删除 LDAP 用户组", description = "删除 posixGroup。若组仍为用户主组则拒绝删除。")
+    public Map<String, Object> deleteLdapGroup(@PathVariable String groupName,
+                                               @RequestParam(required = false) String cluster,
+                                               @RequestParam(defaultValue = "false") boolean force,
+                                               HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可删除 LDAP 用户组");
+        requireCluster(cluster, "请选择所属集群后再删除 LDAP 用户组");
+        return ldapService.deletePosixGroup(cluster, groupName, force);
+    }
+
+    @GetMapping("/user/{username}/ldap-group")
+    @Operation(summary = "查询用户所属 LDAP 组", description = "返回用户当前主组信息，用于 OpenLDAP 用户管理。")
+    public Map<String, Object> getUserLdapGroup(@PathVariable String username,
+                                                @RequestParam(required = false) String cluster,
+                                                HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可查询用户所属 LDAP 组");
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择所属集群后再查询用户所属 LDAP 组");
+        }
+        return ldapService.getUserPrimaryGroup(cluster, username);
+    }
+
+    @PutMapping("/user/{username}/ldap-group")
+    @Operation(summary = "修改用户所属 LDAP 组", description = "更新 OpenLDAP 用户主组，并同步组 memberUid。")
+    public Map<String, Object> updateUserLdapGroup(@PathVariable String username,
+                                                   @RequestParam(required = false) String cluster,
+                                                   @RequestBody Map<String, Object> body,
+                                                   HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可修改用户所属 LDAP 组");
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择所属集群后再修改用户所属 LDAP 组");
+        }
+        String groupName = body == null ? null : (body.get("groupName") == null ? null : String.valueOf(body.get("groupName")));
+        if (groupName == null || groupName.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择新的 LDAP 用户组");
+        }
+        Map<String, Object> result = ldapService.updateUserPrimaryGroup(cluster, username, groupName.trim());
+        refreshStoredLdapData(username, resolveClusterName(cluster), cluster);
+        return result;
+    }
+
+    @GetMapping("/user/{username}/ldap-profile")
+    @Operation(summary = "查询用户完整 LDAP 属性", description = "返回 LDAP 原始属性、主组、附加组和锁定状态。")
+    public Map<String, Object> getUserLdapProfile(@PathVariable String username,
+                                                  @RequestParam(required = false) String cluster,
+                                                  HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可查询用户 LDAP 属性");
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择所属集群后再查询用户 LDAP 属性");
+        }
+        return ldapService.getUserLdapProfile(cluster, username);
+    }
+
+    @PutMapping("/user/{username}/ldap-password")
+    @Operation(summary = "重置 LDAP 密码", description = "重置 OpenLDAP 用户密码，并同步更新 DGA 本地加密密码。")
+    public Map<String, Object> resetUserLdapPassword(@PathVariable String username,
+                                                     @RequestParam(required = false) String cluster,
+                                                     @RequestBody Map<String, Object> body,
+                                                     HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可重置 LDAP 密码");
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择所属集群后再重置 LDAP 密码");
+        }
+        String password = body == null ? null : (body.get("password") == null ? null : String.valueOf(body.get("password")));
+        if (password == null || password.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请输入新的 LDAP 密码");
+        }
+        Map<String, Object> result = ldapService.resetUserPassword(cluster, username, password);
+        DgaUser user = dgaUserRepository.findByUsernameAndClusterName(username, resolveClusterName(cluster));
+        if (user != null) {
+            user.setPassword(passwordEncoder.encode(password));
+            dgaUserRepository.save(user);
+        }
+        return result;
+    }
+
+    @PutMapping("/user/{username}/ldap-lock")
+    @Operation(summary = "锁定或解锁 LDAP 用户", description = "通过 OpenLDAP 条目属性控制用户锁定状态。")
+    public Map<String, Object> updateUserLdapLock(@PathVariable String username,
+                                                  @RequestParam(required = false) String cluster,
+                                                  @RequestBody Map<String, Object> body,
+                                                  HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可锁定或解锁 LDAP 用户");
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择所属集群后再更新锁定状态");
+        }
+        Object lockedValue = body == null ? null : body.get("locked");
+        if (!(lockedValue instanceof Boolean)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "locked 字段必须为 true 或 false");
+        }
+        Map<String, Object> result = ldapService.updateUserLockStatus(cluster, username, (Boolean) lockedValue);
+        refreshStoredLdapData(username, resolveClusterName(cluster), cluster);
+        return result;
+    }
+
+    @GetMapping("/user/{username}/ldap-supplementary-groups")
+    @Operation(summary = "查询用户附加 LDAP 组", description = "返回用户当前附加组列表，不含主组。")
+    public List<Map<String, Object>> getUserSupplementaryGroups(@PathVariable String username,
+                                                                @RequestParam(required = false) String cluster,
+                                                                HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可查询用户附加组");
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择所属集群后再查询用户附加组");
+        }
+        return ldapService.getUserSupplementaryGroups(cluster, username);
+    }
+
+    @PutMapping("/user/{username}/ldap-supplementary-groups")
+    @Operation(summary = "更新用户附加 LDAP 组", description = "批量更新用户附加组 memberUid，不修改主组。")
+    public Map<String, Object> updateUserSupplementaryGroups(@PathVariable String username,
+                                                             @RequestParam(required = false) String cluster,
+                                                             @RequestBody Map<String, Object> body,
+                                                             HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可更新用户附加组");
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择所属集群后再更新用户附加组");
+        }
+        List<String> groupNames = new ArrayList<>();
+        if (body != null && body.get("groupNames") instanceof List) {
+            for (Object item : (List<?>) body.get("groupNames")) {
+                if (item != null) {
+                    groupNames.add(String.valueOf(item));
+                }
+            }
+        }
+        Map<String, Object> result = ldapService.updateUserSupplementaryGroups(cluster, username, groupNames);
+        refreshStoredLdapData(username, resolveClusterName(cluster), cluster);
+        return result;
+    }
+
+    @PostMapping("/user/{username}/repair-ldap")
+    @Operation(summary = "修复 OpenLDAP 用户系统属性", description = "为 OpenLDAP 创建的用户补齐 POSIX 账号属性，使其可被操作系统识别。")
+    public Map<String, Object> repairLdapUser(@PathVariable String username,
+                                              @RequestParam(required = false) String cluster,
+                                              HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可修复 OpenLDAP 用户");
+        String clusterName = resolveClusterName(cluster);
+        DgaUser user = dgaUserRepository.findByUsernameAndClusterName(username, clusterName);
+        if (user == null) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND,
+                    "用户 " + username + " 不存在于集群 " + clusterName);
+        }
+        String strategy = user.getCreationStrategy() == null ? "" : user.getCreationStrategy().toUpperCase();
+        if (!isLdapManagedStrategy(strategy)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "仅支持修复 OpenLDAP/LDAP 用户，当前来源为: " + user.getCreationStrategy());
+        }
+        Map<String, Object> result = ldapService.repairPosixAccount(cluster, username);
+        refreshStoredLdapData(username, clusterName, cluster);
+        return result;
     }
     
     @PostMapping("/import")
@@ -257,6 +514,7 @@ public class AccessController {
             Map<String, Object> searchInfo = ldapService.describeUserSearch(cluster);
             int inserted = 0;
             int updated = 0;
+            int skipped = 0;
             int repaired = 0;
             int failed = 0;
             List<Map<String, Object>> failures = new ArrayList<>();
@@ -277,16 +535,22 @@ public class AccessController {
                     } else if (!clusterName.equals(user.getClusterName())) {
                         isLegacyRepair = true;
                     }
+                    Map<String, Object> before = isInsert ? null : importComparableSnapshot(user);
                     user.setFirstName(firstNonBlank(ldapValue(u, "givenName"), ldapValue(u, "cn"), username));
                     user.setLastName(firstNonBlank(ldapValue(u, "sn"), username));
                     user.setEmail(ldapValue(u, "mail"));
                     user.setCreationStrategy("LDAP_IMPORT");
                     user.setClusterName(clusterName);
                     user.setDeleted(false);
-                    dgaUserRepository.save(user);
+                    syncDgaUserFromLdap(user, cluster, username);
+                    Map<String, Object> after = importComparableSnapshot(user);
                     if (isInsert) {
+                        dgaUserRepository.save(user);
                         inserted++;
+                    } else if (before.equals(after)) {
+                        skipped++;
                     } else {
+                        dgaUserRepository.save(user);
                         updated++;
                         if (isLegacyRepair) {
                             repaired++;
@@ -307,11 +571,12 @@ public class AccessController {
             result.put("total", ldapUsers.size());
             result.put("inserted", inserted);
             result.put("updated", updated);
+            result.put("skipped", skipped);
             result.put("repaired", repaired);
             result.put("failed", failed);
             result.put("failures", failures);
             result.put("search", searchInfo);
-            result.put("message", buildImportMessage(ldapUsers.size(), inserted, updated, repaired, failed, searchInfo));
+            result.put("message", buildImportMessage(ldapUsers.size(), inserted, updated, skipped, repaired, failed, searchInfo));
             return result;
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
@@ -319,7 +584,7 @@ public class AccessController {
         }
     }
 
-    private String buildImportMessage(int total, int inserted, int updated, int repaired, int failed, Map<String, Object> searchInfo) {
+    private String buildImportMessage(int total, int inserted, int updated, int skipped, int repaired, int failed, Map<String, Object> searchInfo) {
         if (total == 0) {
             Object searchBaseDn = searchInfo == null ? null : searchInfo.get("searchBaseDn");
             Object filter = searchInfo == null ? "(uid=*)" : searchInfo.getOrDefault("filter", "(uid=*)");
@@ -328,7 +593,125 @@ public class AccessController {
                     + "，过滤条件: " + filter;
         }
         String repairedText = repaired > 0 ? "，历史修复 " + repaired : "";
-        return "导入完成：新增 " + inserted + "，更新 " + updated + repairedText + "，失败 " + failed;
+        return "导入完成：新增 " + inserted + "，更新 " + updated + "，跳过 " + skipped + repairedText + "，失败 " + failed;
+    }
+
+    @PostMapping("/import-auth-backend")
+    @Operation(summary = "导入 SQL 授权后端用户", description = "从 StarRocks 或 Doris 授权后端拉取用户，并尽量匹配当前用户表执行新增或更新。")
+    public Map<String, Object> importAuthBackendUsers(@RequestParam(required = false) String cluster,
+                                                      HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可导入授权后端用户");
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请先选择具体 StarRocks 或 Doris 集群后再导入用户");
+        }
+        com.dga.cluster.entity.Cluster targetCluster = resolveCluster(cluster);
+        String clusterName = targetCluster != null && targetCluster.getClusterName() != null
+                ? targetCluster.getClusterName()
+                : resolveClusterName(cluster);
+        String type = targetCluster != null && targetCluster.getType() != null ? targetCluster.getType().toUpperCase() : "";
+        String sqlEngine = resolveSqlAuthEngine(cluster, targetCluster);
+        if (sqlEngine == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前集群不是 StarRocks 或 Doris，请使用 OpenLDAP 导入");
+        }
+        dgaUserSchemaService.ensureClusterScopedUsernameConstraint();
+        try {
+            List<String> principals = authorizationService.listPrincipals(cluster);
+            int inserted = 0;
+            int updated = 0;
+            int skipped = 0;
+            int repaired = 0;
+            int failed = 0;
+            List<Map<String, Object>> failures = new ArrayList<>();
+            String strategy = sqlEngine;
+            for (String principal : principals) {
+                try {
+                    String username = principal == null ? null : principal.trim();
+                    if (username == null || username.isEmpty()) {
+                        throw new IllegalArgumentException("授权后端用户为空");
+                    }
+                    DgaUser user = findImportTargetUser(username, targetCluster, clusterName);
+                    boolean isInsert = user == null;
+                    boolean isLegacyRepair = false;
+                    if (isInsert) {
+                        user = new DgaUser();
+                        user.setUsername(username);
+                    } else if (!clusterName.equals(user.getClusterName())) {
+                        isLegacyRepair = true;
+                    }
+                    Map<String, Object> before = isInsert ? null : importComparableSnapshot(user);
+                    user.setFirstName(firstNonBlank(user.getFirstName(), username));
+                    user.setLastName(firstNonBlank(user.getLastName(), username));
+                    user.setDisplayName(firstNonBlank(user.getDisplayName(), username));
+                    user.setCreationStrategy(strategy);
+                    user.setClusterName(clusterName);
+                    user.setDeleted(false);
+                    Map<String, Object> after = importComparableSnapshot(user);
+                    if (isInsert) {
+                        dgaUserRepository.save(user);
+                        inserted++;
+                    } else if (before.equals(after)) {
+                        skipped++;
+                    } else {
+                        dgaUserRepository.save(user);
+                        updated++;
+                        if (isLegacyRepair) {
+                            repaired++;
+                        }
+                    }
+                } catch (Exception e) {
+                    failed++;
+                    Map<String, Object> failure = new HashMap<>();
+                    failure.put("entry", principal);
+                    failure.put("message", e.getMessage());
+                    failures.add(failure);
+                }
+            }
+            Map<String, Object> result = new HashMap<>();
+            result.put("cluster", clusterName);
+            result.put("engine", strategy);
+            result.put("total", principals.size());
+            result.put("inserted", inserted);
+            result.put("updated", updated);
+            result.put("skipped", skipped);
+            result.put("repaired", repaired);
+            result.put("failed", failed);
+            result.put("failures", failures);
+            result.put("message", buildAuthBackendImportMessage(strategy, principals.size(), inserted, updated, skipped, repaired, failed));
+            return result;
+        } catch (Exception e) {
+            String message = e.getMessage() == null ? "授权后端用户导入失败" : e.getMessage();
+            if (message.contains("Access denied") && message.contains("GRANT")) {
+                message = "StarRocks 端点账号缺少 SYSTEM 上的 GRANT 权限，无法执行 SHOW USERS 查询授权用户";
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message, e);
+        }
+    }
+
+    private String buildAuthBackendImportMessage(String engine, int total, int inserted, int updated, int skipped, int repaired, int failed) {
+        String repairedText = repaired > 0 ? "，历史修复 " + repaired : "";
+        return engine + " 用户导入完成：发现 " + total + "，新增 " + inserted + "，更新 " + updated + "，跳过 " + skipped + repairedText + "，失败 " + failed;
+    }
+
+    private void validateSqlAuthUsername(String username, String clusterType) {
+        if (username == null || username.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "用户名不能为空");
+        }
+        String text = username.trim();
+        String user = text;
+        String host = "%";
+        int atIndex = text.indexOf('@');
+        if (atIndex > 0) {
+            user = text.substring(0, atIndex).trim();
+            host = text.substring(atIndex + 1).trim();
+        }
+        if (!user.matches("^[A-Za-z][A-Za-z0-9_]{1,63}$")) {
+            String engine = clusterType != null && clusterType.toUpperCase().contains("DORIS") ? "Doris" : "StarRocks";
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    engine + " 用户名必须以字母开头，只能包含字母、数字、下划线，长度 2-64；如需指定 host 可使用 user@host");
+        }
+        if (!"%".equals(host) && !host.matches("^[A-Za-z0-9_.%-]+$")) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "用户 host 只能包含字母、数字、下划线、点、百分号和横线");
+        }
     }
 
     @PostMapping("/sync/{username}")
@@ -336,7 +719,10 @@ public class AccessController {
     public String syncUserPermissions(@PathVariable String username, @RequestParam(required = false) String cluster) {
         String targetCluster = (cluster != null && !cluster.isEmpty()) ? cluster : "CDH-Cluster-01";
         
-        List<Map<String, Object>> hivePermsRaw = hiveAuthService.getUserPermissions(username, targetCluster);
+        String sqlEngine = resolveSqlAuthEngine(targetCluster, resolveCluster(targetCluster));
+        List<Map<String, Object>> hivePermsRaw = sqlEngine != null
+                ? authorizationService.getUserPermissions(username, targetCluster)
+                : hiveAuthService.getUserPermissions(username, targetCluster);
         Set<String> hivePermKeys = new HashSet<>();
         List<UserHiveAccess> toSave = new ArrayList<>();
         
@@ -431,14 +817,19 @@ public class AccessController {
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createTime"));
         List<String> excludedStrategies = java.util.Arrays.asList("SELF_REGISTER", "SELF_REG");
         
+        Page<DgaUser> storedUsers;
         if (cluster != null && !cluster.isEmpty()) {
-            cluster = resolveClusterName(cluster);
             if (query != null && !query.isEmpty()) {
-                return dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+                storedUsers = dgaUserRepository.findByClusterIdentifierAndIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
                         cluster, excludedStrategies, query, pageable);
+            } else {
+                storedUsers = dgaUserRepository.findByClusterIdentifierAndIsDeletedFalseAndCreationStrategyNotIn(
+                        cluster, excludedStrategies, pageable);
             }
-            return dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(
-                    cluster, excludedStrategies, pageable);
+            if (!storedUsers.isEmpty()) {
+                return storedUsers;
+            }
+            return livePrincipalUsers(cluster, query, pageable);
         }
         if (query != null && !query.isEmpty()) {
             return dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
@@ -446,6 +837,35 @@ public class AccessController {
         }
         return dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(
                 excludedStrategies, pageable);
+    }
+
+    private Page<DgaUser> livePrincipalUsers(String cluster, String query, Pageable pageable) {
+        List<String> principals = authorizationService.listPrincipals(cluster);
+        String keyword = query == null ? null : query.trim().toLowerCase();
+        List<DgaUser> users = new ArrayList<>();
+        com.dga.cluster.entity.Cluster clusterObject = resolveCluster(cluster);
+        String clusterName = clusterObject != null && clusterObject.getClusterName() != null ? clusterObject.getClusterName() : cluster;
+        String type = clusterObject != null && clusterObject.getType() != null ? clusterObject.getType().toUpperCase() : "";
+        String sqlEngine = resolveSqlAuthEngine(cluster, clusterObject);
+        String strategy = sqlEngine != null ? sqlEngine : "LIVE_AUTH_BACKEND";
+        for (String principal : principals) {
+            if (principal == null || principal.trim().isEmpty()) {
+                continue;
+            }
+            String username = principal.trim();
+            if (keyword != null && !keyword.isEmpty() && !username.toLowerCase().contains(keyword)) {
+                continue;
+            }
+            DgaUser user = new DgaUser();
+            user.setUsername(username);
+            user.setClusterName(clusterName);
+            user.setCreationStrategy(strategy);
+            user.setDeleted(false);
+            users.add(user);
+        }
+        int start = Math.min((int) pageable.getOffset(), users.size());
+        int end = Math.min(start + pageable.getPageSize(), users.size());
+        return new org.springframework.data.domain.PageImpl<>(users.subList(start, end), pageable, users.size());
     }
 
     @PutMapping("/user/{username}/protection")
@@ -820,7 +1240,7 @@ public class AccessController {
     }
     
     @DeleteMapping("/user/{username}")
-    @Operation(summary = "删除权限用户", description = "回收权限、删除 LDAP 用户并软删除 DGA 用户记录。")
+    @Operation(summary = "删除权限用户", description = "按当前授权后端回收权限；LDAP 用户同步删除目录账号，SQL 授权后端用户只软删除平台记录。")
     @org.springframework.transaction.annotation.Transactional
     public String deleteUser(@PathVariable String username,
                              @RequestParam(required = false) String cluster,
@@ -831,29 +1251,40 @@ public class AccessController {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "删除用户必须指定所属集群");
         }
         String clusterName = resolveClusterName(cluster);
+        com.dga.cluster.entity.Cluster targetCluster = resolveCluster(cluster);
+        String sqlEngine = resolveSqlAuthEngine(cluster, targetCluster);
         DgaUser user = dgaUserRepository.findByUsernameAndClusterName(username, clusterName);
         if (user != null) {
             if (isProtectedBigDataUser(user)) {
                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "保护用户禁止删除: " + username);
             }
-            // 1. Revoke Hive Permissions
-            try {
-                hiveAuthService.revokeAll(username, clusterName);
-            } catch (Throwable e) {
-                 System.err.println("Failed to revoke Hive permissions: " + e.getMessage());
-                 throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                         "删除用户前回收权限失败，请处理后重试: " + readableAuthorizationError(new Exception(e)), e);
-            }
-
-            // 2. Delete user from the identity backend selected by creation strategy.
-            try {
-                ldapService.deleteUser(clusterName, username);
-            } catch (Exception e) {
-                System.err.println("Failed to delete from OpenLDAP: " + e.getMessage());
-                String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
-                if (!(msg.contains("not found") || msg.contains("doesn't exist") || msg.contains("does not exist") || msg.contains("no such"))) {
+            boolean sqlAuthUser = sqlEngine != null || isSqlCreationStrategy(user.getCreationStrategy());
+            if (sqlAuthUser) {
+                try {
+                    authorizationService.revokeAll(username, cluster);
+                } catch (Throwable e) {
+                    System.err.println("Failed to revoke SQL authorization permissions: " + e.getMessage());
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                            "OpenLDAP 删除失败 (" + clusterName + "): " + e.getMessage(), e);
+                            "删除用户前回收授权后端权限失败，请处理后重试: " + readableAuthorizationError(new Exception(e)), e);
+                }
+            } else {
+                try {
+                    hiveAuthService.revokeAll(username, clusterName);
+                } catch (Throwable e) {
+                     System.err.println("Failed to revoke Hive permissions: " + e.getMessage());
+                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                             "删除用户前回收权限失败，请处理后重试: " + readableAuthorizationError(new Exception(e)), e);
+                }
+
+                try {
+                    ldapService.deleteUser(clusterName, username);
+                } catch (Exception e) {
+                    System.err.println("Failed to delete from OpenLDAP: " + e.getMessage());
+                    String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+                    if (!(msg.contains("not found") || msg.contains("doesn't exist") || msg.contains("does not exist") || msg.contains("no such"))) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                                "OpenLDAP 删除失败 (" + clusterName + "): " + e.getMessage(), e);
+                    }
                 }
             }
 
@@ -870,7 +1301,7 @@ public class AccessController {
                 // Non-blocking, but logged
             }
             
-            return "User permissions revoked, deleted from backend, and soft deleted from DGA system: " + username;
+            return "User permissions revoked and soft deleted from DGA system: " + username;
         } else {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在: " + username + " (" + clusterName + ")");
         }
@@ -884,6 +1315,35 @@ public class AccessController {
             return Boolean.TRUE.equals(user.getProtectedUser());
         }
         return PROTECTED_BIGDATA_USERS.contains(user.getUsername().trim().toLowerCase());
+    }
+
+    private boolean isLdapManagedStrategy(String strategy) {
+        String value = strategy == null ? "" : strategy.trim().toUpperCase();
+        return "OPENLDAP".equals(value) || "LDAP".equals(value) || "LDAP_IMPORT".equals(value);
+    }
+
+    private void requireCluster(String cluster, String message) {
+        if (cluster == null || cluster.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
+        }
+    }
+
+    private String stringBodyValue(Map<String, Object> body, String key) {
+        if (body == null || !body.containsKey(key) || body.get(key) == null) {
+            return null;
+        }
+        return String.valueOf(body.get(key));
+    }
+
+    private Long longBodyValue(Map<String, Object> body, String key) {
+        if (body == null || body.get(key) == null || String.valueOf(body.get(key)).trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(String.valueOf(body.get(key)).trim());
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, key + " 必须是数字", e);
+        }
     }
 
     private com.dga.cluster.entity.Cluster resolveCluster(String clusterIdentifier) {
@@ -907,6 +1367,50 @@ public class AccessController {
             return "CDH-Cluster-01";
         }
         return clusterIdentifier.trim();
+    }
+
+    private String resolveSqlAuthEngine(String clusterIdentifier, com.dga.cluster.entity.Cluster targetCluster) {
+        String type = targetCluster != null && targetCluster.getType() != null ? targetCluster.getType() : "";
+        if (isDorisClusterType(type)) {
+            return "DORIS";
+        }
+        if (isStarRocksClusterType(type)) {
+            return "STARROCKS";
+        }
+        try {
+            AuthorizationCapability capability = authorizationService.capability(clusterIdentifier);
+            String backend = capability != null && capability.getAuthBackend() != null ? capability.getAuthBackend().toUpperCase() : "";
+            String engine = capability != null && capability.getEngineType() != null ? capability.getEngineType().toUpperCase() : "";
+            String combined = backend + " " + engine;
+            if (combined.contains("DORIS")) {
+                return "DORIS";
+            }
+            if (combined.contains("STARROCKS") || combined.contains("STAR_ROCKS") || combined.contains("STAR")) {
+                return "STARROCKS";
+            }
+        } catch (Exception ignored) {
+        }
+        return null;
+    }
+
+    private boolean isDorisClusterType(String type) {
+        return type != null && type.toUpperCase().contains("DORIS");
+    }
+
+    private boolean isStarRocksClusterType(String type) {
+        if (type == null) {
+            return false;
+        }
+        String normalized = type.toUpperCase().replaceAll("[^A-Z0-9]", "");
+        return "SR".equals(normalized) || normalized.contains("STARROCKS") || normalized.contains("STAR");
+    }
+
+    private boolean isSqlCreationStrategy(String strategy) {
+        if (strategy == null) {
+            return false;
+        }
+        String normalized = strategy.toUpperCase();
+        return normalized.contains("STARROCKS") || normalized.contains("DORIS") || normalized.contains("LIVE_AUTH");
     }
 
     private DgaUser findImportTargetUser(String username,
@@ -970,6 +1474,116 @@ public class AccessController {
             }
         }
         return null;
+    }
+
+    private void refreshStoredLdapData(String username, String clusterName, String clusterIdentifier) {
+        DgaUser user = dgaUserRepository.findByUsernameAndClusterName(username, clusterName);
+        if (user == null) {
+            return;
+        }
+        syncDgaUserFromLdap(user, clusterIdentifier, username);
+        dgaUserRepository.save(user);
+    }
+
+    private void syncDgaUserFromLdap(DgaUser user, String clusterIdentifier, String username) {
+        try {
+            Map<String, Object> profile = ldapService.getUserLdapProfile(clusterIdentifier, username);
+            syncDgaUserFromLdapSnapshot(user, profile, clusterIdentifier);
+        } catch (Exception e) {
+            System.err.println("Failed to sync LDAP attributes for " + username + ": " + e.getMessage());
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private void syncDgaUserFromLdapSnapshot(DgaUser user, Map<String, Object> snapshot, String clusterIdentifier) {
+        if (user == null || snapshot == null) {
+            return;
+        }
+        Map<String, Object> attributes = snapshot.get("attributes") instanceof Map
+                ? (Map<String, Object>) snapshot.get("attributes") : snapshot;
+        user.setDisplayName(firstNonBlank(ldapValue(attributes, "displayName"), user.getDisplayName(), ldapValue(attributes, "cn")));
+        user.setFirstName(firstNonBlank(ldapValue(attributes, "givenName"), user.getFirstName(), ldapValue(attributes, "cn")));
+        user.setLastName(firstNonBlank(ldapValue(attributes, "sn"), user.getLastName(), user.getUsername()));
+        user.setEmail(firstNonBlank(ldapValue(attributes, "mail"), user.getEmail()));
+        user.setLdapDn(firstNonBlank(ldapValue(snapshot, "dn"), user.getLdapDn()));
+        user.setUidNumber(parseLongValue(attributes.get("uidNumber")));
+        user.setGidNumber(parseLongValue(attributes.get("gidNumber")));
+        user.setHomeDirectory(firstNonBlank(ldapValue(attributes, "homeDirectory"), user.getHomeDirectory()));
+        user.setLoginShell(firstNonBlank(ldapValue(attributes, "loginShell"), user.getLoginShell()));
+
+        Object primaryGroup = snapshot.get("primaryGroup");
+        if (primaryGroup instanceof Map) {
+            user.setPrimaryGroupName(firstNonBlank(ldapValue((Map<String, Object>) primaryGroup, "name"), user.getPrimaryGroupName()));
+        }
+        Object supplementary = snapshot.get("supplementaryGroups");
+        if (supplementary instanceof List) {
+            List<String> names = new ArrayList<>();
+            for (Object item : (List<?>) supplementary) {
+                if (item instanceof Map) {
+                    String name = ldapValue((Map<String, Object>) item, "name");
+                    if (name != null && !name.isEmpty()) {
+                        names.add(name);
+                    }
+                }
+            }
+            user.setSupplementaryGroups(names.isEmpty() ? null : String.join(",", names));
+        }
+        Object locked = snapshot.get("locked");
+        if (locked instanceof Boolean) {
+            user.setLdapLocked((Boolean) locked);
+        }
+        if (attributes instanceof Map) {
+            try {
+                user.setLdapAttributesJson(objectMapper.writeValueAsString(attributes));
+            } catch (Exception e) {
+                System.err.println("Failed to serialize LDAP attributes for " + user.getUsername() + ": " + e.getMessage());
+            }
+        } else {
+            try {
+                user.setLdapAttributesJson(objectMapper.writeValueAsString(snapshot));
+            } catch (Exception e) {
+                System.err.println("Failed to serialize LDAP snapshot for " + user.getUsername() + ": " + e.getMessage());
+            }
+        }
+        if (clusterIdentifier != null && !clusterIdentifier.trim().isEmpty()) {
+            user.setClusterName(resolveClusterName(clusterIdentifier));
+        }
+    }
+
+    private Map<String, Object> importComparableSnapshot(DgaUser user) {
+        Map<String, Object> snapshot = new TreeMap<>();
+        snapshot.put("username", user.getUsername());
+        snapshot.put("firstName", user.getFirstName());
+        snapshot.put("lastName", user.getLastName());
+        snapshot.put("displayName", user.getDisplayName());
+        snapshot.put("email", user.getEmail());
+        snapshot.put("creationStrategy", user.getCreationStrategy());
+        snapshot.put("clusterName", user.getClusterName());
+        snapshot.put("deleted", Boolean.TRUE.equals(user.getDeleted()));
+        snapshot.put("ldapDn", user.getLdapDn());
+        snapshot.put("uidNumber", user.getUidNumber());
+        snapshot.put("gidNumber", user.getGidNumber());
+        snapshot.put("homeDirectory", user.getHomeDirectory());
+        snapshot.put("loginShell", user.getLoginShell());
+        snapshot.put("primaryGroupName", user.getPrimaryGroupName());
+        snapshot.put("supplementaryGroups", user.getSupplementaryGroups());
+        snapshot.put("ldapLocked", user.getLdapLocked());
+        snapshot.put("ldapAttributesJson", user.getLdapAttributesJson());
+        return snapshot;
+    }
+
+    private Long parseLongValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(value).trim());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private GrantCommand buildGrantCommand(String username, String cluster, String database,

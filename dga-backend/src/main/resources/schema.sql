@@ -121,6 +121,33 @@ CREATE TABLE IF NOT EXISTS `dga_table_business_metadata` (
   INDEX `idx_business_owner` (`business_owner`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='表业务元数据';
 
+CREATE TABLE IF NOT EXISTS `dga_metadata_context_suggestion` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `table_id` BIGINT NOT NULL,
+  `column_id` BIGINT,
+  `data_source_id` BIGINT,
+  `source_type` VARCHAR(50) NOT NULL,
+  `source_endpoint_id` BIGINT NOT NULL,
+  `project_name` VARCHAR(255),
+  `flow_name` VARCHAR(255),
+  `job_name` VARCHAR(255),
+  `context_type` VARCHAR(50) NOT NULL COMMENT 'COLUMN_COMMENT, SCHEDULER_CONTEXT',
+  `suggested_value` TEXT,
+  `evidence` TEXT,
+  `confidence` VARCHAR(20),
+  `status` VARCHAR(20) DEFAULT 'PENDING' COMMENT 'PENDING, APPLIED, REJECTED',
+  `run_id` VARCHAR(100),
+  `parsed_at` DATETIME,
+  `applied_at` DATETIME,
+  `applied_by` VARCHAR(100),
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_context_suggestion_table` (`table_id`, `status`, `context_type`),
+  INDEX `idx_context_suggestion_column` (`column_id`, `status`),
+  INDEX `idx_context_suggestion_source` (`source_endpoint_id`, `data_source_id`, `run_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='元数据上下文建议';
+
 CREATE TABLE IF NOT EXISTS `dga_metric_definition` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `metric_name` VARCHAR(255) NOT NULL,
@@ -283,6 +310,16 @@ CREATE TABLE IF NOT EXISTS `dga_users` (
   `email` VARCHAR(255),
   `first_name` VARCHAR(100),
   `last_name` VARCHAR(100),
+  `display_name` VARCHAR(255),
+  `ldap_dn` VARCHAR(500),
+  `uid_number` BIGINT,
+  `gid_number` BIGINT,
+  `home_directory` VARCHAR(255),
+  `login_shell` VARCHAR(100),
+  `primary_group_name` VARCHAR(255),
+  `supplementary_groups` TEXT,
+  `ldap_locked` BOOLEAN DEFAULT FALSE,
+  `ldap_attributes_json` LONGTEXT,
   `creation_strategy` VARCHAR(50) COMMENT 'LDAP, IPA_SSH, IPA_HTTP, SELF_REGISTER',
   `user_type` VARCHAR(30) DEFAULT 'INTERNAL' COMMENT 'INTERNAL, OUTSOURCER, TEMPORARY, SERVICE',
   `expires_at` DATETIME COMMENT 'Required for outsourcer and temporary users',
@@ -510,6 +547,57 @@ CREATE TABLE IF NOT EXISTS `dga_system_setting` (
   INDEX `idx_setting_scope_group` (`scope`, `setting_group`),
   INDEX `idx_setting_key` (`setting_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统与用户设置';
+
+-- 19. Scheduler Task Owner Context
+CREATE TABLE IF NOT EXISTS `dga_scheduler_task_owner` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `cluster_code` VARCHAR(100) NOT NULL,
+  `source_endpoint_id` BIGINT NOT NULL,
+  `source_type` VARCHAR(50) NOT NULL COMMENT 'AZKABAN_DB, DOLPHINSCHEDULER_DB',
+  `project_name` VARCHAR(255) NOT NULL,
+  `flow_name` VARCHAR(255) NOT NULL,
+  `task_name` VARCHAR(255) NOT NULL,
+  `owner` VARCHAR(100),
+  `collaborator_owners` VARCHAR(1000),
+  `owner_source` VARCHAR(50) COMMENT 'MANUAL, AZKABAN_PROJECT',
+  `status` VARCHAR(20) DEFAULT 'ACTIVE',
+  `remark` VARCHAR(1000),
+  `updated_by` VARCHAR(100),
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_scheduler_owner_scope` (`cluster_code`, `source_endpoint_id`, `project_name`, `flow_name`, `task_name`),
+  INDEX `idx_scheduler_owner_cluster` (`cluster_code`, `source_endpoint_id`),
+  INDEX `idx_scheduler_owner_owner` (`owner`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='调度任务责任归属与后续血缘上下文容器';
+
+CREATE TABLE IF NOT EXISTS `dga_scheduler_task_context` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `cluster_code` VARCHAR(100) NOT NULL,
+  `source_type` VARCHAR(50) NOT NULL COMMENT 'AZKABAN_DB, DOLPHINSCHEDULER_DB',
+  `source_endpoint_id` BIGINT NOT NULL,
+  `data_source_id` BIGINT,
+  `project_name` VARCHAR(255) NOT NULL,
+  `flow_name` VARCHAR(255),
+  `task_name` VARCHAR(255),
+  `task_key` VARCHAR(500),
+  `job_path` VARCHAR(1000),
+  `command_text` LONGTEXT,
+  `input_tables` TEXT COMMENT 'JSON array of db.table',
+  `output_tables` TEXT COMMENT 'JSON array of db.table',
+  `matched_table_ids` VARCHAR(2000) COMMENT 'Comma separated metadata table ids matched from input/output tables',
+  `parse_status` VARCHAR(30) DEFAULT 'SUCCESS',
+  `parse_message` VARCHAR(1000),
+  `run_id` VARCHAR(100),
+  `status` VARCHAR(20) DEFAULT 'ACTIVE',
+  `parsed_at` DATETIME,
+  `created_at` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_scheduler_context_scope` (`cluster_code`, `source_endpoint_id`, `project_name`, `flow_name`),
+  INDEX `idx_scheduler_context_task` (`cluster_code`, `source_endpoint_id`, `project_name`, `task_name`),
+  INDEX `idx_scheduler_context_run` (`source_endpoint_id`, `data_source_id`, `run_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='调度任务解析出的表上下文';
 
 
 CREATE TABLE `users` (

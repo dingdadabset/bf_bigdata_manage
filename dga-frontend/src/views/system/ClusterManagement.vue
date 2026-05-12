@@ -169,6 +169,7 @@
                         <a-select-option value="HIVE_SERVER2">HIVE_SERVER2</a-select-option>
                         <a-select-option value="HIVE_METASTORE_DB">HIVE_METASTORE_DB</a-select-option>
                         <a-select-option value="AZKABAN_DB">AZKABAN_DB</a-select-option>
+                        <a-select-option value="AZKABAN_WEB">AZKABAN_WEB</a-select-option>
                         <a-select-option value="DOLPHINSCHEDULER_DB">DOLPHINSCHEDULER_DB</a-select-option>
                         <a-select-option value="STARROCKS_JDBC">STARROCKS_JDBC</a-select-option>
                         <a-select-option value="DORIS_JDBC">DORIS_JDBC</a-select-option>
@@ -380,6 +381,7 @@ export default {
         case 'HIVE_SERVER2': return 'jdbc:hive2://host:10000/default';
         case 'HIVE_METASTORE_DB': return 'jdbc:mysql://host:3306/hive_metastore';
         case 'AZKABAN_DB': return 'jdbc:mysql://host:3306/azkaban';
+        case 'AZKABAN_WEB': return 'http://host:8082';
         case 'DOLPHINSCHEDULER_DB': return 'jdbc:mysql://host:3306/dolphinscheduler';
         case 'STARROCKS_JDBC': return 'jdbc:mysql://host:9030';
         case 'DORIS_JDBC': return 'jdbc:mysql://host:9030';
@@ -418,7 +420,7 @@ export default {
       return 'Ranger serviceName，可选';
     },
     metadataEndpointTypes() {
-      return ['LDAP', 'HIVE_METASTORE_DB', 'AZKABAN_DB', 'DOLPHINSCHEDULER_DB', 'RANGER_DB', 'HDFS', 'YARN', 'HUE'];
+      return ['LDAP', 'HIVE_METASTORE_DB', 'AZKABAN_DB', 'AZKABAN_WEB', 'DOLPHINSCHEDULER_DB', 'RANGER_DB', 'HDFS', 'YARN', 'HUE'];
     }
   },
   methods: {
@@ -542,7 +544,7 @@ export default {
         if (!record.driverKey || record.driverKey === 'builtin-modern') {
           record.driverKey = record.driverProfile === 'MODERN' ? this.defaultHiveDriverKey : this.defaultLegacyHiveDriverKey;
         }
-      } else if (['HIVE_METASTORE_DB', 'AZKABAN_DB', 'DOLPHINSCHEDULER_DB', 'RANGER_DB', 'HDFS', 'YARN', 'HUE'].includes(record.endpointType)) {
+      } else if (['HIVE_METASTORE_DB', 'AZKABAN_DB', 'AZKABAN_WEB', 'DOLPHINSCHEDULER_DB', 'RANGER_DB', 'HDFS', 'YARN', 'HUE'].includes(record.endpointType)) {
         record.authBackend = undefined;
         record.driverProfile = undefined;
         record.driverKey = undefined;
@@ -666,7 +668,7 @@ export default {
           this.activeEndpointIndex = nextIndex > -1 ? nextIndex : Math.max(0, this.endpointForm.length - 1);
         }
       } catch (e) {
-        this.$message.error('端点保存失败: ' + (e.response?.data?.message || e.message));
+        this.$message.error('端点保存失败: ' + this.readableRequestError(e));
       } finally {
         this.$set(record, '_saving', false);
       }
@@ -687,7 +689,7 @@ export default {
           this.$message.error(`连通失败: ${(res.data && res.data.message) || '未知错误'}`);
         }
       } catch (e) {
-        this.$message.error('连通测试失败: ' + (e.response?.data?.message || e.message));
+        this.$message.error('连通测试失败: ' + this.readableRequestError(e));
       } finally {
         this.$set(record, '_testing', false);
       }
@@ -753,6 +755,7 @@ export default {
         case 'HIVE_SERVER2': return 'orange';
         case 'HIVE_METASTORE_DB': return 'volcano';
         case 'AZKABAN_DB': return 'magenta';
+        case 'AZKABAN_WEB': return 'cyan';
         case 'DOLPHINSCHEDULER_DB': return 'purple';
         case 'STARROCKS_JDBC': return 'blue';
         case 'DORIS_JDBC': return 'geekblue';
@@ -775,6 +778,26 @@ export default {
         case 'UNCONFIGURED': return 'red';
         default: return 'default';
       }
+    },
+    readableRequestError(error) {
+      const data = error && error.response && error.response.data;
+      if (data) {
+        if (typeof data === 'string') {
+          return data;
+        }
+        if (data.message) {
+          return data.message;
+        }
+        if (data.error) {
+          return data.error;
+        }
+        try {
+          return JSON.stringify(data);
+        } catch (ignored) {
+          return '请求失败';
+        }
+      }
+      return (error && error.message) || '请求失败';
     }
   }
 };

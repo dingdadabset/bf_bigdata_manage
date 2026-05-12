@@ -1,6 +1,7 @@
 package com.dga.access.config;
 
 import com.dga.access.security.JwtAuthenticationFilter;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -25,13 +26,13 @@ public class SecurityConfig {
     }
 
     @Autowired
-    private ClientRegistrationRepository clientRegistrationRepository;
-
-    @Autowired
-    private OAuth2LoginSuccessHandler oAuth2LoginSuccessHandler;
-
-    @Autowired
     private JwtAuthenticationFilter jwtAuthenticationFilter;
+
+    @Autowired
+    private ObjectProvider<ClientRegistrationRepository> clientRegistrationRepositoryProvider;
+
+    @Autowired
+    private ObjectProvider<OAuth2LoginSuccessHandler> oAuth2LoginSuccessHandlerProvider;
 
     @Bean
     public SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
@@ -64,13 +65,18 @@ public class SecurityConfig {
                 .antMatchers("/api/**").authenticated()
                 .anyRequest().permitAll()
             .and()
-            .oauth2Login()
-            .authorizationEndpoint()
-                .authorizationRequestResolver(new CustomOAuth2AuthorizationRequestResolver(clientRegistrationRepository))
-            .and()
-            .successHandler(oAuth2LoginSuccessHandler)
-            .and()
             .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
+
+        ClientRegistrationRepository clientRegistrationRepository = clientRegistrationRepositoryProvider.getIfAvailable();
+        OAuth2LoginSuccessHandler oAuth2LoginSuccessHandler = oAuth2LoginSuccessHandlerProvider.getIfAvailable();
+        if (clientRegistrationRepository != null && oAuth2LoginSuccessHandler != null) {
+            http
+                .oauth2Login()
+                .authorizationEndpoint()
+                    .authorizationRequestResolver(new CustomOAuth2AuthorizationRequestResolver(clientRegistrationRepository))
+                .and()
+                .successHandler(oAuth2LoginSuccessHandler);
+        }
         return http.build();
     }
 }

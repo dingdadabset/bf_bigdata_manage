@@ -181,6 +181,9 @@ public class ClusterService {
                 case ClusterEndpoint.TYPE_AZKABAN_DB:
                     testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
                     break;
+                case ClusterEndpoint.TYPE_AZKABAN_WEB:
+                    testHttp(testEndpoint);
+                    break;
                 case ClusterEndpoint.TYPE_DOLPHINSCHEDULER_DB:
                     testJdbc("com.mysql.cj.jdbc.Driver", testEndpoint);
                     break;
@@ -209,9 +212,9 @@ public class ClusterService {
             }
             result.put("success", true);
             result.put("message", "连接成功");
-        } catch (Exception e) {
+        } catch (Throwable e) {
             result.put("success", false);
-            result.put("message", e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
+            result.put("message", readableErrorMessage(e));
         }
         result.put("elapsedMs", System.currentTimeMillis() - start);
         return result;
@@ -272,6 +275,7 @@ public class ClusterService {
 
     private boolean isSchedulerEndpoint(String endpointType) {
         return ClusterEndpoint.TYPE_AZKABAN_DB.equals(endpointType)
+                || ClusterEndpoint.TYPE_AZKABAN_WEB.equals(endpointType)
                 || ClusterEndpoint.TYPE_DOLPHINSCHEDULER_DB.equals(endpointType);
     }
 
@@ -513,5 +517,31 @@ public class ClusterService {
 
     private String nullToEmpty(String value) {
         return value == null ? "" : value;
+    }
+
+    private String readableErrorMessage(Throwable error) {
+        if (error == null) {
+            return "未知错误";
+        }
+
+        Throwable root = error;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+
+        String primary = trimToNull(error.getMessage());
+        String rootMessage = trimToNull(root.getMessage());
+        String rootType = root.getClass().getSimpleName();
+
+        if (primary == null && rootMessage == null) {
+            return rootType;
+        }
+        if (primary == null) {
+            return rootType + ": " + rootMessage;
+        }
+        if (root == error || primary.equals(rootMessage) || rootMessage == null) {
+            return primary;
+        }
+        return primary + "；根因: " + rootType + ": " + rootMessage;
     }
 }
