@@ -1,14 +1,23 @@
 package com.dga.access.controller;
 
 import com.dga.access.dto.AccessRequest;
+import com.dga.access.dto.AuthRoleAssignmentRequest;
+import com.dga.access.dto.AuthRolePermissionRequest;
+import com.dga.access.dto.AuthRoleRequest;
+import com.dga.access.dto.AuthRoleView;
 import com.dga.access.dto.BatchGrantRequest;
+import com.dga.access.dto.BatchRoleAssignmentRequest;
+import com.dga.access.dto.BatchRoleAssignmentResult;
 import com.dga.access.dto.CreateUserRequest;
 import com.dga.access.dto.TableGrant;
+import com.dga.access.entity.AuthRolePermission;
 import com.dga.access.entity.DgaUser;
 import com.dga.access.entity.UserResourceAccess;
 import com.dga.access.security.CurrentUser;
+import com.dga.access.repository.AuthRolePermissionRepository;
 import com.dga.access.repository.DgaUserRepository;
 import com.dga.access.service.AdminGuard;
+import com.dga.access.service.AuthRoleService;
 import com.dga.access.service.DgaUserSchemaService;
 import com.dga.access.service.HiveAuthService;
 import com.dga.access.service.IpaHttpService;
@@ -51,8 +60,11 @@ import java.util.TreeMap;
 import java.util.stream.Collectors;
 import java.util.Objects;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.Locale;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.time.format.DateTimeParseException;
 
 @RestController
 @RequestMapping("/api/access")
@@ -101,6 +113,9 @@ public class AccessController {
     private UserResourceAccessRepository userResourceAccessRepository;
 
     @Autowired
+    private AuthRolePermissionRepository authRolePermissionRepository;
+
+    @Autowired
     private AuthorizationService authorizationService;
 
     @Autowired
@@ -118,22 +133,25 @@ public class AccessController {
     @Autowired
     private ObjectMapper objectMapper;
 
+    @Autowired
+    private AuthRoleService authRoleService;
+
     @PostMapping("/grant")
-    public String grantAccess(@RequestBody AccessRequest request) {
+    public String grantAccess(@RequestBody AccessRequest request, HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可执行授权操作");
         String operator = currentOperator();
         try {
             ldapService.createUser(request.getCluster(), request.getUsername(), request.getPassword(), request.getEmail());
         } catch (Exception e) {
             System.err.println("Warning: LDAP create user failed (might already exist): " + e.getMessage());
         }
-        
+
         try {
             hiveAuthService.grantPermission(request.getUsername(), request.getDatabase(), request.getPermission(), request.getCluster());
         } catch (Exception e) {
             System.err.println("Warning: Hive/Ranger grant failed: " + e.getMessage());
         }
-        
-        // Record Access
+
         UserHiveAccess access = new UserHiveAccess();
         access.setUsername(request.getUsername());
         access.setClusterName(request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01");
@@ -148,8 +166,103 @@ public class AccessController {
         return "Access granted successfully for user: " + request.getUsername();
     }
 
+    @PostMapping("/roles")
+    @Operation(summary = "创建 RBAC 角色", description = "创建或更新 DGA RBAC 角色，并同步创建后端角色。")
+    public AuthRoleView createRole(@RequestBody AuthRoleRequest request,
+                                   HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可创建 RBAC 角色");
+        return authRoleService.createOrUpdateRole(request);
+    }
+
+    @PutMapping("/roles/{roleCode}")
+    @Operation(summary = "更新 RBAC 角色", description = "更新角色元数据和状态。")
+    public AuthRoleView updateRole(@PathVariable String roleCode,
+                                   @RequestBody AuthRoleRequest request,
+                                   HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可更新 RBAC 角色");
+        request.setRoleCode(roleCode);
+        return authRoleService.createOrUpdateRole(request);
+    }
+
+    @GetMapping("/roles")
+    @Operation(summary = "查询 RBAC 角色目录", description = "按集群和授权后端过滤 DGA 角色目录。")
+    public List<AuthRoleView> listRoles(@RequestParam(required = false) String cluster,
+                                        @RequestParam(required = false) String authBackend) {
+        return authRoleService.listRoles(cluster, authBackend);
+    }
+
+    @PostMapping("/roles/{roleCode}/permissions")
+    @Operation(summary = "给角色添加权限", description = "把资源权限挂到角色并下发到真实授权后端。")
+    public AuthRoleView addRolePermission(@PathVariable String roleCode,
+                                          @RequestBody AuthRolePermissionRequest request,
+                                          HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可维护 RBAC 角色权限");
+        return authRoleService.addPermission(roleCode, request);
+    }
+
+    @DeleteMapping("/roles/{roleCode}/permissions/{permissionId}")
+    @Operation(summary = "删除角色权限", description = "从角色权限范围中删除指定资源权限，并尽力同步回收后端角色权限。")
+    public AuthRoleView deleteRolePermission(@PathVariable String roleCode,
+                                             @PathVariable Long permissionId,
+                                             HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可维护 RBAC 角色权限");
+        return authRoleService.deletePermission(roleCode, permissionId);
+    }
+
+    @PostMapping("/roles/{roleCode}/assignments")
+    @Operation(summary = "分配角色", description = "把角色分配给用户或组，并尽力同步到后端。")
+    public AuthRoleView addRoleAssignment(@PathVariable String roleCode,
+                                          @RequestBody AuthRoleAssignmentRequest request,
+                                          HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可分配 RBAC 角色");
+        return authRoleService.addAssignment(roleCode, request);
+    }
+
+    @PostMapping("/roles/{roleCode}/assignments/batch/dry-run")
+    @Operation(summary = "批量角色绑定 dry-run", description = "预览一批用户补充角色绑定的影响范围，不修改用户或授权记录。")
+    public BatchRoleAssignmentResult dryRunBatchRoleAssignments(@PathVariable String roleCode,
+                                                               @RequestBody BatchRoleAssignmentRequest request,
+                                                               HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可批量分配 RBAC 角色");
+        return authRoleService.dryRunBatchAssignments(roleCode, request);
+    }
+
+    @PostMapping("/roles/{roleCode}/assignments/batch")
+    @Operation(summary = "批量分配角色", description = "给一批历史用户补充角色绑定记录，并逐用户返回同步状态。")
+    public BatchRoleAssignmentResult batchRoleAssignments(@PathVariable String roleCode,
+                                                         @RequestBody BatchRoleAssignmentRequest request,
+                                                         HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可批量分配 RBAC 角色");
+        return authRoleService.batchAssignUsers(roleCode, request);
+    }
+
+    @GetMapping("/roles/{roleCode}/effective-permissions")
+    @Operation(summary = "查询角色有效权限", description = "查询角色权限和当前绑定对象。")
+    public AuthRoleView roleEffectivePermissions(@PathVariable String roleCode) {
+        return authRoleService.effectivePermissions(roleCode);
+    }
+
+    @DeleteMapping("/roles/{roleCode}/assignments")
+    @Operation(summary = "回收角色绑定", description = "按主体类型和主体名称回收指定角色绑定。")
+    public AuthRoleView revokeRoleAssignment(@PathVariable String roleCode,
+                                             @RequestParam String subjectType,
+                                             @RequestParam String subjectName,
+                                             @RequestParam(required = false) String authBackend,
+                                             HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可回收 RBAC 角色绑定");
+        return authRoleService.revokeAssignment(roleCode, subjectType, subjectName, authBackend);
+    }
+
+    @DeleteMapping("/roles/{roleCode}")
+    @Operation(summary = "删除 RBAC 角色", description = "从 DGA 角色库软删除角色及其本地权限/绑定记录，不自动回收后端权限。")
+    public void deleteRole(@PathVariable String roleCode, HttpServletRequest request) {
+        adminGuard.requireDeletePrivilege(request);
+        authRoleService.deleteRole(roleCode);
+    }
+
     @PostMapping("/user")
-    public String createUser(@RequestBody CreateUserRequest request) {
+    public String createUser(@RequestBody CreateUserRequest request, HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可创建权限用户");
         dgaUserSchemaService.ensureClusterScopedUsernameConstraint();
         String clusterName = resolveClusterName(request.getCluster());
         com.dga.cluster.entity.Cluster targetCluster = resolveCluster(request.getCluster());
@@ -167,8 +280,12 @@ public class AccessController {
         String strategy = request.getCreationStrategy();
         String resultMsg = "User created: " + request.getUsername();
         if (sqlAuthUser) {
-            validateSqlAuthUsername(request.getUsername(), clusterType);
-            authorizationService.createUser(request.getCluster(), request.getUsername(), request.getPassword());
+            validateSqlAuthUsername(request.getUsername(), sqlEngine);
+            try {
+                authorizationService.createUser(request.getCluster(), request.getUsername(), request.getPassword());
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readableAuthorizationError(e), e);
+            }
             strategy = sqlEngine;
             resultMsg = strategy + " user created: " + request.getUsername();
         } else if (strategy == null || strategy.isEmpty() || strategy.toUpperCase().startsWith("SELF")) {
@@ -608,7 +725,6 @@ public class AccessController {
         String clusterName = targetCluster != null && targetCluster.getClusterName() != null
                 ? targetCluster.getClusterName()
                 : resolveClusterName(cluster);
-        String type = targetCluster != null && targetCluster.getType() != null ? targetCluster.getType().toUpperCase() : "";
         String sqlEngine = resolveSqlAuthEngine(cluster, targetCluster);
         if (sqlEngine == null) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前集群不是 StarRocks 或 Doris，请使用 OpenLDAP 导入");
@@ -718,57 +834,55 @@ public class AccessController {
     @Operation(summary = "同步用户权限", description = "从集群授权后端重新拉取指定用户的当前权限，并同步到本地授权记录。")
     public String syncUserPermissions(@PathVariable String username, @RequestParam(required = false) String cluster) {
         String targetCluster = (cluster != null && !cluster.isEmpty()) ? cluster : "CDH-Cluster-01";
-        
+
         String sqlEngine = resolveSqlAuthEngine(targetCluster, resolveCluster(targetCluster));
         List<Map<String, Object>> hivePermsRaw = sqlEngine != null
                 ? authorizationService.getUserPermissions(username, targetCluster)
                 : hiveAuthService.getUserPermissions(username, targetCluster);
         Set<String> hivePermKeys = new HashSet<>();
         List<UserHiveAccess> toSave = new ArrayList<>();
-        
-        for (Map<String, Object> row : hivePermsRaw) {
-             Map<String, Object> lowerRow = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
-             lowerRow.putAll(row);
-             
-             String db = (String) lowerRow.get("database");
-             if (db == null) db = (String) lowerRow.get("database_name");
-             
-             String table = (String) lowerRow.get("table");
-             if (table == null) table = (String) lowerRow.get("table_name");
-             table = normalizeAuthTable(table);
 
-             String perm = (String) lowerRow.get("privilege");
-             if (perm == null) perm = (String) lowerRow.get("permission");
-             
-             if (db == null || perm == null) continue;
-             
-             perm = perm.toUpperCase();
-             
-             String key = db + "|" + (table == null ? "" : table) + "|" + perm;
-             hivePermKeys.add(key);
+        for (Map<String, Object> row : hivePermsRaw) {
+            Map<String, Object> lowerRow = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+            lowerRow.putAll(row);
+
+            String db = (String) lowerRow.get("database");
+            if (db == null) db = (String) lowerRow.get("database_name");
+
+            String table = (String) lowerRow.get("table");
+            if (table == null) table = (String) lowerRow.get("table_name");
+            table = normalizeAuthTable(table);
+
+            String perm = (String) lowerRow.get("privilege");
+            if (perm == null) perm = (String) lowerRow.get("permission");
+
+            if (db == null || perm == null) continue;
+
+            perm = perm.toUpperCase();
+            String key = db + "|" + (table == null ? "" : table) + "|" + perm;
+            hivePermKeys.add(key);
         }
-        
+
         List<UserHiveAccess> localPerms = userHiveAccessRepository.findByUsernameAndIsDeletedFalse(username);
         localPerms = localPerms.stream()
-            .filter(p -> targetCluster.equals(p.getClusterName()))
-            .collect(Collectors.toList());
+                .filter(p -> targetCluster.equals(p.getClusterName()))
+                .collect(Collectors.toList());
 
         int added = 0;
         int removed = 0;
         int updated = 0;
 
-        // Process Hive Perms (Insert/Update)
         for (String key : hivePermKeys) {
             String[] parts = key.split("\\|", -1);
             String db = parts[0];
             String table = parts[1].isEmpty() ? null : parts[1];
             String perm = parts[2];
-            
+
             boolean found = false;
             for (UserHiveAccess local : localPerms) {
-                if (local.getDatabaseName().equals(db) && 
-                    Objects.equals(local.getTableName(), table) &&
-                    local.getPermission().equals(perm)) {
+                if (local.getDatabaseName().equals(db)
+                        && Objects.equals(local.getTableName(), table)
+                        && local.getPermission().equals(perm)) {
                     found = true;
                     if (!"ACTIVE".equals(local.getStatus())) {
                         local.setStatus("ACTIVE");
@@ -778,7 +892,7 @@ public class AccessController {
                     break;
                 }
             }
-            
+
             if (!found) {
                 UserHiveAccess newAccess = new UserHiveAccess();
                 newAccess.setUsername(username);
@@ -792,18 +906,17 @@ public class AccessController {
                 added++;
             }
         }
-        
-        // Process Local Perms (Delete if not in Hive)
+
         for (UserHiveAccess local : localPerms) {
             String key = local.getDatabaseName() + "|" + (local.getTableName() == null ? "" : local.getTableName()) + "|" + local.getPermission();
             if (!hivePermKeys.contains(key)) {
-                local.setDeleted(true); 
+                local.setDeleted(true);
                 local.setStatus("REVOKED");
                 toSave.add(local);
                 removed++;
             }
         }
-        
+
         userHiveAccessRepository.saveAll(toSave);
         return String.format("Sync complete. Added: %d, Updated: %d, Removed: %d", added, updated, removed);
     }
@@ -819,12 +932,13 @@ public class AccessController {
         
         Page<DgaUser> storedUsers;
         if (cluster != null && !cluster.isEmpty()) {
+            String clusterName = resolveClusterName(cluster);
             if (query != null && !query.isEmpty()) {
-                storedUsers = dgaUserRepository.findByClusterIdentifierAndIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
-                        cluster, excludedStrategies, query, pageable);
+                storedUsers = dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+                        clusterName, excludedStrategies, query, pageable);
             } else {
-                storedUsers = dgaUserRepository.findByClusterIdentifierAndIsDeletedFalseAndCreationStrategyNotIn(
-                        cluster, excludedStrategies, pageable);
+                storedUsers = dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(
+                        clusterName, excludedStrategies, pageable);
             }
             if (!storedUsers.isEmpty()) {
                 return storedUsers;
@@ -928,14 +1042,22 @@ public class AccessController {
     }
 
     @GetMapping("/resources/databases")
-    public List<String> listResourceDatabases(@RequestParam(required = false) String cluster) {
-        return authorizationService.listDatabases(cluster);
+    public List<String> listResourceDatabases(@RequestParam(required = false) String cluster,
+                                              @RequestParam(required = false) String authBackend) {
+        return authorizationService.listDatabases(cluster, authBackend);
     }
 
     @GetMapping("/capabilities")
     @Operation(summary = "查询集群授权能力", description = "返回指定集群当前的授权引擎、依赖端点与可用能力。")
-    public AuthorizationCapability authorizationCapability(@RequestParam(required = false) String cluster) {
-        return authorizationService.capability(cluster);
+    public AuthorizationCapability authorizationCapability(@RequestParam(required = false) String cluster,
+                                                           @RequestParam(required = false) String authBackend) {
+        return authorizationService.capability(cluster, authBackend);
+    }
+
+    @GetMapping("/capabilities/backends")
+    @Operation(summary = "查询集群授权后端候选", description = "返回指定集群当前可识别的授权后端能力列表。")
+    public List<AuthorizationCapability> authorizationBackends(@RequestParam(required = false) String cluster) {
+        return authorizationService.backendCapabilities(cluster);
     }
 
     @GetMapping("/hive/tables")
@@ -945,24 +1067,48 @@ public class AccessController {
 
     @GetMapping("/resources/tables")
     public List<String> listResourceTables(@RequestParam("database") String database,
-                                           @RequestParam(required = false) String cluster) {
-        return authorizationService.listTables(cluster, database);
+                                           @RequestParam(required = false) String cluster,
+                                           @RequestParam(required = false) String authBackend) {
+        return authorizationService.listTables(cluster, database, authBackend);
     }
 
     @GetMapping("/resources/principals")
-    public List<String> listResourcePrincipals(@RequestParam(required = false) String cluster) {
+    public List<Map<String, Object>> listResourcePrincipals(@RequestParam(required = false) String cluster,
+                                                            @RequestParam(required = false) String authBackend,
+                                                            @RequestParam(required = false) String subjectType) {
+        String normalizedSubjectType = firstNonBlank(subjectType, "USER").toUpperCase(Locale.ROOT);
+        if ("GROUP".equals(normalizedSubjectType)) {
+            return listGroupPrincipalOptions(cluster, authBackend);
+        }
+        if (!"USER".equals(normalizedSubjectType)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "subjectType 仅支持 USER 或 GROUP");
+        }
+        return listUserPrincipalOptions(cluster, authBackend);
+    }
+
+    private List<Map<String, Object>> listUserPrincipalOptions(String cluster, String authBackend) {
+        TreeMap<String, Map<String, Object>> options = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        boolean backendRequiresExistingUser = authorizationService.requiresExistingBackendUser(cluster, authBackend);
         List<String> principals;
         try {
-            principals = authorizationService.listPrincipals(cluster);
+            principals = authorizationService.listPrincipals(cluster, authBackend);
         } catch (Exception e) {
-            String message = e.getMessage() == null ? "加载授权用户失败" : e.getMessage();
-            if (message.contains("Access denied") && message.contains("GRANT")) {
-                message = "StarRocks 端点账号缺少 SYSTEM 上的 GRANT 权限，无法执行 SHOW USERS 查询授权用户";
-            }
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message, e);
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readablePrincipalListError(e), e);
         }
-        if (principals != null && !principals.isEmpty()) {
-            return principals;
+        boolean rangerBackend = isRangerAuthBackend(authBackend);
+        java.util.Set<String> backendUsers = new java.util.LinkedHashSet<>();
+        if (principals != null) {
+            for (String principal : principals) {
+                String username = firstNonBlank(principal);
+                if (username != null) {
+                    backendUsers.add(lower(username));
+                    options.putIfAbsent(username, principalOption(username, "USER", rangerBackend ? "RANGER_USER" : "AUTH_BACKEND",
+                            true, true, true, true, false, new ArrayList<>()));
+                }
+            }
+        }
+        if (rangerBackend) {
+            return new ArrayList<>(options.values());
         }
         Pageable pageable = PageRequest.of(0, 200, Sort.by(Sort.Direction.DESC, "createTime"));
         List<String> excludedStrategies = java.util.Arrays.asList("SELF_REGISTER", "SELF_REG");
@@ -980,24 +1126,112 @@ public class AccessController {
         } else {
             users = dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(excludedStrategies, pageable);
         }
-        return users.getContent().stream()
-                .map(DgaUser::getUsername)
+        for (DgaUser user : users.getContent()) {
+            String username = firstNonBlank(user.getUsername());
+            if (username == null) {
+                continue;
+            }
+            boolean existsInBackend = backendUsers.contains(lower(username));
+            boolean historical = hasRecordedAccess(username, cluster) || existsInBackend;
+            boolean assignable = !backendRequiresExistingUser || existsInBackend;
+            boolean directExceptionAllowed = historical && (!backendRequiresExistingUser || existsInBackend);
+            boolean requiresRoleBinding = !directExceptionAllowed && assignable;
+            List<String> warnings = new ArrayList<>();
+            if (backendRequiresExistingUser && !existsInBackend) {
+                warnings.add(firstNonBlank(authBackend, "授权后端") + " 未发现该用户，请先创建/导入后再绑定角色或执行直接例外授权。");
+            } else if (!historical) {
+                warnings.add("该对象会被视为新用户，需先完成角色绑定后再执行直接例外授权/回收。");
+            }
+            options.putIfAbsent(username, principalOption(username, "USER", "DGA_USER",
+                    !backendRequiresExistingUser || existsInBackend,
+                    historical,
+                    assignable,
+                    directExceptionAllowed,
+                    requiresRoleBinding,
+                    warnings));
+        }
+        return new ArrayList<>(options.values());
+    }
+
+    private List<Map<String, Object>> listGroupPrincipalOptions(String cluster, String authBackend) {
+        if (isRangerAuthBackend(authBackend)) {
+            return authorizationService.listGroups(cluster, authBackend).stream()
+                    .map(groupName -> principalOption(groupName, "GROUP", "RANGER_GROUP",
+                            true, true, true, false, false, new ArrayList<>()))
+                    .collect(Collectors.toList());
+        }
+        return listGroupPrincipals(cluster).stream()
+                .map(groupName -> principalOption(groupName, "GROUP", "LDAP_GROUP",
+                        true, true, true, false, false, new ArrayList<>()))
                 .collect(Collectors.toList());
+    }
+
+    private boolean isRangerAuthBackend(String authBackend) {
+        return authBackend != null && authBackend.trim().toUpperCase(Locale.ROOT).contains("RANGER");
+    }
+
+    private Map<String, Object> principalOption(String name, String subjectType, String source,
+                                                boolean exists, boolean historical, boolean assignable,
+                                                boolean directExceptionAllowed, boolean requiresRoleBinding,
+                                                List<String> warnings) {
+        Map<String, Object> option = new HashMap<>();
+        option.put("name", name);
+        option.put("value", name);
+        option.put("label", name);
+        option.put("subjectType", subjectType);
+        option.put("source", source);
+        option.put("exists", exists);
+        option.put("historical", historical);
+        option.put("assignable", assignable);
+        option.put("directExceptionAllowed", directExceptionAllowed);
+        option.put("requiresRoleBinding", requiresRoleBinding);
+        option.put("warnings", warnings == null ? new ArrayList<>() : warnings);
+        return option;
+    }
+
+    private String readablePrincipalListError(Exception e) {
+        String message = e.getMessage() == null ? "加载授权用户失败" : e.getMessage();
+        if (message.contains("Access denied") && message.contains("GRANT")) {
+            return "StarRocks 端点账号缺少 SYSTEM 上的 GRANT 权限，无法执行 SHOW USERS 查询授权用户";
+        }
+        return message;
+    }
+
+    private List<String> listGroupPrincipals(String cluster) {
+        try {
+            return ldapService.listPosixGroups(cluster).stream()
+                    .map(group -> group.get("name"))
+                    .filter(Objects::nonNull)
+                    .map(String::valueOf)
+                    .map(String::trim)
+                    .filter(name -> !name.isEmpty())
+                    .distinct()
+                    .sorted(String::compareToIgnoreCase)
+                    .collect(Collectors.toList());
+        } catch (Exception e) {
+            return new ArrayList<>();
+        }
     }
 
     @GetMapping("/resources/permissions")
     @Operation(summary = "查询用户实时权限", description = "查询指定集群授权后端中的实时权限明细，包含库、表和权限类型。")
     public Map<String, Object> listResourcePermissions(@RequestParam("username") String username,
-                                                       @Parameter(description = "集群编码或集群名称") @RequestParam(required = false) String cluster) {
+                                                       @Parameter(description = "集群编码或集群名称") @RequestParam(required = false) String cluster,
+                                                       @RequestParam(required = false) String authBackend) {
         try {
-            List<Map<String, Object>> rawPermissions = authorizationService.getUserPermissions(username, cluster);
+            List<Map<String, Object>> rawPermissions = authorizationService.getUserPermissions(username, cluster, authBackend);
+            String resolvedCluster = authorizationService.resolveClusterCodeOrName(cluster);
+            List<UserResourceAccess> recordedAccess = resolvedCluster == null || resolvedCluster.trim().isEmpty()
+                    ? userResourceAccessRepository.findByUsernameAndIsDeletedFalse(username)
+                    : userResourceAccessRepository.findByUsernameAndClusterCodeAndIsDeletedFalse(username, resolvedCluster);
             Map<String, Object> res = new HashMap<>();
             res.put("username", username);
-            res.put("cluster", authorizationService.resolveClusterCodeOrName(cluster));
-            res.put("engineType", authorizationService.engineType(cluster));
-            res.put("authBackend", authorizationService.authBackend(cluster));
+            res.put("cluster", resolvedCluster);
+            res.put("engineType", authorizationService.engineType(cluster, authBackend));
+            res.put("authBackend", authorizationService.authBackend(cluster, authBackend));
             res.put("source", "LIVE_AUTH_BACKEND");
             res.put("grants", normalizePermissionRows(rawPermissions));
+            res.put("recordedGrants", normalizeRecordedPermissionRows(recordedAccess));
             res.put("raw", rawPermissions);
             return res;
         } catch (Exception e) {
@@ -1007,7 +1241,8 @@ public class AccessController {
 
     @PostMapping("/grant/batch")
     @Operation(summary = "批量授予 Hive 权限", description = "批量授予数据库或表级 Hive 权限，并写入本地授权记录。")
-    public String batchGrant(@RequestBody BatchGrantRequest request) {
+    public String batchGrant(@RequestBody BatchGrantRequest request, HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可执行授权操作");
         String username = request.getUsername();
         List<String> permissions = resolvePermissionsOrThrow(request);
         List<String> databases = request.getDatabases();
@@ -1078,20 +1313,38 @@ public class AccessController {
     }
 
     @PostMapping("/grants/batch")
-    public String batchGrantResource(@RequestBody BatchGrantRequest request) {
+    public String batchGrantResource(@RequestBody BatchGrantRequest request, HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可执行授权操作");
         String username = request.getUsername();
-        List<String> permissions = resolvePermissionsOrThrow(request);
         String operator = currentOperator();
         String cluster = request.getCluster() != null && !request.getCluster().isEmpty()
                 ? request.getCluster() : "CDH-Cluster-01";
+        String authBackend = authorizationService.normalizeAuthBackend(request.getAuthBackend());
+        String grantMode = request.getGrantMode() == null || request.getGrantMode().trim().isEmpty()
+                ? "ROLE" : request.getGrantMode().trim().toUpperCase();
+        String subjectType = firstNonBlank(request.getSubjectType(), "USER").toUpperCase();
+        String subjectName = firstNonBlank(request.getSubjectName(), username);
 
         try {
+            if (!"DIRECT_EXCEPTION".equals(grantMode)) {
+                if (isRoleSubsetRequest(request)) {
+                    return grantRolePermissionSubset(request, username, operator, cluster, authBackend, subjectType, subjectName);
+                }
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                        "RBAC 角色模式必须提交角色范围内勾选的 rolePermissions；授权工作台不能直接扩展角色范围或授予完整角色");
+            }
+            List<String> permissions = resolvePermissionsOrThrow(request);
+            validateDirectException(request, cluster, authBackend, username);
+            LocalDateTime expiresAt = parseOptionalDateTime(request.getExpiresAt());
             if (request.getDatabases() != null) {
                 for (String database : request.getDatabases()) {
                     for (String permission : permissions) {
                         GrantCommand command = buildGrantCommand(username, cluster, database, null, permission);
-                        authorizationService.grant(command);
-                        saveResourceAccess(username, cluster, database, null, permission, operator, "AUTHORIZATION_CENTER");
+                        authorizationService.grant(command, authBackend);
+                        saveResourceAccess(username, cluster, database, null, permission, operator,
+                                "DIRECT_EXCEPTION", "ACTIVE", false, null, "DIRECT_EXCEPTION", null,
+                                "USER", username, request.getExceptionReason(), request.getTicketNo(), request.getApprover(),
+                                expiresAt, firstNonBlank(request.getRiskLevel(), riskLevelFor(permission)), authBackend);
                     }
                 }
             }
@@ -1100,18 +1353,44 @@ public class AccessController {
                     for (String permission : permissions) {
                         GrantCommand command = buildGrantCommand(username, cluster, tableGrant.getDatabase(),
                                 tableGrant.getTable(), permission);
-                        authorizationService.grant(command);
+                        authorizationService.grant(command, authBackend);
                         saveResourceAccess(username, cluster, tableGrant.getDatabase(), tableGrant.getTable(),
-                                permission, operator, "AUTHORIZATION_CENTER");
+                                permission, operator, "DIRECT_EXCEPTION", "ACTIVE", false, null,
+                                "DIRECT_EXCEPTION", null, "USER", username, request.getExceptionReason(), request.getTicketNo(),
+                                request.getApprover(), expiresAt, firstNonBlank(request.getRiskLevel(), riskLevelFor(permission)), authBackend);
                     }
                 }
             }
-            return "Resource access granted for user: " + username;
+            return "Temporary direct access granted for user: " + username;
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readableAuthorizationError(e), e);
         }
     }
-    
+
+    private String roleAssignmentSyncMessage(AuthRoleView view, String subjectType, String subjectName) {
+        if (view == null || view.getAssignments() == null) {
+            return null;
+        }
+        String pendingMessage = null;
+        for (com.dga.access.entity.AuthUserRole assignment : view.getAssignments()) {
+            if (!subjectType.equalsIgnoreCase(assignment.getSubjectType())) {
+                continue;
+            }
+            if (!subjectName.equalsIgnoreCase(assignment.getSubjectName())) {
+                continue;
+            }
+            String status = assignment.getBackendSyncStatus();
+            if ("SUCCESS".equalsIgnoreCase(status)) {
+                return null;
+            }
+            if (status != null && pendingMessage == null) {
+                String message = assignment.getSyncMessage();
+                pendingMessage = status + (message == null || message.trim().isEmpty() ? "" : " - " + message);
+            }
+        }
+        return pendingMessage;
+    }
+
     @GetMapping("/user/access")
     @Operation(summary = "查询本地授权记录", description = "按用户、集群与状态查询 DGA 本地保存的授权记录。")
     public List<UserHiveAccess> listUserAccess(@RequestParam("username") String username,
@@ -1141,7 +1420,8 @@ public class AccessController {
     }
 
     @PostMapping("/revoke")
-    public String revokeAccess(@RequestBody AccessRequest request) {
+    public String revokeAccess(@RequestBody AccessRequest request, HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可执行权限回收操作");
         String operator = currentOperator();
         String cluster = request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01";
         try {
@@ -1149,7 +1429,7 @@ public class AccessController {
         } catch (Exception e) {
             System.err.println("Warning: Hive/Ranger revoke failed: " + e.getMessage());
         }
-        
+
         revokeDatabaseAccessRecords(request.getUsername(), cluster, request.getDatabase(),
                 request.getPermission(), operator, "DGA_REVOKE");
 
@@ -1159,12 +1439,13 @@ public class AccessController {
     @PostMapping("/revoke/batch")
     @Operation(summary = "批量回收 Hive 权限", description = "批量回收数据库或表级 Hive 权限，并更新本地授权记录状态。")
     @org.springframework.transaction.annotation.Transactional
-    public String batchRevoke(@RequestBody BatchGrantRequest request) {
+    public String batchRevoke(@RequestBody BatchGrantRequest request, HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可执行权限回收操作");
         String username = request.getUsername();
         List<String> permissions = resolvePermissionsOrThrow(request);
         String operator = currentOperator();
-        String cluster = request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01"; // Default or validate
-        
+        String cluster = request.getCluster() != null ? request.getCluster() : "CDH-Cluster-01";
+
         List<String> databases = request.getDatabases();
         if (databases != null) {
             for (String database : databases) {
@@ -1204,21 +1485,41 @@ public class AccessController {
     }
 
     @PostMapping("/revokes/batch")
-    public String batchRevokeResource(@RequestBody BatchGrantRequest request) {
+    public String batchRevokeResource(@RequestBody BatchGrantRequest request, HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可执行权限回收操作");
         String username = request.getUsername();
-        List<String> permissions = resolvePermissionsOrThrow(request);
         String operator = currentOperator();
         String cluster = request.getCluster() != null && !request.getCluster().isEmpty()
                 ? request.getCluster() : "CDH-Cluster-01";
+        String authBackend = authorizationService.normalizeAuthBackend(request.getAuthBackend());
+        String grantMode = request.getGrantMode() == null || request.getGrantMode().trim().isEmpty()
+                ? "ROLE" : request.getGrantMode().trim().toUpperCase();
+        String subjectType = firstNonBlank(request.getSubjectType(), "USER").toUpperCase();
+        String subjectName = firstNonBlank(request.getSubjectName(), username);
 
         try {
+            boolean hasResourceSelection = (request.getDatabases() != null && !request.getDatabases().isEmpty())
+                    || (request.getTables() != null && !request.getTables().isEmpty());
+            if (!"DIRECT_EXCEPTION".equals(grantMode) && isRoleSubsetRequest(request)) {
+                return revokeRolePermissionSubset(request, username, operator, cluster, authBackend, subjectType, subjectName);
+            }
+            if (!"DIRECT_EXCEPTION".equals(grantMode) && !hasResourceSelection) {
+                String roleCode = requireText(request.getRoleCode(), "RBAC 角色回收必须选择 roleCode");
+                authorizationService.revokeRoleAssignment(cluster, roleCode, subjectType, subjectName, authBackend);
+                String syncMessage = roleAssignmentSyncMessage(authRoleService.effectivePermissions(roleCode), subjectType, subjectName);
+                return syncMessage == null
+                        ? "RBAC role assignment revoked: " + roleCode
+                        : "RBAC role assignment revoke submitted: " + syncMessage;
+            }
+
+            List<String> permissions = resolvePermissionsOrThrow(request);
+            validateDirectException(request, cluster, authBackend, username);
             if (request.getDatabases() != null) {
                 for (String database : request.getDatabases()) {
                     for (String permission : permissions) {
                         RevokeCommand command = buildRevokeCommand(username, cluster, database, null, permission);
-                        authorizationService.revoke(command);
-                        revokeDatabaseAccessRecords(username, cluster, database, permission,
-                                operator, "AUTHORIZATION_CENTER");
+                        authorizationService.revoke(command, authBackend);
+                        revokeDatabaseAccessRecords(username, cluster, database, permission, operator, "DIRECT_EXCEPTION");
                     }
                 }
             }
@@ -1227,18 +1528,18 @@ public class AccessController {
                     for (String permission : permissions) {
                         RevokeCommand command = buildRevokeCommand(username, cluster, tableGrant.getDatabase(),
                                 tableGrant.getTable(), permission);
-                        authorizationService.revoke(command);
+                        authorizationService.revoke(command, authBackend);
                         revokeTableAccessRecords(username, cluster, tableGrant.getDatabase(),
-                                tableGrant.getTable(), permission, operator, "AUTHORIZATION_CENTER");
+                                tableGrant.getTable(), permission, operator, "DIRECT_EXCEPTION");
                     }
                 }
             }
-            return "Resource access revoked for user: " + username;
+            return "Temporary direct access revoked for user: " + username;
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readableAuthorizationError(e), e);
         }
     }
-    
+
     @DeleteMapping("/user/{username}")
     @Operation(summary = "删除权限用户", description = "按当前授权后端回收权限；LDAP 用户同步删除目录账号，SQL 授权后端用户只软删除平台记录。")
     @org.springframework.transaction.annotation.Transactional
@@ -1271,9 +1572,9 @@ public class AccessController {
                 try {
                     hiveAuthService.revokeAll(username, clusterName);
                 } catch (Throwable e) {
-                     System.err.println("Failed to revoke Hive permissions: " + e.getMessage());
-                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
-                             "删除用户前回收权限失败，请处理后重试: " + readableAuthorizationError(new Exception(e)), e);
+                    System.err.println("Failed to revoke Hive permissions: " + e.getMessage());
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "删除用户前回收权限失败，请处理后重试: " + readableAuthorizationError(new Exception(e)), e);
                 }
 
                 try {
@@ -1288,19 +1589,16 @@ public class AccessController {
                 }
             }
 
-            // 3. Soft Delete in DB
             user.setDeleted(true);
             dgaUserRepository.save(user);
-            
-            // 4. Revoke Hive Access Records (Soft Delete)
+
             try {
                 userHiveAccessRepository.softDeleteAllAccessByUsernameAndClusterName(username, clusterName);
                 userResourceAccessRepository.softDeleteAllByUsernameAndCluster(username, clusterName, operator);
             } catch (Exception e) {
                 System.err.println("Failed to update UserHiveAccess status: " + e.getMessage());
-                // Non-blocking, but logged
             }
-            
+
             return "User permissions revoked and soft deleted from DGA system: " + username;
         } else {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "用户不存在: " + username + " (" + clusterName + ")");
@@ -1370,39 +1668,18 @@ public class AccessController {
     }
 
     private String resolveSqlAuthEngine(String clusterIdentifier, com.dga.cluster.entity.Cluster targetCluster) {
-        String type = targetCluster != null && targetCluster.getType() != null ? targetCluster.getType() : "";
-        if (isDorisClusterType(type)) {
-            return "DORIS";
-        }
-        if (isStarRocksClusterType(type)) {
-            return "STARROCKS";
-        }
         try {
             AuthorizationCapability capability = authorizationService.capability(clusterIdentifier);
-            String backend = capability != null && capability.getAuthBackend() != null ? capability.getAuthBackend().toUpperCase() : "";
-            String engine = capability != null && capability.getEngineType() != null ? capability.getEngineType().toUpperCase() : "";
-            String combined = backend + " " + engine;
-            if (combined.contains("DORIS")) {
-                return "DORIS";
+            if (capability == null || capability.getIdentity() == null) {
+                return null;
             }
-            if (combined.contains("STARROCKS") || combined.contains("STAR_ROCKS") || combined.contains("STAR")) {
-                return "STARROCKS";
+            if (!"AUTH_BACKEND".equalsIgnoreCase(capability.getIdentity().getMode())) {
+                return null;
             }
+            return capability.getEngineType();
         } catch (Exception ignored) {
+            return null;
         }
-        return null;
-    }
-
-    private boolean isDorisClusterType(String type) {
-        return type != null && type.toUpperCase().contains("DORIS");
-    }
-
-    private boolean isStarRocksClusterType(String type) {
-        if (type == null) {
-            return false;
-        }
-        String normalized = type.toUpperCase().replaceAll("[^A-Z0-9]", "");
-        return "SR".equals(normalized) || normalized.contains("STARROCKS") || normalized.contains("STAR");
     }
 
     private boolean isSqlCreationStrategy(String strategy) {
@@ -1586,6 +1863,243 @@ public class AccessController {
         }
     }
 
+    private boolean isRoleSubsetRequest(BatchGrantRequest request) {
+        return Boolean.TRUE.equals(request.getRoleSubsetMode())
+                || (request.getRolePermissions() != null && !request.getRolePermissions().isEmpty());
+    }
+
+    private String grantRolePermissionSubset(BatchGrantRequest request, String username, String operator,
+                                             String cluster, String authBackend, String subjectType, String subjectName) {
+        String roleCode = requireText(request.getRoleCode(), "请选择角色");
+        String normalizedSubjectType = requireText(subjectType, "请选择绑定对象类型").toUpperCase(Locale.ROOT);
+        String normalizedSubjectName = requireText(subjectName, "请选择用户或 LDAP 组").trim();
+        if (!supportsRoleSubsetGrant(cluster, authBackend, normalizedSubjectType)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "当前授权后端不支持 " + normalizedSubjectType + " 角色权限子集授权，请选择支持的绑定对象类型");
+        }
+        requireActiveRoleAssignment(roleCode, normalizedSubjectType, normalizedSubjectName, authBackend);
+        List<AuthRolePermission> selected = validateRolePermissionSelections(roleCode, request.getRolePermissions(), authBackend);
+        LocalDateTime expiresAt = parseOptionalDateTime(request.getExpiresAt());
+        if ("GROUP".equals(normalizedSubjectType)) {
+            String derivedRoleCode = derivedSubsetRoleCode(roleCode, normalizedSubjectType, normalizedSubjectName, selected);
+            authorizationService.ensureRole(cluster, derivedRoleCode, authBackend);
+            for (AuthRolePermission permission : selected) {
+                authorizationService.grantPermissionToRole(cluster, derivedRoleCode,
+                        permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), authBackend);
+            }
+            authorizationService.assignRoleToGroup(cluster, derivedRoleCode, normalizedSubjectName, authBackend);
+        } else if ("USER".equals(normalizedSubjectType)) {
+            for (AuthRolePermission permission : selected) {
+                GrantCommand command = buildGrantCommand(normalizedSubjectName, cluster,
+                        permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission());
+                authorizationService.grant(command, authBackend);
+            }
+        } else {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "绑定对象类型仅支持 USER 或 GROUP");
+        }
+        for (AuthRolePermission permission : selected) {
+            saveResourceAccess("USER".equals(normalizedSubjectType) ? normalizedSubjectName : firstNonBlank(username, normalizedSubjectName),
+                    cluster, permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(),
+                    operator, "RBAC_ROLE_SUBSET", "ACTIVE", false, null,
+                    "ROLE", roleCode, normalizedSubjectType, normalizedSubjectName,
+                    null, null, null, expiresAt, riskLevelFor(permission.getPermission()), authBackend);
+        }
+        if ("GROUP".equals(normalizedSubjectType) && usesNativeGroupRole(cluster, authBackend)) {
+            if (userBelongsToLdapGroup(cluster, username, normalizedSubjectName)) {
+                return "RBAC 角色权限已下发到用户所在 LDAP 组: " + roleCode;
+            }
+            return "RBAC 角色权限已下发到组，待验证用户组成员关系与后端权限刷新: " + roleCode;
+        }
+        return "RBAC role subset access granted: " + roleCode;
+    }
+
+    private boolean supportsRoleSubsetGrant(String cluster, String authBackend, String subjectType) {
+        AuthorizationCapability capability = authorizationService.capability(cluster, authBackend);
+        if (capability == null || capability.getGrant() == null || !capability.getGrant().isSupportsRoleSubsetGrant()) {
+            return false;
+        }
+        if ("USER".equalsIgnoreCase(subjectType)) {
+            return capability.getGrant().isSupportsUserRoleSubsetGrant();
+        }
+        if ("GROUP".equalsIgnoreCase(subjectType)) {
+            return capability.getGrant().isSupportsGroupRoleSubsetGrant();
+        }
+        return false;
+    }
+
+    private void requireActiveRoleAssignment(String roleCode, String subjectType, String subjectName, String authBackend) {
+        if (authRoleService.hasActiveAssignment(roleCode, subjectType, subjectName, authBackend)) {
+            return;
+        }
+        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "该主体尚未绑定角色，不能执行角色范围内授权/回收");
+    }
+
+    private boolean usesNativeGroupRole(String cluster, String authBackend) {
+        AuthorizationCapability capability = authorizationService.capability(cluster, authBackend);
+        return capability != null && capability.getRbac() != null && capability.getRbac().isSupportsNativeGroupRole();
+    }
+
+    @SuppressWarnings("unchecked")
+    private boolean userBelongsToLdapGroup(String clusterIdentifier, String username, String groupName) {
+        if (username == null || groupName == null || groupName.trim().isEmpty()) {
+            return false;
+        }
+        try {
+            Map<String, Object> profile = ldapService.getUserLdapProfile(clusterIdentifier, username);
+            Object primary = profile.get("primaryGroup");
+            if (primary instanceof Map && sameText(ldapValue((Map<String, Object>) primary, "name"), groupName)) {
+                return true;
+            }
+            Object supplementary = profile.get("supplementaryGroups");
+            if (supplementary instanceof List) {
+                for (Object item : (List<?>) supplementary) {
+                    if (item instanceof Map && sameText(ldapValue((Map<String, Object>) item, "name"), groupName)) {
+                        return true;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.err.println("LDAP membership verification failed for " + username + "/" + groupName + ": " + e.getMessage());
+        }
+        for (DgaUser user : dgaUserRepository.findByUsernameAndIsDeletedFalse(username)) {
+            if (sameText(user.getPrimaryGroupName(), groupName)) {
+                return true;
+            }
+            String supplementary = user.getSupplementaryGroups();
+            if (supplementary != null) {
+                for (String group : supplementary.split(",")) {
+                    if (sameText(group, groupName)) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private boolean sameText(String left, String right) {
+        return left != null && right != null && left.trim().equalsIgnoreCase(right.trim());
+    }
+
+    private String revokeRolePermissionSubset(BatchGrantRequest request, String username, String operator,
+                                              String cluster, String authBackend, String subjectType, String subjectName) {
+        String roleCode = requireText(request.getRoleCode(), "请选择角色");
+        String normalizedSubjectType = requireText(subjectType, "请选择绑定对象类型").toUpperCase(Locale.ROOT);
+        String normalizedSubjectName = requireText(subjectName, "请选择用户或 LDAP 组").trim();
+        requireActiveRoleAssignment(roleCode, normalizedSubjectType, normalizedSubjectName, authBackend);
+        List<AuthRolePermission> selected = validateRolePermissionSelections(roleCode, request.getRolePermissions(), authBackend);
+        if ("GROUP".equals(normalizedSubjectType)) {
+            String derivedRoleCode = derivedSubsetRoleCode(roleCode, normalizedSubjectType, normalizedSubjectName, selected);
+            authorizationService.revokeRoleAssignment(cluster, derivedRoleCode, "GROUP", normalizedSubjectName, authBackend);
+            for (AuthRolePermission permission : selected) {
+                try {
+                    authorizationService.revokePermissionFromRole(cluster, derivedRoleCode,
+                            permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), authBackend);
+                } catch (Exception ignored) {
+                }
+            }
+        } else if ("USER".equals(normalizedSubjectType)) {
+            for (AuthRolePermission permission : selected) {
+                RevokeCommand command = buildRevokeCommand(normalizedSubjectName, cluster,
+                        permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission());
+                authorizationService.revoke(command, authBackend);
+            }
+        } else {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "绑定对象类型仅支持 USER 或 GROUP");
+        }
+        for (AuthRolePermission permission : selected) {
+            revokeRoleSubsetAccessRecord(cluster, roleCode, normalizedSubjectType, normalizedSubjectName,
+                    permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), operator);
+        }
+        return "RBAC role subset access revoked: " + roleCode;
+    }
+
+    private List<AuthRolePermission> validateRolePermissionSelections(String roleCode,
+                                                                     List<BatchGrantRequest.RolePermissionSelection> selections,
+                                                                     String authBackend) {
+        if (selections == null || selections.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择至少一项角色权限");
+        }
+        List<AuthRolePermission> activePermissions = authRolePermissionRepository.findByRoleCodeAndStatus(roleCode, "ACTIVE");
+        Map<String, AuthRolePermission> activeByKey = new HashMap<>();
+        for (AuthRolePermission permission : activePermissions) {
+            activeByKey.put(rolePermissionKey(permission.getResourceType(), permission.getDatabaseName(), permission.getTableName(),
+                    permission.getPermission(), permission.getAuthBackend()), permission);
+        }
+        List<AuthRolePermission> selected = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (BatchGrantRequest.RolePermissionSelection selection : selections) {
+            String permission = requireText(selection.getPermission(), "请选择权限类型").toUpperCase(Locale.ROOT);
+            try {
+                AuthorizationSupport.validatePermission(permission);
+            } catch (IllegalArgumentException e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持的权限类型: " + permission, e);
+            }
+            String key = rolePermissionKey(selection.getResourceType(), selection.getDatabaseName(), selection.getTableName(),
+                    permission, firstNonBlank(selection.getAuthBackend(), authBackend));
+            AuthRolePermission matched = activeByKey.get(key);
+            if (matched == null) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "所选权限不属于角色 " + roleCode + "，请刷新角色权限后重试");
+            }
+            String matchedKey = rolePermissionKey(matched.getResourceType(), matched.getDatabaseName(), matched.getTableName(),
+                    matched.getPermission(), matched.getAuthBackend());
+            if (seen.add(matchedKey)) {
+                selected.add(matched);
+            }
+        }
+        selected.sort(Comparator.comparing(permission -> rolePermissionKey(permission.getResourceType(), permission.getDatabaseName(),
+                permission.getTableName(), permission.getPermission(), permission.getAuthBackend())));
+        return selected;
+    }
+
+    private String rolePermissionKey(String resourceType, String databaseName, String tableName, String permission, String authBackend) {
+        return String.join("|",
+                upper(firstNonBlank(resourceType, normalizeAuthTable(tableName) == null ? "DATABASE" : "TABLE")),
+                lower(databaseName),
+                lower(firstNonBlank(normalizeAuthTable(tableName), "*")),
+                upper(permission),
+                upper(authBackend));
+    }
+
+    private String derivedSubsetRoleCode(String roleCode, String subjectType, String subjectName, List<AuthRolePermission> permissions) {
+        String seed = roleCode + "|" + subjectType + "|" + subjectName + "|" + permissions.stream()
+                .map(permission -> rolePermissionKey(permission.getResourceType(), permission.getDatabaseName(), permission.getTableName(),
+                        permission.getPermission(), permission.getAuthBackend()))
+                .sorted()
+                .collect(Collectors.joining(";"));
+        String hash = Integer.toHexString(seed.hashCode());
+        String prefix = roleCode == null ? "role_subset" : roleCode.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]", "_");
+        if (prefix.length() > 44) {
+            prefix = prefix.substring(0, 44);
+        }
+        return prefix + "_sub_" + hash;
+    }
+
+    private void revokeRoleSubsetAccessRecord(String cluster, String roleCode, String subjectType, String subjectName,
+                                              String database, String table, String permission, String operator) {
+        int updated;
+        if (table == null) {
+            updated = userResourceAccessRepository.softDeleteRoleSubsetDatabaseAccess(
+                    cluster, database, permission, roleCode, subjectType, subjectName, operator);
+        } else {
+            updated = userResourceAccessRepository.softDeleteRoleSubsetTableAccess(
+                    cluster, database, table, permission, roleCode, subjectType, subjectName, operator);
+        }
+        if (updated == 0) {
+            saveResourceAccess(subjectName,
+                    cluster, database, table, permission, operator, "RBAC_ROLE_SUBSET", "REVOKED", true, LocalDateTime.now(),
+                    "ROLE", roleCode, subjectType, subjectName, null, null, null, null, riskLevelFor(permission), null);
+        }
+    }
+
+    private String upper(String value) {
+        return value == null ? "" : value.trim().toUpperCase(Locale.ROOT);
+    }
+
+    private String lower(String value) {
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+    }
+
     private GrantCommand buildGrantCommand(String username, String cluster, String database,
                                            String table, String permission) {
         GrantCommand command = new GrantCommand();
@@ -1639,6 +2153,89 @@ public class AccessController {
         }
     }
 
+    private void validateDirectException(BatchGrantRequest request, String cluster, String authBackend, String username) {
+        String subjectType = firstNonBlank(request.getSubjectType(), "USER").toUpperCase(Locale.ROOT);
+        if (!"USER".equals(subjectType)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "直接例外授权仅支持 USER 主体");
+        }
+        requireText(username, "请选择用户");
+        requireText(request.getExceptionReason(), "临时直授必须填写授权理由");
+        requireText(request.getTicketNo(), "临时直授必须填写工单号");
+        requireText(request.getApprover(), "临时直授必须填写审批人");
+        if (parseOptionalDateTime(request.getExpiresAt()) == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "临时直授必须填写过期时间");
+        }
+        if (!isHistoricalUserPrincipal(username, cluster, authBackend)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    "新用户必须先绑定角色后再授权；仅历史已有用户允许直接例外授权/回收");
+        }
+    }
+
+    private boolean isHistoricalUserPrincipal(String username, String cluster, String authBackend) {
+        String normalizedUsername = firstNonBlank(username);
+        if (normalizedUsername == null) {
+            return false;
+        }
+        boolean existsInBackend;
+        try {
+            existsInBackend = authorizationService.userExists(cluster, normalizedUsername, authBackend);
+        } catch (Exception e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readablePrincipalListError(e), e);
+        }
+        if (authorizationService.requiresExistingBackendUser(cluster, authBackend) && !existsInBackend) {
+            return false;
+        }
+        return hasRecordedAccess(normalizedUsername, cluster) || existsInBackend;
+    }
+
+    private boolean hasRecordedAccess(String username, String cluster) {
+        String resolvedCluster = authorizationService.resolveClusterCodeOrName(cluster);
+        for (UserResourceAccess access : userResourceAccessRepository.findByUsernameAndIsDeletedFalse(username)) {
+            if (resolvedCluster == null || resolvedCluster.trim().isEmpty()) {
+                return true;
+            }
+            if (sameText(resolvedCluster, access.getClusterCode())
+                    || sameText(resolvedCluster, access.getClusterName())
+                    || sameText(cluster, access.getClusterCode())
+                    || sameText(cluster, access.getClusterName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isHighRiskPermission(String permission) {
+        if (permission == null) return false;
+        String normalized = permission.trim().toUpperCase();
+        return "ALL".equals(normalized)
+                || "ADMIN".equals(normalized)
+                || "CREATE".equals(normalized)
+                || "DROP".equals(normalized)
+                || "INSERT".equals(normalized);
+    }
+
+    private String riskLevelFor(String permission) {
+        return isHighRiskPermission(permission) ? "HIGH" : "LOW";
+    }
+
+    private LocalDateTime parseOptionalDateTime(String value) {
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return LocalDateTime.parse(value.trim());
+        } catch (DateTimeParseException e) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "过期时间格式必须为 yyyy-MM-ddTHH:mm:ss", e);
+        }
+    }
+
+    private String requireText(String value, String message) {
+        if (value == null || value.trim().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, message);
+        }
+        return value.trim();
+    }
+
     private String readableAuthorizationError(Exception e) {
         String message = e.getMessage() == null ? "授权执行失败" : e.getMessage();
         if (message.contains("Access denied") || message.toLowerCase().contains("denied")) {
@@ -1662,6 +2259,48 @@ public class AccessController {
             grants.add(grant);
         }
         return grants;
+    }
+
+    private List<Map<String, Object>> normalizeRecordedPermissionRows(List<UserResourceAccess> recordedAccess) {
+        List<Map<String, Object>> grants = new ArrayList<>();
+        if (recordedAccess == null) {
+            return grants;
+        }
+        int index = 1;
+        for (UserResourceAccess access : recordedAccess) {
+            if (access == null || Boolean.TRUE.equals(access.getDeleted()) || !"ACTIVE".equalsIgnoreCase(access.getStatus())) {
+                continue;
+            }
+            Map<String, Object> grant = new HashMap<>();
+            grant.put("id", "recorded-" + index++);
+            grant.put("resourceType", firstNonBlank(access.getResourceType(), access.getTableName() == null ? "DATABASE" : "TABLE"));
+            grant.put("databaseName", access.getDatabaseName());
+            grant.put("tableName", normalizeAuthTable(access.getTableName()));
+            grant.put("permission", access.getPermission() == null ? "-" : access.getPermission().toUpperCase(Locale.ROOT));
+            grant.put("grantText", recordedPermissionText(access));
+            grant.put("source", access.getSource());
+            grant.put("status", access.getStatus());
+            grant.put("grantMode", access.getGrantMode());
+            grant.put("roleCode", access.getRoleCode());
+            grant.put("subjectType", access.getSubjectType());
+            grant.put("subjectName", access.getSubjectName());
+            grants.add(grant);
+        }
+        return grants;
+    }
+
+    private String recordedPermissionText(UserResourceAccess access) {
+        StringBuilder text = new StringBuilder("DGA recorded");
+        if (access.getRoleCode() != null && !access.getRoleCode().trim().isEmpty()) {
+            text.append(" role=").append(access.getRoleCode());
+        }
+        if (access.getSubjectType() != null && access.getSubjectName() != null) {
+            text.append(" subject=").append(access.getSubjectType()).append('/').append(access.getSubjectName());
+        }
+        if (access.getSource() != null && !access.getSource().trim().isEmpty()) {
+            text.append(" source=").append(access.getSource());
+        }
+        return text.toString();
     }
 
     private Map<String, Object> normalizePermissionRow(Map<String, Object> row) {
@@ -1842,18 +2481,51 @@ public class AccessController {
     private void saveResourceAccess(String username, String cluster, String database, String table,
                                     String permission, String operator, String source,
                                     String status, boolean deleted, LocalDateTime revokeTime) {
+        saveResourceAccess(username, cluster, database, table, permission, operator, source, status, deleted, revokeTime,
+                null, null, null, null, null, null, null);
+    }
+
+    private void saveResourceAccess(String username, String cluster, String database, String table,
+                                    String permission, String operator, String source,
+                                    String status, boolean deleted, LocalDateTime revokeTime,
+                                    String grantMode, String roleCode, String exceptionReason,
+                                    String ticketNo, String approver, LocalDateTime expiresAt, String riskLevel) {
+        saveResourceAccess(username, cluster, database, table, permission, operator, source, status, deleted, revokeTime,
+                grantMode, roleCode, "USER", username, exceptionReason, ticketNo, approver, expiresAt, riskLevel, null);
+    }
+
+    private void saveResourceAccess(String username, String cluster, String database, String table,
+                                    String permission, String operator, String source,
+                                    String status, boolean deleted, LocalDateTime revokeTime,
+                                    String grantMode, String roleCode, String subjectType, String subjectName,
+                                    String exceptionReason, String ticketNo, String approver,
+                                    LocalDateTime expiresAt, String riskLevel, String authBackend) {
         String clusterIdentifier = cluster != null && !cluster.isEmpty() ? cluster : "CDH-Cluster-01";
         String normalizedTable = normalizeAuthTable(table);
+        String resolvedAuthBackend = authorizationService.normalizeAuthBackend(authBackend);
         UserResourceAccess access = new UserResourceAccess();
         access.setUsername(username);
         access.setClusterName(clusterIdentifier);
         access.setClusterCode(authorizationService.resolveClusterCodeOrName(clusterIdentifier));
-        access.setEngineType(authorizationService.engineType(clusterIdentifier));
-        access.setAuthBackend(authorizationService.authBackend(clusterIdentifier));
+        access.setEngineType(resolvedAuthBackend == null
+                ? authorizationService.engineType(clusterIdentifier)
+                : authorizationService.engineType(clusterIdentifier, resolvedAuthBackend));
+        access.setAuthBackend(resolvedAuthBackend == null
+                ? authorizationService.authBackend(clusterIdentifier)
+                : resolvedAuthBackend);
         access.setResourceType(normalizedTable == null ? "DATABASE" : "TABLE");
         access.setDatabaseName(database);
         access.setTableName(normalizedTable);
         access.setPermission(permission);
+        access.setGrantMode(grantMode);
+        access.setRoleCode(roleCode);
+        access.setSubjectType(firstNonBlank(subjectType, "USER").toUpperCase());
+        access.setSubjectName(firstNonBlank(subjectName, username));
+        access.setExceptionReason(exceptionReason);
+        access.setTicketNo(ticketNo);
+        access.setApprover(approver);
+        access.setExpiresAt(expiresAt);
+        access.setRiskLevel(riskLevel);
         access.setGrantedBy(operator);
         access.setSource(source);
         access.setStatus(status);

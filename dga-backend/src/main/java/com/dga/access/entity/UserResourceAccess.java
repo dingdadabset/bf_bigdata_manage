@@ -40,6 +40,33 @@ public class UserResourceAccess {
     @Column(nullable = false)
     private String permission;
 
+    @Column(name = "grant_mode", length = 40)
+    private String grantMode;
+
+    @Column(name = "role_code", length = 128)
+    private String roleCode;
+
+    @Column(name = "subject_type", length = 20)
+    private String subjectType;
+
+    @Column(name = "subject_name", length = 200)
+    private String subjectName;
+
+    @Column(name = "exception_reason", length = 1000)
+    private String exceptionReason;
+
+    @Column(name = "ticket_no", length = 100)
+    private String ticketNo;
+
+    @Column(name = "approver", length = 100)
+    private String approver;
+
+    @Column(name = "expires_at")
+    private LocalDateTime expiresAt;
+
+    @Column(name = "risk_level", length = 20)
+    private String riskLevel;
+
     @Column(name = "auth_backend")
     private String authBackend;
 
@@ -161,6 +188,78 @@ public class UserResourceAccess {
 
     public void setPermission(String permission) {
         this.permission = permission;
+    }
+
+    public String getGrantMode() {
+        return grantMode;
+    }
+
+    public void setGrantMode(String grantMode) {
+        this.grantMode = grantMode;
+    }
+
+    public String getRoleCode() {
+        return roleCode;
+    }
+
+    public void setRoleCode(String roleCode) {
+        this.roleCode = roleCode;
+    }
+
+    public String getSubjectType() {
+        return subjectType;
+    }
+
+    public void setSubjectType(String subjectType) {
+        this.subjectType = subjectType;
+    }
+
+    public String getSubjectName() {
+        return subjectName;
+    }
+
+    public void setSubjectName(String subjectName) {
+        this.subjectName = subjectName;
+    }
+
+    public String getExceptionReason() {
+        return exceptionReason;
+    }
+
+    public void setExceptionReason(String exceptionReason) {
+        this.exceptionReason = exceptionReason;
+    }
+
+    public String getTicketNo() {
+        return ticketNo;
+    }
+
+    public void setTicketNo(String ticketNo) {
+        this.ticketNo = ticketNo;
+    }
+
+    public String getApprover() {
+        return approver;
+    }
+
+    public void setApprover(String approver) {
+        this.approver = approver;
+    }
+
+    public LocalDateTime getExpiresAt() {
+        return expiresAt;
+    }
+
+    public void setExpiresAt(LocalDateTime expiresAt) {
+        this.expiresAt = expiresAt;
+    }
+
+    public String getRiskLevel() {
+        return riskLevel;
+    }
+
+    public void setRiskLevel(String riskLevel) {
+        this.riskLevel = riskLevel;
     }
 
     public String getAuthBackend() {

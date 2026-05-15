@@ -47,4 +47,35 @@ public interface UserResourceAccessRepository extends JpaRepository<UserResource
     @Transactional
     @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokedBy = ?6, u.revokeTime = CURRENT_TIMESTAMP WHERE u.username = ?1 AND (u.clusterCode = ?2 OR u.clusterName = ?2) AND u.databaseName = ?3 AND u.tableName = ?4 AND u.permission = ?5 AND u.isDeleted = false")
     int softDeleteTableAccess(String username, String clusterCodeOrName, String databaseName, String tableName, String permission, String revokedBy);
+
+    @Modifying
+    @Transactional
+    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokedBy = :revokedBy, u.revokeTime = CURRENT_TIMESTAMP " +
+            "WHERE u.isDeleted = false AND (u.clusterCode = :cluster OR u.clusterName = :cluster) " +
+            "AND u.databaseName = :databaseName AND u.tableName IS NULL AND u.permission = :permission " +
+            "AND u.grantMode = 'ROLE' AND u.source = 'RBAC_ROLE_SUBSET' " +
+            "AND u.roleCode = :roleCode AND u.subjectType = :subjectType AND u.subjectName = :subjectName")
+    int softDeleteRoleSubsetDatabaseAccess(@Param("cluster") String cluster,
+                                           @Param("databaseName") String databaseName,
+                                           @Param("permission") String permission,
+                                           @Param("roleCode") String roleCode,
+                                           @Param("subjectType") String subjectType,
+                                           @Param("subjectName") String subjectName,
+                                           @Param("revokedBy") String revokedBy);
+
+    @Modifying
+    @Transactional
+    @Query("UPDATE UserResourceAccess u SET u.isDeleted = true, u.status = 'REVOKED', u.revokedBy = :revokedBy, u.revokeTime = CURRENT_TIMESTAMP " +
+            "WHERE u.isDeleted = false AND (u.clusterCode = :cluster OR u.clusterName = :cluster) " +
+            "AND u.databaseName = :databaseName AND u.tableName = :tableName AND u.permission = :permission " +
+            "AND u.grantMode = 'ROLE' AND u.source = 'RBAC_ROLE_SUBSET' " +
+            "AND u.roleCode = :roleCode AND u.subjectType = :subjectType AND u.subjectName = :subjectName")
+    int softDeleteRoleSubsetTableAccess(@Param("cluster") String cluster,
+                                        @Param("databaseName") String databaseName,
+                                        @Param("tableName") String tableName,
+                                        @Param("permission") String permission,
+                                        @Param("roleCode") String roleCode,
+                                        @Param("subjectType") String subjectType,
+                                        @Param("subjectName") String subjectName,
+                                        @Param("revokedBy") String revokedBy);
 }

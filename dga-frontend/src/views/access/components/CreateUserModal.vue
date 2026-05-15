@@ -1,5 +1,5 @@
 <template>
-  <a-modal :visible="visible" title="新建用户" @ok="submitUser" @cancel="$emit('cancel')" :confirmLoading="creatingUser">
+  <a-modal :visible="visible" :title="modalTitle" @ok="submitUser" @cancel="$emit('cancel')" :confirmLoading="creatingUser">
     <a-form-model :model="userForm" :label-col="{ span: 6 }" :wrapper-col="{ span: 14 }">
       <a-form-model-item label="创建方式">
         <a-tag :color="isSqlAuthCluster ? 'blue' : 'green'">{{ createBackendLabel }}</a-tag>
@@ -27,7 +27,7 @@
           <a-select-option value="SERVICE">服务账号</a-select-option>
         </a-select>
       </a-form-model-item>
-      <a-form-model-item v-if="!isSqlAuthCluster" label="账号能力">
+      <a-form-model-item v-if="showLdapGroupInput" label="账号能力">
         <a-radio-group v-model="userForm.accountMode" button-style="solid">
           <a-radio-button value="LDAP_ONLY">仅 LDAP 身份</a-radio-button>
           <a-radio-button value="POSIX_ACCOUNT">Linux/POSIX 账号</a-radio-button>
@@ -36,7 +36,7 @@
           仅 LDAP 身份用于应用认证；Linux/POSIX 账号会写入 uidNumber、gidNumber、homeDirectory、loginShell。
         </div>
       </a-form-model-item>
-      <a-form-model-item v-if="!isSqlAuthCluster && isPosixAccount" label="所属组">
+      <a-form-model-item v-if="showLdapGroupInput && isPosixAccount" label="所属组">
         <a-select
           v-model="userForm.groupName"
           placeholder="请选择 LDAP 组"
@@ -72,6 +72,12 @@
 <script>
 import axios from 'axios';
 import { store } from '../../../store';
+import {
+  canCreateProviderUser,
+  createUserTitle,
+  shouldShowLdapGroupInput,
+  userSourceLabel
+} from '../authorizationCenterHelpers';
 
 export default {
   name: 'CreateUserModal',
@@ -83,6 +89,7 @@ export default {
       creatingUser: false,
       clusters: [],
       ldapGroups: [],
+      capability: null,
       userForm: {
         username: '',
         email: '',
@@ -107,26 +114,21 @@ export default {
     expiryEnabled() {
       return this.requiresExpiry || this.userForm.userType === 'SERVICE';
     },
-    selectedCluster() {
-      return this.clusters.find(cluster => (cluster.clusterCode || cluster.clusterName) === this.userForm.cluster) || null;
-    },
-    selectedClusterType() {
-      return String(this.selectedCluster && this.selectedCluster.type ? this.selectedCluster.type : '').toUpperCase();
-    },
-    selectedSqlEngine() {
-      return this.sqlEngineFromClusterType(this.selectedClusterType);
+    showLdapGroupInput() {
+      return shouldShowLdapGroupInput(this.capability);
     },
     isSqlAuthCluster() {
-      return Boolean(this.selectedSqlEngine);
+      return canCreateProviderUser(this.capability);
+    },
+    modalTitle() {
+      return this.capability ? createUserTitle(this.capability) : '新建用户';
     },
     createBackendLabel() {
-      if (this.selectedSqlEngine === 'DORIS') return 'Doris SQL';
-      if (this.selectedSqlEngine === 'STARROCKS') return 'StarRocks SQL';
-      return 'OpenLDAP';
+      return this.capability ? userSourceLabel(this.capability) : 'OpenLDAP';
     },
     createBackendHint() {
       if (this.isSqlAuthCluster) {
-        return '用户将直接写入当前 StarRocks/Doris 授权后端，不走 OpenLDAP。';
+        return '用户将直接写入当前授权后端，不走 OpenLDAP。';
       }
       return '生产环境用户将写入所选集群配置的 LDAP endpoint';
     },
@@ -135,12 +137,12 @@ export default {
     },
     usernameHint() {
       if (this.isSqlAuthCluster) {
-        return 'StarRocks/Doris 用户名需以字母开头，仅支持字母、数字、下划线；可使用 user@host 指定 host，默认 @%。';
+        return '授权后端用户名需以字母开头，仅支持字母、数字、下划线；可使用 user@host 指定 host，默认 @%。';
       }
       return 'LDAP 用户名用于目录账号创建。';
     },
     isPosixAccount() {
-      return this.userForm.accountMode === 'POSIX_ACCOUNT';
+      return !this.isSqlAuthCluster && this.userForm.accountMode === 'POSIX_ACCOUNT';
     }
   },
   watch: {
@@ -149,8 +151,9 @@ export default {
         this.syncClusterFromHeader();
       }
     },
-    'userForm.cluster'(value) {
-      if (value && !this.isSqlAuthCluster) {
+    async 'userForm.cluster'(value) {
+      await this.fetchCapability();
+      if (value && this.showLdapGroupInput) {
         this.fetchLdapGroups();
       } else {
         this.ldapGroups = [];
@@ -179,12 +182,6 @@ export default {
     this.fetchClusters();
   },
   methods: {
-    sqlEngineFromClusterType(type) {
-      const value = String(type || '').toUpperCase();
-      if (value.includes('DORIS')) return 'DORIS';
-      if (value === 'SR' || value.includes('STARROCKS') || value.includes('STAR_ROCKS') || value.includes('STAR')) return 'STARROCKS';
-      return '';
-    },
     syncClusterFromHeader() {
       const preferred = store.headerSelectedCluster;
       if (preferred && this.clusters.some(cluster => (cluster.clusterCode || cluster.clusterName) === preferred)) {
@@ -204,7 +201,20 @@ export default {
         }
       } catch (e) {
         console.error('Failed to fetch clusters', e);
-        // Fallback or empty
+      }
+    },
+    async fetchCapability() {
+      if (!this.userForm.cluster) {
+        this.capability = null;
+        return null;
+      }
+      try {
+        const res = await axios.get('/api/access/capabilities', { params: { cluster: this.userForm.cluster } });
+        this.capability = res.data || null;
+        return this.capability;
+      } catch (e) {
+        this.capability = null;
+        return null;
       }
     },
     async fetchLdapGroups() {
@@ -267,7 +277,7 @@ export default {
         return;
       }
       if (this.isSqlAuthCluster && !this.validateSqlAuthUsername(this.userForm.username)) {
-        this.$message.warning('StarRocks/Doris 用户名需以字母开头，只能包含字母、数字、下划线；可选 user@host');
+        this.$message.warning('授权后端用户名需以字母开头，只能包含字母、数字、下划线；可选 user@host');
         return;
       }
       if (!this.userForm.password) {
@@ -294,7 +304,7 @@ export default {
           firstName: this.userForm.firstName || this.userForm.username.split('@')[0],
           lastName: this.userForm.lastName || 'User',
           accountMode: this.isSqlAuthCluster ? 'SQL_USER' : this.userForm.accountMode,
-          creationStrategy: this.isSqlAuthCluster ? this.selectedSqlEngine : this.userForm.creationStrategy,
+          creationStrategy: this.isSqlAuthCluster ? (this.capability?.engineType || 'LIVE_AUTH_BACKEND') : this.userForm.creationStrategy,
           userType: this.userForm.userType || 'EMPLOYEE',
           expiresAt: this.normalizeExpiry(this.userForm.expiresAt)
         };

@@ -4,12 +4,16 @@ import com.dga.access.dto.AccessOwnerRequest;
 import com.dga.access.entity.AccessActivityEvidence;
 import com.dga.access.entity.AccessGovernanceIssue;
 import com.dga.access.entity.AccessOwner;
+import com.dga.access.entity.AuthRolePermission;
+import com.dga.access.entity.AuthUserRole;
 import com.dga.access.entity.DgaUser;
 import com.dga.access.entity.User;
 import com.dga.access.entity.UserResourceAccess;
 import com.dga.access.repository.AccessActivityEvidenceRepository;
 import com.dga.access.repository.AccessGovernanceIssueRepository;
 import com.dga.access.repository.AccessOwnerRepository;
+import com.dga.access.repository.AuthRolePermissionRepository;
+import com.dga.access.repository.AuthUserRoleRepository;
 import com.dga.access.repository.DgaUserRepository;
 import com.dga.access.repository.UserRepository;
 import com.dga.access.repository.UserResourceAccessRepository;
@@ -55,7 +59,7 @@ import java.util.*;
 public class AccessGovernanceService {
 
     public static final List<String> SOURCE_SYSTEMS = Collections.unmodifiableList(Arrays.asList(
-            "HIVE_SERVER2", "RANGER", "HDFS", "YARN", "STARROCKS", "DORIS"
+            "LDAP", "HIVE_SERVER2", "RANGER", "HDFS", "YARN", "STARROCKS", "DORIS"
     ));
 
     private static final Set<String> HIGH_PRIVILEGE_PERMISSIONS = new HashSet<>(Arrays.asList(
@@ -94,6 +98,12 @@ public class AccessGovernanceService {
 
     @Autowired
     private AccessOwnerRepository ownerRepository;
+
+    @Autowired
+    private AuthUserRoleRepository authUserRoleRepository;
+
+    @Autowired
+    private AuthRolePermissionRepository authRolePermissionRepository;
 
     @Autowired
     private ClusterRepository clusterRepository;
@@ -136,6 +146,7 @@ public class AccessGovernanceService {
         closeLegacyPermissionScopedIssues(clean(cluster), "governance-scan");
         for (List<UserResourceAccess> accountAccesses : accessByAccount(activeAccesses).values()) {
             closeOpenIssue(accountIssueKey("UNUSED_DATABASE_PERMISSION", accountAccesses), "governance-scan");
+            closeOpenIssue(accountIssueKey("ROLE_BASELINE_EXCEEDED", accountAccesses), "governance-scan");
             Boolean unusedPermissionIssue = scanUnusedDatabasePermissions(accountAccesses, usageResult, inactiveDays);
             if (Boolean.TRUE.equals(unusedPermissionIssue)) {
                 created++;
@@ -154,6 +165,17 @@ public class AccessGovernanceService {
             } else if (Boolean.FALSE.equals(unownedIssue)) {
                 refreshed++;
             }
+            Boolean roleBaselineIssue = scanRoleBaselineExceeded(accountAccesses);
+            if (Boolean.TRUE.equals(roleBaselineIssue)) {
+                created++;
+            } else if (Boolean.FALSE.equals(roleBaselineIssue)) {
+                refreshed++;
+            }
+        }
+        if (selectedSources.contains("LDAP")) {
+            ScanResultCounter ldapGroupResult = scanStaleEmptyLdapGroups(cluster);
+            created += ldapGroupResult.created;
+            refreshed += ldapGroupResult.refreshed;
         }
 
         Map<String, Object> result = new HashMap<>();
@@ -1788,6 +1810,231 @@ public class AccessGovernanceService {
         return upsertIssue(issue);
     }
 
+    private Boolean scanRoleBaselineExceeded(List<UserResourceAccess> accesses) {
+        if (accesses == null || accesses.isEmpty()) {
+            return null;
+        }
+        UserResourceAccess first = accesses.get(0);
+        String username = clean(first.getUsername());
+        if (username == null) {
+            return null;
+        }
+        List<AuthRolePermission> baseline = roleBaselinePermissions(first, username);
+        List<UserResourceAccess> exceeded = new ArrayList<>();
+        for (UserResourceAccess access : accesses) {
+            if (!isDatabaseAccess(access)) {
+                continue;
+            }
+            if (!isCoveredByRoleBaseline(access, baseline)) {
+                exceeded.add(access);
+            }
+        }
+        if (exceeded.isEmpty()) {
+            return null;
+        }
+        AccessGovernanceIssue issue = baseAccountAccessIssue(first, "ROLE_BASELINE_EXCEEDED", "HIGH",
+                "账号实际权限超过所属 RBAC 角色范围");
+        issue.setIssueKey(issueKey("ROLE_BASELINE_EXCEEDED",
+                clusterValue(firstNonBlank(first.getClusterCode(), first.getClusterName())), first.getUsername()));
+        issue.setSourceSystems(accessSources(exceeded));
+        issue.setPermission(joinPermissions(exceeded));
+        issue.setConfidence("HIGH");
+        issue.setEvidence(trimTo("该账号当前有 " + exceeded.size() + " 条权限不在其有效角色范围内："
+                + summarizeAccesses(exceeded, 10) + "；当前有效角色范围 "
+                + baseline.size() + " 条。", 1000));
+        issue.setRecommendation("建议将这些权限补入合适角色并完成审批，或按例外权限登记原因/工单/过期时间；确认不需要时应回收超出角色基线的权限。");
+        return upsertIssue(issue);
+    }
+
+    private ScanResultCounter scanStaleEmptyLdapGroups(String cluster) {
+        ScanResultCounter counter = new ScanResultCounter();
+        for (Cluster targetCluster : staleGroupClusters(cluster)) {
+            if (!isSourceConfigured(targetCluster, "LDAP")) {
+                continue;
+            }
+            String clusterIdentifier = firstNonBlank(targetCluster.getClusterCode(), targetCluster.getClusterName());
+            closeStaleEmptyGroupIssues(clusterIdentifier, "governance-scan");
+            List<Map<String, Object>> groups;
+            try {
+                groups = ldapService.listPosixGroups(clusterIdentifier);
+            } catch (Exception e) {
+                continue;
+            }
+            for (Map<String, Object> group : groups) {
+                if (!Boolean.TRUE.equals(group.get("staleEmpty"))) {
+                    continue;
+                }
+                Boolean issueResult = upsertStaleEmptyLdapGroupIssue(targetCluster, group);
+                if (Boolean.TRUE.equals(issueResult)) {
+                    counter.created++;
+                } else if (Boolean.FALSE.equals(issueResult)) {
+                    counter.refreshed++;
+                }
+            }
+        }
+        return counter;
+    }
+
+    private List<Cluster> staleGroupClusters(String cluster) {
+        Cluster resolved = resolveClusterObject(cluster);
+        if (resolved != null) {
+            return Collections.singletonList(resolved);
+        }
+        return clusterRepository.findActiveClusters();
+    }
+
+    private Boolean upsertStaleEmptyLdapGroupIssue(Cluster cluster, Map<String, Object> group) {
+        String groupName = clean(stringValue(group.get("name")));
+        if (groupName == null) {
+            return null;
+        }
+        LocalDateTime emptySince = parseTime(group.get("emptySince"));
+        long staleEmptyDays = longValue(group.get("staleEmptyDays"));
+        AccessGovernanceIssue issue = new AccessGovernanceIssue();
+        issue.setIssueType("STALE_EMPTY_LDAP_GROUP");
+        issue.setSeverity("MEDIUM");
+        issue.setUsername(groupName);
+        issue.setClusterCode(cluster == null ? null : cluster.getClusterCode());
+        issue.setClusterName(cluster == null ? null : cluster.getClusterName());
+        issue.setResourceType("LDAP_GROUP");
+        issue.setPermission("EMPTY");
+        issue.setSourceSystems("LDAP");
+        issue.setLastActiveAt(emptySince);
+        issue.setLastActiveSource("连续空置起点");
+        issue.setIssueKey(issueKey("STALE_EMPTY_LDAP_GROUP",
+                clusterValue(firstNonBlank(cluster == null ? null : cluster.getClusterCode(),
+                        cluster == null ? null : cluster.getClusterName())), groupName));
+        issue.setEvidence(trimTo("LDAP 组 " + groupName
+                + (group.get("gidNumber") == null ? "" : "（gid=" + group.get("gidNumber") + "）")
+                + " 已连续 " + staleEmptyDays + " 天没有绑定用户；direct memberUid="
+                + longValue(group.get("directMemberCount")) + "，primary gidNumber 用户="
+                + longValue(group.get("primaryUserCount")) + "，当前有效绑定用户数为 0。", 1000));
+        issue.setRecommendation("确认该 LDAP 组是否仍需保留；不再使用则删除，需要继续使用则补充绑定用户后重新扫描。");
+        issue.setConfidence(emptySince == null ? "LOW" : "HIGH");
+        return upsertIssue(issue);
+    }
+
+    private void closeStaleEmptyGroupIssues(String cluster, String operator) {
+        for (AccessGovernanceIssue issue : issueRepository.findUnresolvedByCluster(cluster)) {
+            if (!"STALE_EMPTY_LDAP_GROUP".equals(issue.getIssueType())) {
+                continue;
+            }
+            issue.setStatus("RESOLVED");
+            issue.setResolvedAt(LocalDateTime.now());
+            issue.setResolvedBy(operator);
+            issueRepository.save(issue);
+        }
+    }
+
+    private List<AuthRolePermission> roleBaselinePermissions(UserResourceAccess firstAccess, String username) {
+        LinkedHashSet<String> roleCodes = new LinkedHashSet<>();
+        for (AuthUserRole assignment : authUserRoleRepository.findBySubjectTypeAndSubjectNameAndStatus("USER", username, "ACTIVE")) {
+            if (!sameCluster(firstAccess, assignment.getCluster())) {
+                continue;
+            }
+            if (!isUsableRoleAssignment(assignment)) {
+                continue;
+            }
+            roleCodes.add(assignment.getRoleCode());
+        }
+        List<AuthRolePermission> permissions = new ArrayList<>();
+        for (String roleCode : roleCodes) {
+            permissions.addAll(authRolePermissionRepository.findByRoleCodeAndStatus(roleCode, "ACTIVE"));
+        }
+        return permissions;
+    }
+
+    private boolean isUsableRoleAssignment(AuthUserRole assignment) {
+        if (assignment == null) {
+            return false;
+        }
+        if (assignment.getExpiresAt() != null && assignment.getExpiresAt().isBefore(LocalDateTime.now())) {
+            return false;
+        }
+        String syncStatus = firstNonBlank(assignment.getBackendSyncStatus(), "SUCCESS");
+        return "SUCCESS".equalsIgnoreCase(syncStatus)
+                || "PENDING_GROUP_MAPPING".equalsIgnoreCase(syncStatus)
+                || "LOCAL_ONLY".equalsIgnoreCase(syncStatus);
+    }
+
+    private boolean isCoveredByRoleBaseline(UserResourceAccess access, List<AuthRolePermission> baseline) {
+        if (baseline == null || baseline.isEmpty()) {
+            return false;
+        }
+        for (AuthRolePermission permission : baseline) {
+            if (!sameCluster(access, permission.getCluster())) {
+                continue;
+            }
+            if (!authBackendCompatible(access.getAuthBackend(), permission.getAuthBackend())) {
+                continue;
+            }
+            if (!permissionCovers(permission.getPermission(), access.getPermission())) {
+                continue;
+            }
+            if (resourceCovers(permission.getDatabaseName(), permission.getTableName(),
+                    access.getDatabaseName(), access.getTableName())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean resourceCovers(String roleDatabase, String roleTable, String accessDatabase, String accessTable) {
+        String roleDb = normalizeResourceToken(roleDatabase);
+        String roleTbl = normalizeResourceToken(roleTable);
+        String accessDb = normalizeResourceToken(accessDatabase);
+        String accessTbl = normalizeResourceToken(accessTable);
+        if ("*".equals(roleDb)) {
+            return true;
+        }
+        if (!sameText(roleDb, accessDb)) {
+            return false;
+        }
+        return roleTbl == null || "*".equals(roleTbl) || sameText(roleTbl, accessTbl);
+    }
+
+    private boolean permissionCovers(String rolePermission, String accessPermission) {
+        Set<String> rolePermissions = permissionSet(rolePermission);
+        if (rolePermissions.contains("ALL") || rolePermissions.contains("ADMIN") || rolePermissions.contains("OWNERSHIP")) {
+            return true;
+        }
+        Set<String> accessPermissions = permissionSet(accessPermission);
+        return !accessPermissions.isEmpty() && rolePermissions.containsAll(accessPermissions);
+    }
+
+    private Set<String> permissionSet(String permission) {
+        LinkedHashSet<String> result = new LinkedHashSet<>();
+        if (permission == null) {
+            return result;
+        }
+        for (String part : permission.split(",")) {
+            String value = clean(part);
+            if (value != null) {
+                result.add(value.toUpperCase(Locale.ROOT).replace("_PRIV", ""));
+            }
+        }
+        return result;
+    }
+
+    private boolean authBackendCompatible(String accessBackend, String roleBackend) {
+        String access = clean(accessBackend);
+        String role = clean(roleBackend);
+        return access == null || role == null || sameText(access, role);
+    }
+
+    private boolean sameCluster(UserResourceAccess access, String cluster) {
+        String value = clean(cluster);
+        if (value == null) {
+            return true;
+        }
+        return sameText(value, access.getClusterCode()) || sameText(value, access.getClusterName());
+    }
+
+    private String normalizeResourceToken(String value) {
+        String cleaned = clean(value);
+        return cleaned == null ? null : cleaned.toLowerCase(Locale.ROOT);
+    }
+
     private AccessGovernanceIssue baseUserIssue(DgaUser user, String issueType, String severity, String title) {
         AccessGovernanceIssue issue = new AccessGovernanceIssue();
         issue.setIssueType(issueType);
@@ -1929,7 +2176,8 @@ public class AccessGovernanceService {
     private boolean isPermissionGovernanceType(String issueType) {
         return "HIGH_PRIVILEGE_REVIEW".equals(issueType)
                 || "UNOWNED_PERMISSION".equals(issueType)
-                || "UNUSED_DATABASE_PERMISSION".equals(issueType);
+                || "UNUSED_DATABASE_PERMISSION".equals(issueType)
+                || "ROLE_BASELINE_EXCEEDED".equals(issueType);
     }
 
     private AccessGovernanceIssue requireIssue(Long issueId) {
@@ -2120,6 +2368,9 @@ public class AccessGovernanceService {
         if (!isSourceConfigured(cluster, source)) {
             return "未接入 " + source + " endpoint";
         }
+        if ("LDAP".equals(source)) {
+            return "已配置，将按 OpenLDAP 的 memberUid + gidNumber 主组关系识别长期空置 LDAP 组";
+        }
         if ("HIVE_SERVER2".equals(source)) {
             ClusterEndpoint endpoint = firstEndpoint(cluster, ClusterEndpoint.TYPE_HIVE_SERVER2);
             String auditTable = endpoint == null ? null : clean(endpoint.getServiceName());
@@ -2168,6 +2419,9 @@ public class AccessGovernanceService {
         int count = configuredClusterCount(source);
         if (count <= 0) {
             return "全部集群未接入 " + source + " endpoint";
+        }
+        if ("LDAP".equals(source)) {
+            return "全部集群：已接入 " + count + " 个 OpenLDAP 端点；将识别连续 30 天未绑定用户的 LDAP 组";
         }
         if ("HIVE_SERVER2".equals(source)) {
             return "全部集群：已接入 " + count + " 个 HiveServer2 端点；未使用权限判定仍要求端点服务名配置可直接查询的 Hive/Ranger 审计表";
@@ -2234,6 +2488,9 @@ public class AccessGovernanceService {
     }
 
     private String sourceLabel(String source) {
+        if ("LDAP".equals(source)) {
+            return "OpenLDAP";
+        }
         if ("HIVE_SERVER2".equals(source)) {
             return "HiveServer2";
         }
@@ -2758,5 +3015,10 @@ public class AccessGovernanceService {
         private final Map<Long, AuditHit> usedByAccessId = new HashMap<>();
         private final Map<Long, AuditHit> historyByAccessId = new HashMap<>();
         private final Map<Long, AuditHit> auxiliaryByAccessId = new HashMap<>();
+    }
+
+    private static class ScanResultCounter {
+        private int created;
+        private int refreshed;
     }
 }

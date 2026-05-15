@@ -8,6 +8,7 @@ import java.util.List;
 public class AuthorizationContext {
     private Cluster cluster;
     private String clusterIdentifier;
+    private String requestedAuthBackend;
     private List<ClusterEndpoint> endpoints;
 
     public Cluster getCluster() {
@@ -24,6 +25,14 @@ public class AuthorizationContext {
 
     public void setClusterIdentifier(String clusterIdentifier) {
         this.clusterIdentifier = clusterIdentifier;
+    }
+
+    public String getRequestedAuthBackend() {
+        return requestedAuthBackend;
+    }
+
+    public void setRequestedAuthBackend(String requestedAuthBackend) {
+        this.requestedAuthBackend = requestedAuthBackend;
     }
 
     public List<ClusterEndpoint> getEndpoints() {

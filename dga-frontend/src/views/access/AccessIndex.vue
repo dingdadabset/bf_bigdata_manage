@@ -86,9 +86,13 @@ export default {
       this.$refs.userList.fetchUsers();
     },
     onGrant(username, cluster) {
-      this.currentGrantUser = username;
-      this.currentGrantCluster = cluster;
-      this.grantModalVisible = true;
+      this.$router.push({
+        name: 'AuthorizationCenter',
+        query: {
+          username,
+          cluster: cluster || ''
+        }
+      });
     },
     onGrantSuccess() {
       this.grantModalVisible = false;

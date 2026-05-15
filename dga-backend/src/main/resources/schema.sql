@@ -413,7 +413,7 @@ CREATE TABLE IF NOT EXISTS `dga_cluster_endpoint` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `cluster_code` VARCHAR(100) NOT NULL,
   `endpoint_type` VARCHAR(50) NOT NULL COMMENT 'HIVE_SERVER2, HIVE_METASTORE_DB, AZKABAN_DB, DOLPHINSCHEDULER_DB, STARROCKS_JDBC, LDAP, RANGER, RANGER_DB, HDFS, YARN, HUE',
-  `auth_backend` VARCHAR(50) COMMENT 'SENTRY, STARROCKS_SQL, RANGER',
+  `auth_backend` VARCHAR(50) COMMENT 'provider auth backend, e.g. SENTRY, RANGER, STARROCKS_SQL, DORIS_SQL',
   `url` VARCHAR(1000),
   `username` VARCHAR(255),
   `password` VARCHAR(255),
@@ -437,10 +437,19 @@ CREATE TABLE IF NOT EXISTS `user_resource_access` (
   `cluster_code` VARCHAR(100),
   `cluster_name` VARCHAR(255),
   `engine_type` VARCHAR(50) COMMENT 'HIVE, STARROCKS, DORIS',
-  `resource_type` VARCHAR(50) COMMENT 'DATABASE, TABLE',
+  `resource_type` VARCHAR(50) COMMENT 'provider resource type, e.g. DATABASE, TABLE, COLUMN, VIEW, FUNCTION',
   `database_name` VARCHAR(255),
   `table_name` VARCHAR(255),
   `permission` VARCHAR(50) NOT NULL,
+  `grant_mode` VARCHAR(40) DEFAULT 'ROLE' COMMENT 'ROLE or DIRECT_EXCEPTION',
+  `role_code` VARCHAR(128) COMMENT 'RBAC role code when grant_mode=ROLE',
+  `subject_type` VARCHAR(20) COMMENT 'USER or GROUP for RBAC/direct grant subject',
+  `subject_name` VARCHAR(200) COMMENT 'Actual grant subject; may differ from validation username',
+  `exception_reason` VARCHAR(1000) COMMENT 'Direct grant exception reason',
+  `ticket_no` VARCHAR(100) COMMENT 'Ticket number for direct exception',
+  `approver` VARCHAR(100) COMMENT 'Approver for direct exception',
+  `expires_at` DATETIME COMMENT 'Grant expiry time',
+  `risk_level` VARCHAR(20) COMMENT 'LOW, MEDIUM, HIGH',
   `auth_backend` VARCHAR(50),
   `source` VARCHAR(50) COMMENT 'DGA_GRANT, SYNC',
   `owner` VARCHAR(100) COMMENT 'Business owner responsible for this permission',
@@ -457,9 +466,99 @@ CREATE TABLE IF NOT EXISTS `user_resource_access` (
   `is_deleted` BOOLEAN DEFAULT FALSE,
   PRIMARY KEY (`id`),
   INDEX `idx_user_resource_access` (`username`, `cluster_code`, `database_name`, `table_name`, `status`),
+  INDEX `idx_user_resource_subject` (`subject_type`, `subject_name`, `status`),
   INDEX `idx_user_resource_owner` (`owner`, `status`),
   INDEX `idx_user_resource_review_due` (`review_due_at`, `status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Generalized access records across engines';
+
+CREATE TABLE IF NOT EXISTS `auth_role` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `role_code` VARCHAR(128) NOT NULL,
+  `role_name` VARCHAR(200) NOT NULL,
+  `cluster_name` VARCHAR(255) NOT NULL,
+  `engine_type` VARCHAR(50),
+  `auth_backend` VARCHAR(50),
+  `owner` VARCHAR(100),
+  `risk_level` VARCHAR(20) DEFAULT 'LOW',
+  `expires_at` DATETIME,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+  `description` VARCHAR(1000),
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `idx_auth_role_code` (`role_code`),
+  INDEX `idx_auth_role_cluster` (`cluster_name`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RBAC role catalogue';
+
+CREATE TABLE IF NOT EXISTS `auth_role_permission` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `role_code` VARCHAR(128) NOT NULL,
+  `cluster_name` VARCHAR(255) NOT NULL,
+  `resource_type` VARCHAR(50) NOT NULL,
+  `database_name` VARCHAR(255),
+  `table_name` VARCHAR(255),
+  `permission` VARCHAR(50) NOT NULL,
+  `auth_backend` VARCHAR(50),
+  `status` VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_auth_role_perm_role` (`role_code`, `status`),
+  INDEX `idx_auth_role_perm_resource` (`cluster_name`, `database_name`, `table_name`, `permission`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RBAC role permissions';
+
+CREATE TABLE IF NOT EXISTS `auth_user_role` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `role_code` VARCHAR(128) NOT NULL,
+  `cluster_name` VARCHAR(255) NOT NULL,
+  `subject_type` VARCHAR(20) NOT NULL,
+  `subject_name` VARCHAR(200) NOT NULL,
+  `auth_backend` VARCHAR(50),
+  `expires_at` DATETIME,
+  `status` VARCHAR(30) NOT NULL DEFAULT 'ACTIVE',
+  `backend_sync_status` VARCHAR(40),
+  `sync_message` VARCHAR(1000),
+  `expanded_users` VARCHAR(2000),
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `update_time` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_auth_user_role_role` (`role_code`, `status`),
+  INDEX `idx_auth_user_role_subject` (`subject_type`, `subject_name`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RBAC user/group role assignments';
+
+CREATE TABLE IF NOT EXISTS `auth_role_assignment_audit` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `role_code` VARCHAR(128),
+  `cluster_name` VARCHAR(255),
+  `action` VARCHAR(80) NOT NULL,
+  `subject_type` VARCHAR(20),
+  `subject_name` VARCHAR(200),
+  `resource_summary` VARCHAR(1000),
+  `backend_status` VARCHAR(40),
+  `message` VARCHAR(2000),
+  `operator` VARCHAR(100),
+  `action_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  INDEX `idx_auth_role_audit_role` (`role_code`, `action_time`),
+  INDEX `idx_auth_role_audit_subject` (`subject_type`, `subject_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='RBAC role and assignment audit';
+
+CREATE TABLE IF NOT EXISTS `ldap_group_empty_state` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `cluster_code` VARCHAR(100),
+  `cluster_name` VARCHAR(255) NOT NULL,
+  `group_name` VARCHAR(128) NOT NULL,
+  `gid_number` BIGINT,
+  `empty_since` DATETIME,
+  `last_seen_empty_at` DATETIME,
+  `last_seen_non_empty_at` DATETIME,
+  `create_time` DATETIME DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_ldap_group_empty_state` (`cluster_name`, `group_name`),
+  INDEX `idx_ldap_group_empty_cluster` (`cluster_name`, `empty_since`),
+  INDEX `idx_ldap_group_empty_code` (`cluster_code`, `group_name`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='LDAP 组连续空置状态快照';
 
 -- 15. Access Governance Issues
 CREATE TABLE IF NOT EXISTS `access_governance_issue` (

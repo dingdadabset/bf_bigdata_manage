@@ -6,11 +6,11 @@
       :loading="loadingUsers"
       class="user-list"
     >
-      <a-list-item 
-        slot="renderItem" 
-        slot-scope="item" 
+      <a-list-item
+        slot="renderItem"
+        slot-scope="item"
         class="user-list-item"
-        :class="{ 'active': isSelected(item) }"
+        :class="{ active: isSelected(item) }"
         @click="selectUser(item)"
       >
         <a-list-item-meta>
@@ -21,7 +21,7 @@
           </div>
           <span slot="title" class="user-list-title">
             {{ item.username }}
-            <a-tag v-if="item.role" color="blue" style="margin-left: 8px; font-size: 10px; line-height: 18px; height: 20px;">{{ item.role }}</a-tag>
+            <a-tag v-if="item.role" color="blue" class="compact-tag">{{ item.role }}</a-tag>
             <a-tag v-if="isProtectedBigDataUser(item)" color="orange" class="compact-tag">保护</a-tag>
             <a-tag v-if="userTypeLabel(item.userType)" :color="userTypeColor(item.userType)" class="compact-tag">
               {{ userTypeLabel(item.userType) }}
@@ -51,6 +51,7 @@
 import axios from 'axios';
 import moment from 'moment';
 import { store, mutations } from '../../../store';
+import { importMode, userSourceLabel } from '../authorizationCenterHelpers';
 
 const PROTECTED_BIGDATA_USERS = [
   'alading',
@@ -72,56 +73,51 @@ export default {
   data() {
     return {
       store,
-      // userList: [], // Use computed instead
       loadingUsers: false,
       capability: null,
       pagination: { current: 1, pageSize: 8, total: 0 },
-      selectedUser: null,
+      selectedUser: null
     };
   },
   computed: {
     userList() {
-      // For now, let's just use the store users as the source of truth for this demo
       return store.users;
     },
     filteredUsers() {
-      // Server-side filtering; return current page content
       return this.userList.filter(u => !['SELF_REGISTER', 'SELF_REG'].includes(u.creationStrategy));
     }
   },
   watch: {
-    'store.headerSearchText'(val) {
+    'store.headerSearchText'() {
       this.pagination.current = 1;
       this.fetchUsers();
     },
-    'store.headerSelectedCluster'(val) {
+    'store.headerSelectedCluster'() {
       this.pagination.current = 1;
       this.fetchCapability();
       this.fetchUsers();
     },
     'store.headerAction'(val) {
       if (val && val.type === 'import') {
-        this.handleImport(val.cluster);
+        this.handleImport();
       } else if (val && val.type === 'create') {
         this.$emit('create');
       }
     }
   },
   async mounted() {
-    this.fetchCapability();
+    await this.fetchCapability();
     this.fetchUsers();
   },
   methods: {
-    async handleImport(selectedCluster) {
+    async handleImport() {
       const cluster = store.headerSelectedCluster;
       if (!cluster) {
         this.$message.warning('请先选择具体集群后再导入用户');
         return;
       }
-      const clusterType = String(selectedCluster && selectedCluster.type ? selectedCluster.type : '').toUpperCase();
       const capability = this.capability || await this.fetchCapability();
-      const sqlEngine = this.sqlEngineFromCapability(capability) || this.sqlEngineFromClusterType(clusterType);
-      const isSqlAuthBackend = Boolean(sqlEngine);
+      const isSqlAuthBackend = importMode(capability) === 'AUTH_BACKEND';
       this.loadingUsers = true;
       try {
         const url = isSqlAuthBackend ? '/api/access/import-auth-backend' : '/api/access/import';
@@ -129,7 +125,7 @@ export default {
         const data = res.data || {};
         const repairedText = data.repaired ? `，历史修复 ${data.repaired}` : '';
         if ((data.total || 0) === 0) {
-          this.$message.warning(data.message || (isSqlAuthBackend ? '授权后端查询成功，但没有找到用户' : 'LDAP 查询成功，但没有找到用户，请检查 User Base DN 是否为用户所在目录'));
+          this.$message.warning(data.message || (isSqlAuthBackend ? `${userSourceLabel(capability)}查询成功，但没有找到用户` : 'LDAP 查询成功，但没有找到用户，请检查 User Base DN 是否为用户所在目录'));
         } else if (data.failed) {
           const firstFailure = data.failures && data.failures.length
             ? `，首个失败: ${data.failures[0].message}`
@@ -145,7 +141,7 @@ export default {
         await this.fetchUsers();
       } catch (e) {
         console.error(e);
-        this.$message.error(e.response?.data?.message || (isSqlAuthBackend ? '授权后端用户导入失败' : 'OpenLDAP 导入失败'));
+        this.$message.error(e.response?.data?.message || (isSqlAuthBackend ? `${userSourceLabel(capability)}导入失败` : 'OpenLDAP 导入失败'));
       } finally {
         this.loadingUsers = false;
       }
@@ -165,31 +161,13 @@ export default {
         return null;
       }
     },
-    sqlEngineFromClusterType(type) {
-      const value = String(type || '').toUpperCase();
-      if (value.includes('DORIS')) return 'DORIS';
-      if (value === 'SR' || value.includes('STARROCKS') || value.includes('STAR_ROCKS') || value.includes('STAR')) return 'STARROCKS';
-      return '';
-    },
-    sqlEngineFromCapability(capability) {
-      const backend = String(capability && capability.authBackend ? capability.authBackend : '').toUpperCase();
-      const engine = String(capability && capability.engineType ? capability.engineType : '').toUpperCase();
-      const combined = `${backend} ${engine}`;
-      if (combined.includes('DORIS')) return 'DORIS';
-      if (combined.includes('STARROCKS') || combined.includes('STAR_ROCKS') || combined.includes('STAR')) return 'STARROCKS';
-      return '';
-    },
-    currentSqlEngine() {
-      return this.sqlEngineFromCapability(this.capability);
-    },
     getRenderedStrategyLabel(item) {
-      const engine = this.currentSqlEngine();
-      if (engine === 'DORIS') return 'Doris 用户';
-      if (engine === 'STARROCKS') return 'StarRocks 用户';
-      return this.getStrategyLabel(item && item.creationStrategy);
+      return importMode(this.capability) === 'AUTH_BACKEND'
+        ? userSourceLabel(this.capability)
+        : this.getStrategyLabel(item && item.creationStrategy);
     },
     getRenderedStrategyClass(item) {
-      if (this.currentSqlEngine()) return 'source-sql';
+      if (importMode(this.capability) === 'AUTH_BACKEND') return 'source-sql';
       return this.getStrategyClass(item && item.creationStrategy);
     },
     getAvatarColor(username) {
@@ -203,7 +181,7 @@ export default {
     getStrategyColor(strategy) {
       const s = (strategy || '').toUpperCase();
       switch (s) {
-        case 'SELF_REG': 
+        case 'SELF_REG':
         case 'SELF_REGISTER': return 'green';
         case 'IPA_HTTP': return 'purple';
         case 'IPA_IMPORT': return 'orange';
@@ -283,31 +261,25 @@ export default {
     async fetchUsers(params = {}) {
       this.loadingUsers = true;
       try {
-        // Merge params with cluster filter
         const requestParams = { ...params };
-        
         const cluster = store.headerSelectedCluster;
         if (cluster) {
           requestParams.cluster = cluster;
         }
-        
         requestParams.page = this.pagination.current - 1;
         requestParams.size = this.pagination.pageSize;
-        
+
         const searchText = store.headerSearchText;
         if (searchText && searchText.trim()) {
           requestParams.q = searchText.trim();
         }
-        
+
         const res = await axios.get('/api/access/users', { params: requestParams });
         if (res.data && res.data.content) {
-             mutations.setUsers(res.data.content);
-             this.pagination.total = res.data.totalElements;
-        } else {
-             // Fallback or empty
+          mutations.setUsers(res.data.content);
+          this.pagination.total = res.data.totalElements;
         }
-        
-        // Auto select first user if none selected or selected user is not in the current page/filter
+
         if (this.selectedUser && !this.userList.some(u => this.sameUser(u, this.selectedUser))) {
           this.selectedUser = null;
           this.$emit('select', null);
@@ -316,8 +288,7 @@ export default {
           this.selectUser(this.userList[0]);
         }
       } catch (e) {
-          console.error("Failed to fetch users", e);
-          // Fallback to store/mock if needed, but for now let's rely on API
+        console.error('Failed to fetch users', e);
       } finally {
         this.loadingUsers = false;
       }

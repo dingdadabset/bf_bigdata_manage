@@ -27,6 +27,7 @@
               @change="onClusterChange"
               class="custom-header-select"
             >
+              <a-select-option :value="''">全部集群</a-select-option>
               <a-select-option v-for="cluster in clusters" :key="cluster.id" :value="cluster.clusterCode || cluster.clusterName">
                 {{ cluster.clusterName }}{{ cluster.clusterCode ? ` (${cluster.clusterCode})` : '' }}
               </a-select-option>
@@ -130,9 +131,13 @@
                 <a-icon type="safety-certificate" />
                 <span>授权中心</span>
               </a-menu-item>
+              <a-menu-item key="/role-management">
+                <a-icon type="profile" />
+                <span>角色管理</span>
+              </a-menu-item>
               <a-menu-item key="/access-governance">
-                <a-icon type="security-scan" />
-                <span>权限治理</span>
+                <a-icon type="audit" />
+                <span>风险治理</span>
               </a-menu-item>
             </a-sub-menu>
             <a-menu-item key="/metadata">
@@ -242,7 +247,7 @@ export default {
       return isRootAdmin();
     },
     defaultOpenKeys() {
-      const authPaths = ['/environment-resources', '/access', '/authorization-center', '/access-governance'];
+      const authPaths = ['/environment-resources', '/access', '/authorization-center', '/role-management', '/access-governance'];
       return authPaths.includes(this.$route.path) ? ['bigdata-auth'] : [];
     }
   },
@@ -264,12 +269,6 @@ export default {
         const res = await axios.get('/api/clusters');
         if (res.data) {
           this.clusters = res.data;
-          const stillExists = this.clusters.some(cluster => (cluster.clusterCode || cluster.clusterName) === this.selectedCluster);
-          if ((!this.selectedCluster || !stillExists) && this.clusters.length) {
-            const firstCluster = this.clusters[0].clusterCode || this.clusters[0].clusterName;
-            this.selectedCluster = firstCluster;
-            this.onClusterChange(firstCluster);
-          }
         }
       } catch (e) {
         console.error("Failed to fetch clusters", e);
@@ -330,11 +329,9 @@ export default {
     },
     onClusterChange(value) {
       mutations.setHeaderSelectedCluster(value);
-      mutations.setCluster(value);
     },
     triggerAction(type) {
-      const cluster = this.clusters.find(item => (item.clusterCode || item.clusterName) === this.selectedCluster);
-      mutations.triggerHeaderAction({ type, cluster });
+      mutations.triggerHeaderAction(type);
     },
     handleMenuClick({ key }) {
       if (['settings', 'logout'].includes(key)) return;

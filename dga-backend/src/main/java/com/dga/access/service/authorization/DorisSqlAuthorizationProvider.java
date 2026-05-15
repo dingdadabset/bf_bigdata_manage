@@ -2,15 +2,19 @@ package com.dga.access.service.authorization;
 
 import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
+import org.springframework.jdbc.core.ConnectionCallback;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.stereotype.Service;
 
+import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
+import java.sql.Statement;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.HashMap;
 import java.util.Set;
 import java.util.TreeMap;
 
@@ -41,6 +45,21 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
     }
 
     @Override
+    public AuthorizationProviderDescriptor descriptor() {
+        return AuthorizationProviderDescriptor.create(engineType(), authBackend(), ClusterEndpoint.TYPE_DORIS_JDBC)
+                .missingEndpointWarning("Doris 授权需要 DORIS_JDBC 端点。")
+                .principalTypes("USER")
+                .resourceTypes("DATABASE", "TABLE")
+                .permissions("SELECT", "INSERT", "CREATE", "ALTER", "DROP", "ALL")
+                .requiresLdap(false)
+                .identity("AUTH_BACKEND", "SQL", true, true, "AUTH_BACKEND", false, false, "Doris 用户")
+                .rbac(true, true, true, true, false, false, false, false, "USER", "USER")
+                .grant(true, true, true, false, true, true, false, true)
+                .ui("Doris 用户", "创建 Doris 用户", "导入 Doris 用户",
+                        "Doris 支持用户直绑", "Doris 原生角色对用户生效");
+    }
+
+    @Override
     public List<String> listDatabases(AuthorizationContext context) {
         return jdbcTemplate(context).queryForList("SHOW DATABASES", String.class);
     }
@@ -53,7 +72,7 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
 
     @Override
     public List<String> listPrincipals(AuthorizationContext context) {
-        List<Map<String, Object>> rows = jdbcTemplate(context).queryForList("SHOW ALL GRANTS");
+        List<Map<String, Object>> rows = queryPrivileged(context, "SHOW ALL GRANTS");
         Set<String> users = new LinkedHashSet<>();
         for (Map<String, Object> row : rows) {
             Map<String, Object> normalized = caseInsensitive(row);
@@ -70,12 +89,25 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
     public List<Map<String, Object>> getUserPermissions(AuthorizationContext context, String username) {
         AuthorizationSupport.validateName(username);
         try {
-            List<Map<String, Object>> rows = jdbcTemplate(context)
-                    .queryForList("SHOW GRANTS FOR " + formatUserIdentity(username));
+            List<Map<String, Object>> rows = queryPrivileged(context, "SHOW GRANTS FOR " + formatUserIdentity(username));
             return normalizeGrantRows(rows);
         } catch (Exception e) {
             System.out.println("SHOW GRANTS FOR Doris user failed: " + e.getMessage());
             return new ArrayList<>();
+        }
+    }
+
+    @Override
+    public boolean userExists(AuthorizationContext context, String username) {
+        validateUserIdentity(username);
+        try {
+            queryPrivileged(context, "SHOW GRANTS FOR " + formatUserIdentity(username));
+            return true;
+        } catch (Exception e) {
+            if (isMissingUser(e)) {
+                return false;
+            }
+            throw e;
         }
     }
 
@@ -85,13 +117,13 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
         if (password == null || password.isEmpty()) {
             throw new IllegalArgumentException("Doris 用户密码不能为空");
         }
-        jdbcTemplate(context).execute("CREATE USER " + formatUserIdentity(username) + " IDENTIFIED BY '" + escapeSqlLiteral(password) + "'");
+        executePrivileged(context, "CREATE USER " + formatUserIdentity(username) + " IDENTIFIED BY '" + escapeSqlLiteral(password) + "'");
     }
 
     @Override
     public void grant(AuthorizationContext context, GrantCommand command) {
         validate(command);
-        jdbcTemplate(context).execute(buildSql("GRANT", "TO", command));
+        executePrivileged(context, buildSql("GRANT", "TO", command));
     }
 
     @Override
@@ -99,7 +131,7 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
         validate(command);
         String sql = buildSql("REVOKE", "FROM", command);
         try {
-            jdbcTemplate(context).execute(sql);
+            executePrivileged(context, sql);
         } catch (Exception e) {
             if (isMissingGrant(e)) {
                 System.out.println("Doris grant already absent, skip revoke: " + sql);
@@ -112,6 +144,55 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
     @Override
     public void revokeAll(AuthorizationContext context, String username) {
         System.out.println("Doris revokeAll is not implemented because Doris grants are resource scoped.");
+    }
+
+    @Override
+    public void ensureRole(AuthorizationContext context, String roleCode) {
+        AuthorizationSupport.validateName(roleCode);
+        try {
+            executePrivileged(context, "CREATE ROLE " + quoteIdentifier(roleCode));
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage().toLowerCase() : "";
+            if (!msg.contains("already") && !msg.contains("exists")) {
+                throw e;
+            }
+        }
+    }
+
+    @Override
+    public void grantPermissionToRole(AuthorizationContext context, String roleCode, String database, String table, String permission) {
+        AuthorizationSupport.validateName(roleCode);
+        GrantCommand command = roleCommand(roleCode, context.getClusterIdentifier(), database, table, permission);
+        executePrivileged(context, buildRoleSql("GRANT", "TO", command));
+    }
+
+    @Override
+    public void revokePermissionFromRole(AuthorizationContext context, String roleCode, String database, String table, String permission) {
+        AuthorizationSupport.validateName(roleCode);
+        GrantCommand command = roleCommand(roleCode, context.getClusterIdentifier(), database, table, permission);
+        try {
+            executePrivileged(context, buildRoleSql("REVOKE", "FROM", command));
+        } catch (Exception e) {
+            if (!isMissingGrant(e)) {
+                throw e;
+            }
+        }
+    }
+
+    @Override
+    public void assignRoleToUser(AuthorizationContext context, String roleCode, String username) {
+        AuthorizationSupport.validateName(roleCode);
+        validateUserIdentity(username);
+        executePrivileged(context, "GRANT " + quoteIdentifier(roleCode) + " TO " + formatUserIdentity(username));
+    }
+
+    @Override
+    public void revokeRoleAssignment(AuthorizationContext context, String roleCode, String subjectType, String subjectName) {
+        AuthorizationSupport.validateName(roleCode);
+        if ("USER".equalsIgnoreCase(subjectType)) {
+            validateUserIdentity(subjectName);
+            executePrivileged(context, "REVOKE " + quoteIdentifier(roleCode) + " FROM " + formatUserIdentity(subjectName));
+        }
     }
 
     private JdbcTemplate jdbcTemplate(AuthorizationContext context) {
@@ -127,9 +208,57 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
         return new JdbcTemplate(dataSource);
     }
 
+    private void executePrivileged(AuthorizationContext context, String sql) {
+        jdbcTemplate(context).execute((ConnectionCallback<Void>) connection -> {
+            try (Statement statement = connection.createStatement()) {
+                activateAvailableRoles(statement);
+                statement.execute(sql);
+            }
+            return null;
+        });
+    }
+
+    private List<Map<String, Object>> queryPrivileged(AuthorizationContext context, String sql) {
+        return jdbcTemplate(context).execute((ConnectionCallback<List<Map<String, Object>>>) connection -> {
+            try (Statement statement = connection.createStatement()) {
+                activateAvailableRoles(statement);
+                try (ResultSet resultSet = statement.executeQuery(sql)) {
+                    ResultSetMetaData metadata = resultSet.getMetaData();
+                    int columnCount = metadata.getColumnCount();
+                    List<Map<String, Object>> rows = new ArrayList<>();
+                    while (resultSet.next()) {
+                        Map<String, Object> row = new HashMap<>();
+                        for (int i = 1; i <= columnCount; i++) {
+                            String columnName = metadata.getColumnLabel(i);
+                            if (columnName == null || columnName.isEmpty()) {
+                                columnName = metadata.getColumnName(i);
+                            }
+                            row.put(columnName, resultSet.getObject(i));
+                        }
+                        rows.add(row);
+                    }
+                    return rows;
+                }
+            }
+        });
+    }
+
+    private void activateAvailableRoles(Statement statement) {
+        try {
+            statement.execute("SET ROLE ALL");
+            return;
+        } catch (Exception first) {
+            try {
+                statement.execute("SET ROLE admin");
+            } catch (Exception second) {
+                System.out.println("Doris role activation skipped: " + second.getMessage());
+            }
+        }
+    }
+
     private void validate(GrantCommand command) {
         AuthorizationSupport.validateName(command.getUsername());
-        AuthorizationSupport.validateName(command.getDatabase());
+        validateDatabaseScope(command.getDatabase());
         if (command.getTable() != null && !command.getTable().isEmpty()) {
             AuthorizationSupport.validateName(command.getTable());
         }
@@ -137,12 +266,37 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
     }
 
     private String buildSql(String verb, String targetKeyword, GrantCommand command) {
+        return buildPrincipalSql(verb, targetKeyword, command, formatUserIdentity(command.getUsername()));
+    }
+
+    private String buildRoleSql(String verb, String targetKeyword, GrantCommand command) {
+        return buildPrincipalSql(verb, targetKeyword, command, quoteIdentifier(command.getUsername()));
+    }
+
+    private String buildPrincipalSql(String verb, String targetKeyword, GrantCommand command, String principal) {
         String privilege = toDorisPrivilege(command.getPermission());
         String privilegeLevel = command.getTable() == null || command.getTable().isEmpty()
                 ? DEFAULT_CATALOG + "." + command.getDatabase() + ".*"
                 : DEFAULT_CATALOG + "." + command.getDatabase() + "." + command.getTable();
         return String.format("%s %s ON %s %s %s",
-                verb, privilege, privilegeLevel, targetKeyword, formatUserIdentity(command.getUsername()));
+                verb, privilege, privilegeLevel, targetKeyword, principal);
+    }
+
+    private GrantCommand roleCommand(String roleCode, String cluster, String database, String table, String permission) {
+        GrantCommand command = new GrantCommand();
+        command.setUsername(roleCode);
+        command.setCluster(cluster);
+        command.setDatabase(database);
+        command.setTable(table);
+        command.setPermission(permission);
+        validate(command);
+        return command;
+    }
+
+    private void validateDatabaseScope(String database) {
+        if (!"*".equals(database)) {
+            AuthorizationSupport.validateName(database);
+        }
     }
 
     private String toDorisPrivilege(String permission) {
@@ -328,6 +482,10 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
         return value == null ? "" : value.replace("'", "''");
     }
 
+    private String quoteIdentifier(String identifier) {
+        return "`" + identifier.replace("`", "``") + "`";
+    }
+
     private String stripQuotes(String value) {
         if (value == null) {
             return "";
@@ -348,6 +506,19 @@ public class DorisSqlAuthorizationProvider implements AuthorizationProvider {
         return lower.contains("no such grant")
                 || lower.contains("not grant")
                 || lower.contains("does not have privilege");
+    }
+
+    private boolean isMissingUser(Exception e) {
+        String message = e.getMessage();
+        if (message == null) {
+            return false;
+        }
+        String lower = message.toLowerCase();
+        return lower.contains("cannot find user")
+                || lower.contains("unknown user")
+                || lower.contains("no such user")
+                || lower.contains("doesn't exist")
+                || lower.contains("does not exist");
     }
 
     private boolean isBlankOrNull(String value) {

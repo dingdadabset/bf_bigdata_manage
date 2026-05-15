@@ -30,6 +30,9 @@
               更多操作 <a-icon type="down" />
             </a-button>
             <a-menu slot="overlay" @click="handleMoreAction">
+              <a-menu-item v-if="showLdapTab" key="ldap-refresh">
+                <a-icon type="reload" /> 刷新 LDAP 属性
+              </a-menu-item>
               <a-menu-item v-if="canRepairLdapUser" key="repair">
                 <a-icon type="tool" /> 修复系统账号
               </a-menu-item>
@@ -38,6 +41,10 @@
               </a-menu-item>
               <a-menu-item v-if="canManageLdapGroup" key="password">
                 <a-icon type="key" /> 重置 LDAP 密码
+              </a-menu-item>
+              <a-menu-item v-if="canManageLdapLock" key="ldap-lock">
+                <a-icon :type="ldapProfile && ldapProfile.locked ? 'unlock' : 'lock'" />
+                {{ ldapProfile && ldapProfile.locked ? '解锁 LDAP 用户' : '锁定 LDAP 用户' }}
               </a-menu-item>
               <a-menu-item v-if="canManageProtection" key="protection">
                 <a-icon :type="isProtectedUser ? 'unlock' : 'lock'" />
@@ -105,7 +112,6 @@
           :username="user.username"
           :cluster="effectiveCluster"
           :title="permissionCardTitle"
-          @edit="$emit('grant', user.username, effectiveCluster)"
         />
       </a-tab-pane>
 
@@ -145,7 +151,7 @@
                 </div>
               </div>
               <div class="membership-actions">
-                <a-button type="primary" icon="team" @click="openLdapManager">调整用户组</a-button>
+                <a-button icon="team" @click="openLdapManager">调整用户组</a-button>
               </div>
               <a-collapse v-if="currentLdapDn || ldapAttributesPreview" class="compact-collapse membership-advanced">
                 <a-collapse-panel key="dn" header="DN 与原始属性">
@@ -171,10 +177,6 @@
             @refresh-profile="loadLdapGroup"
           />
         </div>
-      </a-tab-pane>
-
-      <a-tab-pane key="risk" tab="风险治理">
-        <user-risk-panel :user="user" :cluster="effectiveCluster" />
       </a-tab-pane>
 
       <a-tab-pane key="audit" tab="审计记录">
@@ -277,7 +279,7 @@
       </a-form-model>
     </a-modal>
   </div>
-  
+
   <!-- Empty State -->
   <div v-else class="empty-state">
     <a-empty description="请选择左侧用户查看详情" />
@@ -288,7 +290,6 @@
 import moment from 'moment';
 import { store } from '../../../store';
 import RangerCard from './RangerCard.vue';
-import UserRiskPanel from './UserRiskPanel.vue';
 import LdapGroupManager from './LdapGroupManager.vue';
 import axios from 'axios';
 import { canDelete, isRootAdmin } from '../../../utils/currentUser';
@@ -310,7 +311,7 @@ const PROTECTED_BIGDATA_USERS = [
 
 export default {
   name: 'PermissionPanel',
-  components: { RangerCard, UserRiskPanel, LdapGroupManager },
+  components: { RangerCard, LdapGroupManager },
   props: {
     user: {
       type: Object,
@@ -379,7 +380,7 @@ export default {
       return name || this.user.role || '未维护姓名';
     },
     hasSecondaryActions() {
-      return this.canRepairLdapUser || this.canManageLdapGroup || this.canManageProtection || this.canDeleteUser;
+      return this.canRepairLdapUser || this.canManageLdapGroup || this.canManageLdapLock || this.canManageProtection || this.canDeleteUser;
     },
     canDeleteUser() {
       return canDelete();
@@ -394,6 +395,9 @@ export default {
       return strategy === 'OPENLDAP' || strategy === 'LDAP' || strategy === 'LDAP_IMPORT';
     },
     canManageLdapGroup() {
+      return canDelete() && this.isLdapManagedUser && !this.isSqlAuthorizationUser;
+    },
+    canManageLdapLock() {
       return canDelete() && this.isLdapManagedUser && !this.isSqlAuthorizationUser;
     },
     canManageProtection() {
@@ -498,10 +502,14 @@ export default {
     handleMoreAction({ key }) {
       if (key === 'repair') {
         this.repairLdapUser();
+      } else if (key === 'ldap-refresh') {
+        this.loadLdapGroup();
       } else if (key === 'ldap') {
         this.openLdapManager();
       } else if (key === 'password') {
         this.openPasswordModal();
+      } else if (key === 'ldap-lock') {
+        this.confirmToggleLdapLock();
       } else if (key === 'protection') {
         this.$emit('toggle-protection', this.user);
       } else if (key === 'delete' && !this.isProtectedUser) {
@@ -626,6 +634,34 @@ export default {
         this.passwordSaving = false;
       }
     },
+    confirmToggleLdapLock() {
+      if (!this.user || !this.user.username || !this.effectiveCluster) {
+        this.$message.warning('请先选择用户和集群');
+        return;
+      }
+      const nextLocked = !(this.ldapProfile && this.ldapProfile.locked);
+      this.$confirm({
+        title: nextLocked ? '确认锁定 LDAP 用户？' : '确认解锁 LDAP 用户？',
+        content: nextLocked
+          ? `锁定后 ${this.user.username} 将不能继续作为 LDAP 账号登录。`
+          : `解锁后 ${this.user.username} 将恢复 LDAP 登录能力。`,
+        okText: nextLocked ? '锁定' : '解锁',
+        okType: nextLocked ? 'danger' : 'primary',
+        cancelText: '取消',
+        onOk: () => this.toggleLdapLock(nextLocked)
+      });
+    },
+    async toggleLdapLock(locked) {
+      try {
+        await axios.put(`/api/access/user/${encodeURIComponent(this.user.username)}/ldap-lock`, {
+          locked
+        }, { params: { cluster: this.effectiveCluster } });
+        await this.loadLdapGroup();
+        this.$message.success(locked ? 'LDAP 用户已锁定' : 'LDAP 用户已解锁');
+      } catch (e) {
+        this.$message.error(e.response?.data?.message || '更新 LDAP 锁定状态失败');
+      }
+    },
     formatDate(date) {
       return date ? moment(date).format('YYYY-MM-DD HH:mm') : 'N/A';
     },
@@ -747,6 +783,7 @@ export default {
           { params: { cluster: this.effectiveCluster } }
         );
         this.$message.success(data?.message || '已补齐系统账号属性');
+        await this.loadLdapGroup();
       } catch (e) {
         this.$message.error(e.response?.data?.message || '修复系统账号失败');
       } finally {

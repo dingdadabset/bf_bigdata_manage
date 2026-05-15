@@ -92,7 +92,7 @@
         <a-button @click="$emit('cancel')" style="margin-right: 8px">
           取消
         </a-button>
-        <a-button type="primary" @click="submitGrant" :loading="granting">
+        <a-button type="primary" @click="submitGrant" :loading="granting" :disabled="!directGrantSupported">
           执行授权
         </a-button>
       </a-form-model-item>
@@ -103,6 +103,7 @@
 <script>
 import axios from 'axios';
 import { store, mutations } from '../../../store';
+import { supportsDirectGrant, supportsTablePermission } from '../authorizationCenterHelpers';
 
 export default {
   name: 'GrantModal',
@@ -142,9 +143,15 @@ export default {
         : ['SELECT', 'INSERT', 'CREATE', 'ALL'];
     },
     resourceTypes() {
-      return this.capability && this.capability.resourceTypes && this.capability.resourceTypes.length
+      const types = this.capability && this.capability.resourceTypes && this.capability.resourceTypes.length
         ? this.capability.resourceTypes
         : ['DATABASE', 'TABLE'];
+      return supportsTablePermission(this.capability)
+        ? types
+        : types.filter(type => String(type).toUpperCase() !== 'TABLE');
+    },
+    directGrantSupported() {
+      return supportsDirectGrant(this.capability);
     }
   },
   watch: {
@@ -329,6 +336,10 @@ export default {
       }
     },
     async submitGrant() {
+      if (!this.directGrantSupported) {
+        this.$message.warning('当前授权后端不支持 direct grant');
+        return;
+      }
       this.granting = true;
       try {
         if (this.capability && this.capability.status !== 'READY') {

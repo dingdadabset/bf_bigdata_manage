@@ -3,6 +3,7 @@ import VueRouter from 'vue-router';
 import Login from '../views/Login.vue';
 import MainLayout from '../layouts/MainLayout.vue';
 import AccessIndex from '../views/access/AccessIndex.vue';
+import AccessGovernancePanel from '../views/access/components/AccessGovernancePanel.vue';
 import DataSourceManagement from '../components/DataSourceManagement.vue';
 import Metadata from '../views/Metadata.vue';
 import MetadataDetail from '../views/MetadataDetail.vue';
@@ -15,7 +16,6 @@ import ClusterManagement from '../views/system/ClusterManagement.vue';
 import PlatformUsers from '../views/system/PlatformUsers.vue';
 import SettingsCenter from '../views/system/SettingsCenter.vue';
 import AuthorizationCenter from '../views/access/AuthorizationCenter.vue';
-import AccessGovernancePanel from '../views/access/components/AccessGovernancePanel.vue';
 import { clearAuthCache, hasAuthSession } from '../utils/currentUser';
 
 Vue.use(VueRouter);
@@ -62,13 +62,21 @@ const routes = [
         path: 'authorization-center',
         name: 'AuthorizationCenter',
         component: AuthorizationCenter,
+        props: { pageMode: 'authorization' },
         meta: { title: '授权中心' }
+      },
+      {
+        path: 'role-management',
+        name: 'RoleManagement',
+        component: AuthorizationCenter,
+        props: { pageMode: 'role-management' },
+        meta: { title: '角色管理' }
       },
       {
         path: 'access-governance',
         name: 'AccessGovernance',
         component: AccessGovernancePanel,
-        meta: { title: '权限治理' }
+        meta: { title: '风险治理' }
       },
       {
         path: 'metadata',

@@ -51,15 +51,31 @@ public class SpaController implements ErrorController {
         // For API errors or static file 404s, return JSON
         Map<String, Object> body = new HashMap<>();
         String message = (String) request.getAttribute(RequestDispatcher.ERROR_MESSAGE);
+        Throwable exception = (Throwable) request.getAttribute(RequestDispatcher.ERROR_EXCEPTION);
         body.put("status", statusCode);
         body.put("error", HttpStatus.valueOf(statusCode).getReasonPhrase());
         body.put("path", path);
         body.put("message", message == null || message.trim().isEmpty()
-                ? "An unexpected error occurred"
+                ? readableErrorMessage(exception)
                 : message);
+        body.put("exception", exception == null ? null : exception.getClass().getSimpleName());
         
         return ResponseEntity.status(statusCode)
                 .contentType(MediaType.APPLICATION_JSON)
                 .body(body);
+    }
+
+    private String readableErrorMessage(Throwable error) {
+        if (error == null) {
+            return "An unexpected error occurred";
+        }
+        Throwable root = error;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String message = root.getMessage();
+        return message == null || message.trim().isEmpty()
+                ? "An unexpected error occurred"
+                : root.getClass().getSimpleName() + ": " + message.trim();
     }
 }

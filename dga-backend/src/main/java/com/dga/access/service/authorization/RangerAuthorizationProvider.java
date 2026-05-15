@@ -55,6 +55,21 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
     }
 
     @Override
+    public AuthorizationProviderDescriptor descriptor() {
+        return AuthorizationProviderDescriptor.create(engineType(), authBackend(), ClusterEndpoint.TYPE_RANGER)
+                .missingEndpointWarning("Ranger 授权需要 RANGER 端点。")
+                .principalTypes("USER", "GROUP")
+                .resourceTypes("DATABASE", "TABLE")
+                .permissions("SELECT", "INSERT", "CREATE", "ALL")
+                .requiresLdap(true)
+                .identity("LDAP", "LDAP", false, true, "LDAP", true, true, "LDAP 用户")
+                .rbac(true, true, true, false, false, true, true, true, "USER", "USER", "GROUP")
+                .grant(true, true, true, true, true, true, false, true)
+                .ui("LDAP 用户", "创建 LDAP 用户", "导入 LDAP 用户",
+                        "Ranger 支持用户或 LDAP 组策略授权", "Ranger 无原生数据库角色，DGA 会将角色权限物化为策略");
+    }
+
+    @Override
     public List<String> listDatabases(AuthorizationContext context) {
         try {
             return hdpJdbcTemplate(context).queryForList("SHOW DATABASES", String.class);
@@ -77,7 +92,12 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
 
     @Override
     public List<String> listPrincipals(AuthorizationContext context) {
-        return rangerService.listPolicyUsers(rangerEndpoint(context));
+        return rangerService.listUsers(rangerEndpoint(context));
+    }
+
+    @Override
+    public List<String> listGroups(AuthorizationContext context) {
+        return rangerService.listGroups(rangerEndpoint(context));
     }
 
     @Override
@@ -89,6 +109,33 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
     public void grant(AuthorizationContext context, GrantCommand command) {
         rangerService.grantPermission(command.getUsername(), command.getDatabase(), command.getTable(),
                 command.getPermission(), rangerEndpoint(context));
+    }
+
+    @Override
+    public void ensureRole(AuthorizationContext context, String roleCode) {
+        // Ranger does not expose a native database role primitive. DGA persists the role locally
+        // and materializes concrete policy items when the role is assigned.
+    }
+
+    @Override
+    public void grantPermissionToRole(AuthorizationContext context, String roleCode, String database, String table, String permission) {
+        // Ranger has no database role primitive. DGA stores the role, and concrete policy items
+        // are written when the role is assigned to users or groups.
+    }
+
+    @Override
+    public void assignRoleToUser(AuthorizationContext context, String roleCode, String username) {
+        // No native backend operation. Role assignment is tracked in DGA and expanded to policies.
+    }
+
+    @Override
+    public void assignRoleToGroup(AuthorizationContext context, String roleCode, String groupName) {
+        // No native backend operation. Role assignment is tracked in DGA and expanded to policies.
+    }
+
+    @Override
+    public void grantPermissionToGroup(AuthorizationContext context, String groupName, String database, String table, String permission) {
+        rangerService.grantGroupPermission(groupName, database, table, permission, rangerEndpoint(context));
     }
 
     @Override

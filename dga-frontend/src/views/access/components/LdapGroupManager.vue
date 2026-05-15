@@ -14,7 +14,7 @@
         />
         <a-select v-model="statusFilter" class="status-filter">
           <a-select-option value="ALL">全部状态</a-select-option>
-          <a-select-option value="ACTIVE">有成员</a-select-option>
+          <a-select-option value="ACTIVE">有绑定用户</a-select-option>
           <a-select-option value="EMPTY">空组</a-select-option>
         </a-select>
         <a-select
@@ -55,6 +55,7 @@
               <div class="group-title-content">
                 <div class="group-title-line">
                   <h3>{{ record.name }}</h3>
+                  <a-tag v-if="record.staleEmpty" color="red">长期空组</a-tag>
                 </div>
                 <p>{{ record.description || '未维护描述' }}</p>
               </div>
@@ -67,7 +68,13 @@
             <a-tag :color="memberStatusColor(record)">{{ memberStatusLabel(record) }}</a-tag>
           </template>
           <template slot="members" slot-scope="text, record">
-            <strong class="member-count">{{ record.memberCount || 0 }}</strong>
+            <strong class="member-count">{{ boundUserCount(record) }}</strong>
+          </template>
+          <template slot="emptySince" slot-scope="text, record">
+            <span v-if="boundUserCount(record) > 0" class="soft-text">-</span>
+            <span v-else-if="record.staleEmptyDays">{{ emptyDurationText(record) }}</span>
+            <span v-else-if="record.emptySince" class="soft-text">{{ emptySinceText(record) }}</span>
+            <span v-else class="soft-text">刚发现为空</span>
           </template>
           <template slot="source" slot-scope="text, record">
             <div class="zone-tags">
@@ -158,6 +165,14 @@
         <div>
           <span>成员概览</span>
           <strong>{{ membersPreview(currentTechGroup) }}</strong>
+        </div>
+        <div>
+          <span>有效绑定用户数</span>
+          <strong>{{ boundUserCount(currentTechGroup) }}</strong>
+        </div>
+        <div>
+          <span>空置起点</span>
+          <strong>{{ currentTechGroup.emptySince ? emptySinceText(currentTechGroup) : '未空置' }}</strong>
         </div>
       </div>
     </a-drawer>
@@ -253,8 +268,9 @@ export default {
       columns: [
         { title: '组名', key: 'group', scopedSlots: { customRender: 'group' } },
         { title: '类型', key: 'type', scopedSlots: { customRender: 'type' }, width: 100 },
-        { title: '状态', key: 'status', scopedSlots: { customRender: 'status' }, width: 100 },
-        { title: '成员数', key: 'members', scopedSlots: { customRender: 'members' }, width: 90 },
+        { title: '状态', key: 'status', scopedSlots: { customRender: 'status' }, width: 120 },
+        { title: '绑定用户数', key: 'members', scopedSlots: { customRender: 'members' }, width: 100 },
+        { title: '空置时长', key: 'emptySince', scopedSlots: { customRender: 'emptySince' }, width: 140 },
         { title: '来源', key: 'source', scopedSlots: { customRender: 'source' }, width: 150 },
         { title: '当前关系', key: 'relation', scopedSlots: { customRender: 'relation' }, width: 110 },
         { title: '', key: 'actions', scopedSlots: { customRender: 'actions' }, width: 64 }
@@ -284,7 +300,14 @@ export default {
           byName.set(name, {
             ...group,
             directoryZones: [],
-            memberCount: group.memberCount || (Array.isArray(group.members) ? group.members.length : 0)
+            memberCount: group.memberCount || (Array.isArray(group.members) ? group.members.length : 0),
+            boundUserCount: group.boundUserCount || 0,
+            directMemberCount: group.directMemberCount || group.memberCount || 0,
+            primaryUserCount: group.primaryUserCount || 0,
+            staleEmpty: !!group.staleEmpty,
+            staleEmptyDays: group.staleEmptyDays || 0,
+            emptySince: group.emptySince || null,
+            boundUsers: Array.isArray(group.boundUsers) ? [...group.boundUsers] : []
           });
         }
         const current = byName.get(name);
@@ -292,8 +315,18 @@ export default {
           ...current.directoryZones,
           ...this.directoryZones(group.dn)
         ]));
-        const count = group.memberCount || (Array.isArray(group.members) ? group.members.length : 0);
-        current.memberCount = Math.max(current.memberCount || 0, count);
+        const memberCount = group.memberCount || (Array.isArray(group.members) ? group.members.length : 0);
+        current.memberCount = Math.max(current.memberCount || 0, memberCount);
+        current.boundUserCount = Math.max(current.boundUserCount || 0, group.boundUserCount || 0);
+        current.directMemberCount = Math.max(current.directMemberCount || 0, group.directMemberCount || 0, memberCount);
+        current.primaryUserCount = Math.max(current.primaryUserCount || 0, group.primaryUserCount || 0);
+        current.staleEmpty = current.staleEmpty || !!group.staleEmpty;
+        current.staleEmptyDays = Math.max(current.staleEmptyDays || 0, group.staleEmptyDays || 0);
+        current.emptySince = current.emptySince || group.emptySince || null;
+        current.boundUsers = Array.from(new Set([
+          ...(current.boundUsers || []),
+          ...((Array.isArray(group.boundUsers) ? group.boundUsers : []))
+        ]));
         if (!current.dn && group.dn) current.dn = group.dn;
       });
       return Array.from(byName.values()).map(group => ({
@@ -304,7 +337,7 @@ export default {
     filteredGroups() {
       const keyword = this.searchKeyword.trim().toLowerCase();
       return this.processedGroups.filter(group => {
-        const count = group.memberCount || 0;
+        const count = this.boundUserCount(group);
         if (this.statusFilter === 'ACTIVE' && count <= 0) return false;
         if (this.statusFilter === 'EMPTY' && count > 0) return false;
         if (!keyword) return true;
@@ -453,11 +486,28 @@ export default {
       if (zone === 'compat') return 'purple';
       return 'default';
     },
+    boundUserCount(record) {
+      return record && Number.isFinite(Number(record.boundUserCount)) ? Number(record.boundUserCount) : 0;
+    },
     memberStatusLabel(record) {
-      return (record.memberCount || 0) > 0 ? 'Active' : 'Empty';
+      if (this.boundUserCount(record) > 0) return '有绑定用户';
+      if (record && record.staleEmpty) return '空置超 30 天';
+      return '空组';
     },
     memberStatusColor(record) {
-      return (record.memberCount || 0) > 0 ? 'green' : 'orange';
+      if (this.boundUserCount(record) > 0) return 'green';
+      if (record && record.staleEmpty) return 'red';
+      return 'orange';
+    },
+    emptySinceText(record) {
+      if (!record || !record.emptySince) return '-';
+      const date = new Date(record.emptySince);
+      if (Number.isNaN(date.getTime())) return String(record.emptySince).replace('T', ' ').slice(0, 16);
+      return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
+    },
+    emptyDurationText(record) {
+      const days = record && record.staleEmptyDays ? record.staleEmptyDays : 0;
+      return days > 0 ? `已空置 ${days} 天` : '空组';
     },
     isPrimaryGroup(group) {
       return group && group.name && group.name === this.primaryGroupName;
@@ -467,12 +517,15 @@ export default {
     },
     groupRowClassName(record) {
       if (this.isPrimaryGroup(record)) return 'primary-group-row';
-      if (!record.memberCount) return 'empty-group-row';
+      if (record && record.staleEmpty) return 'stale-empty-group-row';
+      if (this.boundUserCount(record) <= 0) return 'empty-group-row';
       return '';
     },
     membersPreview(record) {
-      const members = Array.isArray(record.members) ? record.members : [];
-      if (!members.length) return '暂无成员';
+      const members = Array.isArray(record.boundUsers) && record.boundUsers.length
+        ? record.boundUsers
+        : (Array.isArray(record.members) ? record.members : []);
+      if (!members.length) return '暂无绑定用户';
       const preview = members.slice(0, 8).join(', ');
       return members.length > 8 ? `${preview} 等 ${members.length} 人` : preview;
     },
@@ -599,6 +652,9 @@ export default {
 }
 .relation-table ::v-deep .empty-group-row > td {
   background: #fffaf0;
+}
+.relation-table ::v-deep .stale-empty-group-row > td {
+  background: #fff1f0;
 }
 .group-main {
   display: flex;

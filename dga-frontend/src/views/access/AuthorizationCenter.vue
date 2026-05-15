@@ -1,838 +1,1580 @@
 <template>
-  <div class="authorization-center">
-    <div class="hero">
+  <div class="authorization-center-v2">
+    <div class="page-heading">
       <div>
-        <p class="eyebrow">Authorization Center</p>
-        <h1>授权中心</h1>
-        <p>根据环境资源自动识别授权适配器，统一管理 Hive/Sentry、StarRocks SQL 和 Doris SQL 授权。</p>
+        <div class="page-eyebrow">{{ isRoleManagement ? 'RBAC ROLE MANAGEMENT' : 'RBAC AUTHORIZATION CENTER' }}</div>
+        <h2>{{ isRoleManagement ? '角色管理' : '授权中心' }}</h2>
+        <p>{{ isRoleManagement ? '维护角色、权限范围与当前绑定对象；用户授权与角色绑定请在授权中心执行。' : '围绕用户或组执行角色绑定、权限下发、回收与后端校验。' }}</p>
       </div>
-      <a-button type="primary" icon="reload" :loading="loading" @click="reloadAll">刷新能力</a-button>
+      <a-button
+        v-if="isRoleManagement"
+        type="primary"
+        icon="safety-certificate"
+        @click="$router.push('/authorization-center')"
+      >
+        去授权中心
+      </a-button>
+      <a-button
+        v-else
+        icon="profile"
+        @click="$router.push('/role-management')"
+      >
+        角色管理
+      </a-button>
     </div>
 
-    <a-row :gutter="16" class="top-row">
-      <a-col :xs="24" :lg="8">
-        <a-card title="选择环境" :bordered="false" class="panel-card">
-          <a-select
-            v-model="selectedCluster"
-            show-search
-            style="width: 100%"
-            placeholder="请选择环境"
-            option-filter-prop="children"
-            @change="onClusterChange"
-          >
-            <a-select-option
-              v-for="cluster in clusters"
-              :key="cluster.id"
-              :value="cluster.clusterCode || cluster.clusterName"
-            >
-              {{ cluster.clusterName }}{{ cluster.clusterCode ? ` (${cluster.clusterCode})` : '' }}
-            </a-select-option>
-          </a-select>
-          <div class="hint">环境来自“环境资源注册”，授权能力由后端自动推导。</div>
-        </a-card>
+    <authorization-workbench-filters
+      class="context-panel"
+      :clusters="clusters"
+      :backend-options="backendOptions"
+      :capability="capability"
+      :subject-types="subjectTypes"
+      :principals="principals"
+      :verification-principals="verificationPrincipals"
+      :selected-principal="selectedPrincipal"
+      :verification-principal="verificationPrincipal"
+      :role-default-group-name="selectedRoleGroupName"
+      :mode="workbenchMode"
+      :state="state"
+      :loading="filterLoading"
+      @change="handleStateChange"
+      @refresh="reloadAll"
+      @sync-verification="syncVerificationUser"
+    />
+
+    <div v-if="!isRoleManagement && state.mode === 'ROLE'" class="flow-role-panel">
+      <div class="flow-strip">
+        <div
+          v-for="step in authorizationFlowSteps"
+          :key="step.key"
+          class="flow-step"
+          :class="`is-${step.status}`"
+        >
+          <div class="flow-step-index">{{ step.order }}</div>
+          <div class="flow-step-body">
+            <div class="flow-step-title">{{ step.title }}</div>
+            <div class="flow-step-hint">{{ step.hint }}</div>
+          </div>
+          <a-tag :color="step.tagColor">{{ step.statusLabel }}</a-tag>
+        </div>
+      </div>
+
+      <div class="role-catalog-strip-panel">
+        <role-catalog-panel
+          ref="roleCatalogPanel"
+          :roles="roles"
+          :subject-bound-roles="subjectContext.roles"
+          :selected-role-code="selectedRoleCode"
+          :role-detail="selectedRoleView"
+          :capability="capability"
+          :selected-cluster="state.selectedCluster"
+          :selected-auth-backend="state.selectedAuthBackend"
+          :loading-catalog="loading.roles"
+          :loading-detail="loading.roleDetail"
+          :allow-manage-roles="isRoleManagement"
+          @select-role="selectRole"
+          @save-role="saveRole"
+          @delete-role="deleteRole"
+          @add-role-permissions="addRolePermissions"
+          @delete-role-permission="deleteRolePermission"
+        />
+      </div>
+    </div>
+
+    <a-row :gutter="20" class="workspace-row">
+      <a-col v-if="isRoleManagement || state.mode !== 'ROLE'" :xs="24" :lg="8" :xl="7" class="workspace-col role-catalog-col">
+        <role-catalog-panel
+          ref="roleCatalogPanel"
+          :roles="roles"
+          :subject-bound-roles="subjectContext.roles"
+          :selected-role-code="selectedRoleCode"
+          :role-detail="selectedRoleView"
+          :capability="capability"
+          :selected-cluster="state.selectedCluster"
+          :selected-auth-backend="state.selectedAuthBackend"
+          :loading-catalog="loading.roles"
+          :loading-detail="loading.roleDetail"
+          :allow-manage-roles="isRoleManagement"
+          @select-role="selectRole"
+          @save-role="saveRole"
+          @delete-role="deleteRole"
+          @add-role-permissions="addRolePermissions"
+          @delete-role-permission="deleteRolePermission"
+        />
       </a-col>
 
-      <a-col :xs="24" :lg="16">
-        <a-card :bordered="false" class="capability-card">
-          <div v-if="capability" class="capability-grid">
-            <div class="capability-item">
-              <span>引擎</span>
-              <strong>{{ capability.engineType || '-' }}</strong>
-            </div>
-            <div class="capability-item">
-              <span>授权适配器</span>
-              <strong>{{ capability.authBackend || '-' }}</strong>
-            </div>
-            <div class="capability-item">
-              <span>授权通道</span>
-              <strong>{{ capability.endpointType || '-' }}</strong>
-              <small>{{ capability.endpointUrl || '未配置端点 URL' }}</small>
-            </div>
-            <div class="capability-item">
-              <span>状态</span>
-              <a-tag :color="statusColor(capability.status)">{{ capability.status || 'UNKNOWN' }}</a-tag>
-            </div>
-            <div class="capability-item">
-              <span>LDAP 依赖</span>
-              <strong>{{ capability.requiresLdap ? '需要' : '不需要' }}</strong>
-            </div>
-          </div>
-          <a-empty v-else description="请选择环境查看授权能力" />
-          <a-alert
-            v-if="capability && capability.warnings && capability.warnings.length"
-            class="capability-alert"
-            type="warning"
-            show-icon
-            :message="capability.warnings.join('；')"
-          />
-        </a-card>
+      <a-col
+        :xs="24"
+        :lg="isRoleManagement || state.mode !== 'ROLE' ? 16 : 24"
+        :xl="isRoleManagement || state.mode !== 'ROLE' ? 17 : 24"
+        class="workspace-col workbench-col"
+      >
+        <role-grant-workbench
+          :capability="capability"
+          :selected-role-code="selectedRoleCode"
+          :selected-role-view="selectedRoleView"
+          :selected-principal="selectedPrincipal"
+          :verification-principal="verificationPrincipal"
+          :verification-user="state.verificationUser"
+          :verification-snapshot="verificationSnapshot"
+          :subject-context="subjectContext"
+          :databases="databases"
+          :tables="tables"
+          :active-tab="activeRoleTab"
+          :state="state"
+          :loading="workbenchLoading"
+          :batch-result="batchResult"
+          :mode="workbenchMode"
+          @change="handleStateChange"
+          @change-tab="activeRoleTab = $event"
+          @edit-role="openRoleEditor"
+          @delete-role="deleteSelectedRole"
+          @delete-role-permission="deleteRolePermission"
+          @open-permission-modal="openPermissionModal"
+          @assign-role="assignRole"
+          @revoke-role="revokeRole"
+          @grant-subset="grantSubset"
+          @revoke-subset="revokeSubset"
+          @grant-direct="grantDirect"
+          @revoke-direct="revokeDirect"
+          @dry-run-batch="dryRunBatch"
+          @assign-batch="assignBatch"
+          @select-all-role-permissions="selectAllRolePermissions"
+          @refresh-verification="loadVerificationIfNeeded"
+          @sync-verification="syncVerificationUser"
+          @use-subject-as-verification="useSubjectAsVerificationUser"
+        />
       </a-col>
     </a-row>
-
-    <a-card :bordered="false" class="permission-card">
-      <div class="card-title-row">
-        <div>
-          <h3>当前权限画像</h3>
-          <p>从当前授权连接实时查询用户已有库表权限，授予或回收后可立即刷新对照。</p>
-        </div>
-        <div class="permission-toolbar">
-          <a-select
-            v-model="form.username"
-            show-search
-            placeholder="选择用户查看权限"
-            option-filter-prop="children"
-            :loading="loadingUsers"
-            @change="onUserChange"
-          >
-            <a-select-option v-for="user in users" :key="user" :value="user">
-              {{ user }}
-            </a-select-option>
-          </a-select>
-          <a-button
-            icon="reload"
-            :disabled="!form.username || !selectedCluster"
-            :loading="loadingPermissions"
-            @click="loadPermissions"
-          >
-            刷新权限
-          </a-button>
-        </div>
-      </div>
-
-      <div v-if="permissionSnapshot" class="permission-summary">
-        <div class="summary-pill">
-          <span>用户</span>
-          <strong>{{ permissionSnapshot.username }}</strong>
-        </div>
-        <div class="summary-pill">
-          <span>来源</span>
-          <strong>{{ permissionSnapshot.authBackend }}</strong>
-        </div>
-        <div class="summary-pill">
-          <span>全局/系统</span>
-          <strong>{{ globalGrantCount }}</strong>
-        </div>
-        <div class="summary-pill">
-          <span>库/表权限</span>
-          <strong>{{ databaseGrantCount }} / {{ tableGrantCount }}</strong>
-        </div>
-      </div>
-
-      <a-table
-        v-if="permissionSnapshot"
-        class="permission-table"
-        size="middle"
-        row-key="id"
-        :columns="permissionColumns"
-        :data-source="permissionGrants"
-        :loading="loadingPermissions"
-        :pagination="{ pageSize: 6 }"
-        :locale="{ emptyText: '当前用户暂无可见授权记录' }"
-      >
-        <template slot="resource" slot-scope="text, record">
-          <div class="resource-cell">
-            <a-tag :color="scopeColor(record.resourceType)">
-              {{ scopeLabel(record.resourceType) }}
-            </a-tag>
-            <span>{{ displayResource(record) }}</span>
-          </div>
-        </template>
-        <template slot="permission" slot-scope="text">
-          <a-tag color="green">{{ text }}</a-tag>
-        </template>
-        <template slot="grantText" slot-scope="text">
-          <a-tooltip v-if="text" :title="text">
-            <code>{{ text }}</code>
-          </a-tooltip>
-          <span v-else>-</span>
-        </template>
-      </a-table>
-
-      <a-empty
-        v-else
-        class="permission-empty"
-        description="选择环境和用户后，查看该用户当前已有权限"
-      />
-    </a-card>
-
-    <a-card :bordered="false" class="operation-card">
-      <div class="operation-heading">
-        <div>
-          <p class="eyebrow dark">Grant Workbench</p>
-          <h3>统一授权操作</h3>
-          <p>先确认目标用户和动作，再选择授权范围。表级授权需要先选数据库，再加载该库下表。</p>
-        </div>
-        <a-tag :color="form.actionType === 'GRANT' ? 'blue' : 'orange'">
-          {{ form.actionType === 'GRANT' ? '授权模式' : '回收模式' }}
-        </a-tag>
-      </div>
-      <a-form-model :model="form" layout="vertical">
-        <div class="operation-grid">
-          <div class="operation-step">
-            <div class="step-title"><span>1</span>目标与动作</div>
-            <a-form-model-item label="目标用户">
-              <a-select
-                v-model="form.username"
-                show-search
-                placeholder="请选择用户"
-                option-filter-prop="children"
-                :loading="loadingUsers"
-                @change="onUserChange"
-              >
-                <a-select-option v-for="user in users" :key="user" :value="user">
-                  {{ user }}
-                </a-select-option>
-              </a-select>
-              <div class="field-hint">{{ principalHint }}</div>
-            </a-form-model-item>
-            <a-form-model-item label="操作类型">
-              <a-radio-group v-model="form.actionType" button-style="solid" @change="onActionChange">
-                <a-radio-button value="GRANT">授权</a-radio-button>
-                <a-radio-button value="REVOKE">回收</a-radio-button>
-              </a-radio-group>
-            </a-form-model-item>
-          </div>
-
-          <div class="operation-step resource-step">
-            <div class="step-title"><span>2</span>资源范围</div>
-            <a-form-model-item label="资源维度">
-              <a-radio-group v-model="form.level" button-style="solid" @change="resetResourceSelection">
-                <a-radio-button
-                  v-for="type in resourceTypes"
-                  :key="type"
-                  :value="type"
-                >
-                  {{ type === 'DATABASE' ? '库级：库下所有表' : '表级：指定表' }}
-                </a-radio-button>
-              </a-radio-group>
-            </a-form-model-item>
-
-            <a-row :gutter="14">
-              <a-col :xs="24" :md="form.level === 'TABLE' ? 10 : 14">
-                <a-form-model-item label="数据库">
-                  <a-select
-                    v-if="form.level === 'DATABASE'"
-                    v-model="form.databases"
-                    :mode="databaseSelectMode"
-                    placeholder="请选择数据库"
-                    :loading="loadingResources"
-                  >
-                    <a-select-option v-for="db in databases" :key="db" :value="db">
-                      {{ db }}
-                    </a-select-option>
-                  </a-select>
-                  <a-select
-                    v-else-if="isRangerBackend"
-                    v-model="form.database"
-                    mode="combobox"
-                    placeholder="请选择数据库"
-                    :loading="loadingResources"
-                    @change="onDatabaseChange"
-                  >
-                    <a-select-option v-for="db in databases" :key="db" :value="db">
-                      {{ db }}
-                    </a-select-option>
-                  </a-select>
-                  <a-select
-                    v-else
-                    v-model="form.database"
-                    placeholder="请选择数据库"
-                    :loading="loadingResources"
-                    @change="onDatabaseChange"
-                  >
-                    <a-select-option v-for="db in databases" :key="db" :value="db">
-                      {{ db }}
-                    </a-select-option>
-                  </a-select>
-                  <div class="field-hint" v-if="form.level === 'DATABASE'">
-                    StarRocks 库级 SELECT 会转换为 ALL TABLES IN DATABASE，不是 DATABASE 对象自身授权。
-                  </div>
-                </a-form-model-item>
-              </a-col>
-              <a-col v-if="form.level === 'TABLE'" :xs="24" :md="8">
-                <a-form-model-item label="表">
-                  <a-select
-                    v-model="form.tables"
-                    :mode="tableSelectMode"
-                    placeholder="请选择表"
-                    :disabled="!form.database"
-                    :loading="loadingTables"
-                  >
-                    <a-select-option v-for="table in tables" :key="table" :value="table">
-                      {{ table }}
-                    </a-select-option>
-                  </a-select>
-                  <div class="field-hint">表级授权会生成 ON TABLE db.table。</div>
-                </a-form-model-item>
-              </a-col>
-              <a-col :xs="24" :md="form.level === 'TABLE' ? 6 : 10">
-                <a-form-model-item label="权限类型">
-                  <a-select
-                    v-model="form.permissions"
-                    mode="multiple"
-                    placeholder="请选择权限"
-                    :max-tag-count="2"
-                  >
-                    <a-select-option v-for="permission in permissions" :key="permission" :value="permission">
-                      {{ permission }}
-                    </a-select-option>
-                  </a-select>
-                </a-form-model-item>
-              </a-col>
-            </a-row>
-          </div>
-        </div>
-
-        <div class="operation-footer">
-          <div class="operation-summary">
-            当前将通过 <strong>{{ capability ? capability.authBackend : '-' }}</strong>
-            对 <strong>{{ selectedCluster || '-' }}</strong> 执行 {{ form.actionType === 'GRANT' ? '授权' : '回收' }}。
-          </div>
-          <a-button
-            type="primary"
-            icon="safety"
-            :disabled="!canSubmit"
-            :loading="submitting"
-            @click="submit"
-          >
-            执行{{ form.actionType === 'GRANT' ? '授权' : '回收' }}
-          </a-button>
-        </div>
-      </a-form-model>
-    </a-card>
   </div>
 </template>
 
 <script>
 import axios from 'axios';
+import AuthorizationWorkbenchFilters from './components/AuthorizationWorkbenchFilters.vue';
+import RoleCatalogPanel from './components/RoleCatalogPanel.vue';
+import RoleGrantWorkbench from './components/RoleGrantWorkbench.vue';
+import {
+  allowedSubjectTypes,
+  boundRoleMeta,
+  defaultSubjectType,
+  hasUsableRoleAssignment,
+  operationModeLabel,
+  parseBatchUsers,
+  permissionKey,
+  rolePermissionSelection,
+  supportsDirectGrant,
+  supportsRoles,
+  uniqueRolePermissions,
+  usableAssignmentStatus,
+  verificationUserRequired
+} from './authorizationCenterHelpers';
 
 export default {
   name: 'AuthorizationCenter',
+  components: {
+    AuthorizationWorkbenchFilters,
+    RoleCatalogPanel,
+    RoleGrantWorkbench
+  },
+  props: {
+    pageMode: {
+      type: String,
+      default: 'authorization'
+    }
+  },
   data() {
     return {
-      loading: false,
-      loadingUsers: false,
-      loadingResources: false,
-      loadingTables: false,
-      loadingPermissions: false,
-      submitting: false,
+      loading: {
+        page: false,
+        clusters: false,
+        backends: false,
+        roles: false,
+        roleDetail: false,
+        principals: false,
+        verificationPrincipals: false,
+        databases: false,
+        tables: false,
+        verification: false,
+        submitting: false,
+        dryRunning: false
+      },
       clusters: [],
-      users: [],
+      backendOptions: [],
       capability: null,
-      permissionSnapshot: null,
+      roles: [],
+      principals: [],
+      verificationPrincipals: [],
       databases: [],
       tables: [],
-      selectedCluster: '',
-      permissionColumns: [
-        { title: '作用范围 / 资源', key: 'resource', scopedSlots: { customRender: 'resource' } },
-        { title: '权限', dataIndex: 'permission', key: 'permission', scopedSlots: { customRender: 'permission' } },
-        { title: '原始授权语句 / 后端返回', dataIndex: 'grantText', key: 'grantText', scopedSlots: { customRender: 'grantText' } }
-      ],
-      form: {
+      selectedRoleCode: '',
+      selectedRoleView: null,
+      activeRoleTab: this.pageMode === 'role-management' ? 'info' : 'actions',
+      verificationSnapshot: null,
+      subjectContext: {
+        loading: false,
+        roles: [],
+        ldapProfile: null
+      },
+      batchResult: null,
+      routeContext: {
         username: '',
-        actionType: 'GRANT',
-        level: 'DATABASE',
-        databases: [],
-        database: '',
-        tables: [],
-        permissions: ['SELECT']
+        cluster: ''
+      },
+      state: {
+        selectedCluster: '',
+        selectedAuthBackend: '',
+        subjectType: 'USER',
+        subjectName: '',
+        verificationUser: '',
+        mode: 'ROLE',
+        scopeLevel: 'DATABASE',
+        directDatabases: [],
+        databaseName: '',
+        tableNames: [],
+        permissions: ['SELECT'],
+        selectedRolePermissionKeys: [],
+        batchUsers: '',
+        exceptionReason: '',
+        ticketNo: '',
+        approver: '',
+        expiresAt: '',
+        riskLevel: 'LOW'
       }
     };
   },
   computed: {
-    permissions() {
-      return this.capability && this.capability.permissions && this.capability.permissions.length
-        ? this.capability.permissions
-        : ['SELECT'];
+    isRoleManagement() {
+      return this.pageMode === 'role-management';
     },
-    resourceTypes() {
-      return this.capability && this.capability.resourceTypes && this.capability.resourceTypes.length
-        ? this.capability.resourceTypes
-        : ['DATABASE', 'TABLE'];
+    workbenchMode() {
+      return this.isRoleManagement ? 'role-management' : 'authorization';
     },
-    isRangerBackend() {
-      return this.capability && this.capability.authBackend === 'RANGER';
+    subjectTypes() {
+      return this.capability ? allowedSubjectTypes(this.capability) : ['USER'];
     },
-    databaseSelectMode() {
-      return this.isRangerBackend ? 'tags' : 'multiple';
+    filterLoading() {
+      return {
+        clusters: this.loading.clusters,
+        backends: this.loading.backends,
+        principals: this.loading.principals || this.loading.verificationPrincipals,
+        databases: this.loading.databases,
+        tables: this.loading.tables,
+        verification: this.loading.verification
+      };
     },
-    tableSelectMode() {
-      return this.isRangerBackend ? 'tags' : 'multiple';
+    selectedPrincipal() {
+      return this.findPrincipalOption(this.principals, this.state.subjectName);
     },
-    permissionGrants() {
-      return this.permissionSnapshot && this.permissionSnapshot.grants
-        ? this.permissionSnapshot.grants
-        : [];
+    verificationPrincipal() {
+      return this.findPrincipalOption(this.verificationPrincipals, this.state.verificationUser);
     },
-    databaseGrantCount() {
-      return this.permissionGrants.filter(item => item.resourceType === 'DATABASE').length;
+    selectedRoleLabel() {
+      if (this.selectedRoleView?.role?.roleName) return this.selectedRoleView.role.roleName;
+      if (this.selectedRoleView?.role?.roleCode) return this.selectedRoleView.role.roleCode;
+      return '未选择角色';
     },
-    tableGrantCount() {
-      return this.permissionGrants.filter(item => item.resourceType === 'TABLE').length;
+    selectedClusterLabel() {
+      const selected = (this.clusters || []).find(item => (item.clusterCode || item.clusterName) === this.state.selectedCluster);
+      return selected ? (selected.clusterName || selected.clusterCode) : (this.state.selectedCluster || '未选择');
     },
-    globalGrantCount() {
-      return this.permissionGrants.filter(item =>
-        ['GLOBAL', 'VIEW', 'MATERIALIZED_VIEW', 'FUNCTION'].includes(item.resourceType)
-      ).length;
+    selectedRoleGroupName() {
+      const assignments = Array.isArray(this.selectedRoleView?.assignments) ? this.selectedRoleView.assignments : [];
+      const normalizedAuthBackend = String(this.state.selectedAuthBackend || '').trim().toUpperCase();
+      const matched = assignments.find(item => {
+        const assignmentAuthBackend = String(item?.authBackend || '').trim().toUpperCase();
+        return String(item?.subjectType || '').toUpperCase() === 'GROUP'
+          && (!normalizedAuthBackend || !assignmentAuthBackend || assignmentAuthBackend === normalizedAuthBackend)
+          && usableAssignmentStatus(item?.backendSyncStatus)
+          && String(item?.subjectName || '').trim();
+      });
+      if (matched?.subjectName) return String(matched.subjectName).trim();
+      const role = this.selectedRoleView?.role || {};
+      return this.firstNonBlank(role.sentryGroup, role.ldapGroup, role.groupName, role.defaultGroupName);
     },
-    canSubmit() {
-      if (!this.capability || this.capability.status !== 'READY') return false;
-      if (!this.selectedCluster || !this.form.username || !this.form.permissions || !this.form.permissions.length) return false;
-      if (this.form.level === 'DATABASE') {
-        return this.form.databases && this.form.databases.length > 0;
-      }
-      return !!this.form.database && this.form.tables && this.form.tables.length > 0;
+    workbenchLoading() {
+      return {
+        submitting: this.loading.submitting,
+        dryRunning: this.loading.dryRunning,
+        roleDetail: this.loading.roleDetail,
+        verification: this.loading.verification,
+        databases: this.loading.databases,
+        tables: this.loading.tables
+      };
     },
-    principalHint() {
-      if (!this.capability) {
-        return '请选择环境后加载授权用户';
-      }
-      if (this.capability.authBackend === 'STARROCKS_SQL') {
-        return '用户列表来自 StarRocks：通过 SHOW USERS 查询，不依赖 LDAP。';
-      }
-      if (this.capability.authBackend === 'DORIS_SQL') {
-        return '用户列表来自 Doris：优先通过 SHOW ALL GRANTS 推断，不依赖 LDAP。';
-      }
-      return '用户列表来自 DGA/LDAP 身份侧。';
+    hasSelectedContext() {
+      return Boolean(this.state.selectedCluster && this.state.selectedAuthBackend);
+    },
+    hasSelectedSubject() {
+      return Boolean(this.state.subjectName);
+    },
+    hasSelectedRole() {
+      return Boolean(this.selectedRoleCode && this.selectedRoleView?.role);
+    },
+    hasCurrentRoleBinding() {
+      return Boolean(
+        this.selectedRoleView
+        && this.state.subjectName
+        && hasUsableRoleAssignment(this.selectedRoleView, this.state.subjectType, this.state.subjectName, this.state.selectedAuthBackend)
+      );
+    },
+    hasSelectedSubset() {
+      return Array.isArray(this.state.selectedRolePermissionKeys) && this.state.selectedRolePermissionKeys.length > 0;
+    },
+    canVerifyFlow() {
+      return Boolean(this.state.verificationUser && this.verificationSnapshot);
+    },
+    authorizationFlowSteps() {
+      return [
+        {
+          key: 'subject',
+          order: 1,
+          title: '选择授权对象',
+          hint: this.hasSelectedSubject ? `当前对象：${this.state.subjectName}` : '先选用户或组主体',
+          ...this.flowStepMeta(this.hasSelectedContext && this.hasSelectedSubject, this.hasSelectedContext && !this.hasSelectedSubject)
+        },
+        {
+          key: 'role',
+          order: 2,
+          title: '选择角色',
+          hint: this.hasSelectedRole ? `当前角色：${this.selectedRoleLabel}` : '从左侧角色库选择角色',
+          ...this.flowStepMeta(this.hasSelectedRole, this.hasSelectedSubject && !this.hasSelectedRole)
+        },
+        {
+          key: 'binding',
+          order: 3,
+          title: '绑定角色',
+          hint: this.hasCurrentRoleBinding ? '当前对象已完成角色绑定' : '绑定后才可执行角色内授权',
+          ...this.flowStepMeta(this.hasCurrentRoleBinding, this.hasSelectedRole && !this.hasCurrentRoleBinding)
+        },
+        {
+          key: 'grant',
+          order: 4,
+          title: '选择并执行授权',
+          hint: this.hasSelectedSubset ? `已选 ${this.state.selectedRolePermissionKeys.length} 项权限子集` : '从角色范围内勾选权限子集',
+          ...this.flowStepMeta(this.hasCurrentRoleBinding && this.hasSelectedSubset, this.hasCurrentRoleBinding && !this.hasSelectedSubset)
+        },
+        {
+          key: 'verify',
+          order: 5,
+          title: '校验结果',
+          hint: this.canVerifyFlow ? '可在下方直接比对 live 与 recorded' : '执行后使用校验用户复核结果',
+          ...this.flowStepMeta(this.canVerifyFlow, Boolean(this.state.verificationUser) && !this.verificationSnapshot)
+        }
+      ];
+    },
+    capabilityReady() {
+      return Boolean(this.capability && this.capability.status === 'READY');
     }
   },
   created() {
+    this.applyRouteContext();
     this.reloadAll();
   },
+  watch: {
+    pageMode(value) {
+      this.activeRoleTab = value === 'role-management' ? 'info' : 'actions';
+    }
+  },
   methods: {
+    operationModeLabel,
+    flowStepMeta(done, current) {
+      if (done) {
+        return { status: 'done', statusLabel: '已就绪', tagColor: 'green' };
+      }
+      if (current) {
+        return { status: 'current', statusLabel: '进行中', tagColor: 'blue' };
+      }
+      return { status: 'todo', statusLabel: '待完成', tagColor: 'default' };
+    },
+    openRoleEditor() {
+      if (!this.isRoleManagement) return;
+      if (!this.selectedRoleView?.role || !this.$refs.roleCatalogPanel) return;
+      this.$refs.roleCatalogPanel.openRoleModal(this.selectedRoleView.role);
+      this.activeRoleTab = 'info';
+    },
+    openPermissionModal() {
+      if (!this.isRoleManagement) return;
+      if (!this.selectedRoleView?.role || !this.$refs.roleCatalogPanel) return;
+      this.$refs.roleCatalogPanel.openPermissionModal();
+      this.activeRoleTab = 'scope';
+    },
+    deleteSelectedRole() {
+      if (!this.isRoleManagement) return;
+      if (!this.selectedRoleCode) return;
+      this.deleteRole(this.selectedRoleCode);
+    },
+    async useSubjectAsVerificationUser() {
+      if (!this.state.subjectName) return;
+      this.state.verificationUser = this.state.subjectName;
+      await this.loadVerificationIfNeeded();
+    },
+    applyRouteContext() {
+      const query = this.$route && this.$route.query ? this.$route.query : {};
+      this.routeContext.username = String(query.username || '').trim();
+      this.routeContext.cluster = String(query.cluster || '').trim();
+      if (this.routeContext.cluster) {
+        this.state.selectedCluster = this.routeContext.cluster;
+      }
+    },
     async reloadAll() {
-      this.loading = true;
+      this.loading.page = true;
       try {
         await this.loadClusters();
       } finally {
-        this.loading = false;
+        this.loading.page = false;
       }
     },
     async loadClusters() {
-      const res = await axios.get('/api/clusters');
-      this.clusters = (res.data || []).filter(item => item.status !== 'DELETED');
-      if (!this.selectedCluster && this.clusters.length) {
-        this.selectedCluster = this.clusters[0].clusterCode || this.clusters[0].clusterName;
-        await this.onClusterChange();
-      }
-    },
-    async loadUsers() {
-      if (!this.selectedCluster) {
-        this.users = [];
-        return;
-      }
-      this.loadingUsers = true;
+      this.loading.clusters = true;
       try {
-        const res = await axios.get('/api/access/resources/principals', {
-          params: { cluster: this.selectedCluster }
-        });
-        this.users = res.data || [];
-        if (!this.users.includes(this.form.username)) {
-          this.form.username = '';
-          this.permissionSnapshot = null;
-        } else {
-          this.loadPermissions();
+        const res = await axios.get('/api/clusters');
+        this.clusters = (res.data || []).filter(item => item.status !== 'DELETED');
+        if (!this.state.selectedCluster && this.clusters.length) {
+          this.state.selectedCluster = this.clusters[0].clusterCode || this.clusters[0].clusterName;
+        }
+        if (this.state.selectedCluster) {
+          await this.onClusterChanged();
         }
       } catch (e) {
-        this.users = [];
-        this.$message.error(e.response?.data?.message || '加载授权用户失败，请检查授权端点配置');
+        this.$message.error(this.messageOf(e, '加载集群失败'));
       } finally {
-        this.loadingUsers = false;
+        this.loading.clusters = false;
       }
     },
-    async onClusterChange() {
-      this.capability = null;
-      this.permissionSnapshot = null;
-      this.resetResourceSelection();
-      if (!this.selectedCluster) return;
-      const res = await axios.get('/api/access/capabilities', { params: { cluster: this.selectedCluster } });
-      this.capability = res.data || null;
-      if (this.permissions.length) {
-        this.form.permissions = [this.permissions[0]];
+    async handleStateChange({ field, value }) {
+      const previousSubjectName = this.state.subjectName;
+      if (field === 'selectedCluster') {
+        this.state.selectedCluster = value || '';
+        await this.onClusterChanged();
+        return;
       }
-      if (this.capability && this.capability.status === 'READY') {
-        this.loadDatabases();
-        this.loadUsers();
+      if (field === 'selectedAuthBackend') {
+        this.state.selectedAuthBackend = value || '';
+        await this.onBackendChanged();
+        return;
+      }
+      if (field === 'subjectType') {
+        this.state.subjectType = value || 'USER';
+        this.state.subjectName = '';
+        this.state.verificationUser = verificationUserRequired(this.state.subjectType)
+          ? ''
+          : this.state.verificationUser;
+        this.verificationSnapshot = null;
+        this.subjectContext = { loading: false, roles: [], ldapProfile: null };
+        await this.loadPrincipals();
+        return;
+      }
+      if (field === 'subjectName') {
+        const nextSubjectName = value || '';
+        const redirected = await this.tryRedirectUserToLdapGroupSubject(nextSubjectName, previousSubjectName);
+        if (redirected) return;
+        this.state.subjectName = nextSubjectName;
+        if (this.state.subjectType === 'USER' && (!this.state.verificationUser || this.state.verificationUser === previousSubjectName)) {
+          this.state.verificationUser = this.state.subjectName;
+        }
+        await Promise.all([
+          this.loadSubjectContext(),
+          this.loadVerificationIfNeeded()
+        ]);
+        return;
+      }
+      if (field === 'verificationUser') {
+        this.state.verificationUser = value || '';
+        await Promise.all([
+          this.loadSubjectContext(),
+          this.loadVerificationIfNeeded()
+        ]);
+        return;
+      }
+      if (field === 'scopeLevel') {
+        this.state.scopeLevel = value || 'DATABASE';
+        this.state.directDatabases = [];
+        this.state.databaseName = '';
+        this.state.tableNames = [];
+        this.tables = [];
+        return;
+      }
+      if (field === 'databaseName') {
+        this.state.databaseName = value || '';
+        this.state.tableNames = [];
+        if (this.state.databaseName) {
+          await this.loadTables(this.state.databaseName);
+        } else {
+          this.tables = [];
+        }
+        return;
+      }
+      this.state[field] = value;
+    },
+    async tryRedirectUserToLdapGroupSubject(username, previousSubjectName) {
+      const normalizedUsername = String(username || '').trim();
+      if (!normalizedUsername || this.state.subjectType !== 'USER' || !this.shouldPreferGroupSubject()) {
+        return false;
+      }
+      const userPrincipal = this.findPrincipalOption(this.principals, normalizedUsername)
+        || this.findPrincipalOption(this.verificationPrincipals, normalizedUsername);
+      const principalGroup = this.resolvePrincipalGroupName(userPrincipal);
+      const ldapProfileGroup = principalGroup ? '' : await this.loadUserLdapPrimaryGroup(normalizedUsername);
+      const fallbackRoleGroup = this.selectedRoleGroupName;
+      const targetGroup = principalGroup || ldapProfileGroup || fallbackRoleGroup;
+      if (!targetGroup) {
+        return false;
+      }
+      this.state.verificationUser = normalizedUsername;
+      this.state.subjectType = 'GROUP';
+      this.state.subjectName = targetGroup;
+      this.verificationSnapshot = null;
+      await this.loadPrincipals();
+      await Promise.all([
+        this.loadSubjectContext(),
+        this.loadVerificationIfNeeded()
+      ]);
+      const reason = principalGroup || ldapProfileGroup
+        ? `已使用用户所属组 ${targetGroup} 作为授权对象，${normalizedUsername} 作为校验用户`
+        : `未读取到该用户 LDAP 组，已临时使用角色绑定组 ${targetGroup}`;
+      if (normalizedUsername !== previousSubjectName) {
+        this.$message.info(reason);
+      }
+      return true;
+    },
+    async loadSubjectContext() {
+      if (this.isRoleManagement) {
+        this.subjectContext = { loading: false, roles: [], ldapProfile: null };
+        await this.syncSelectedRoleForCurrentSubject();
+        return;
+      }
+      const subjectName = String(this.state.subjectName || '').trim();
+      const verificationUser = String(this.state.verificationUser || '').trim();
+      if (!subjectName && !verificationUser) {
+        this.subjectContext = { loading: false, roles: [], ldapProfile: null };
+        await this.syncSelectedRoleForCurrentSubject();
+        return;
+      }
+      this.subjectContext = {
+        ...this.subjectContext,
+        loading: true
+      };
+      const ldapUser = this.state.subjectType === 'USER' ? subjectName : verificationUser;
+      const ldapProfile = ldapUser ? await this.loadUserLdapProfile(ldapUser) : null;
+      this.subjectContext = {
+        loading: false,
+        roles: this.resolveSubjectBoundRoles(subjectName, ldapProfile),
+        ldapProfile
+      };
+      await this.syncSelectedRoleForCurrentSubject();
+    },
+    resolveSubjectBoundRoles(subjectName, ldapProfile) {
+      const subject = String(subjectName || '').trim();
+      if (!subject) return [];
+      const groupNames = this.profileGroupNames(ldapProfile);
+      const currentSubjectType = String(this.state.subjectType || '').toUpperCase();
+      const selectedBackend = String(this.state.selectedAuthBackend || '').trim().toUpperCase();
+      const directRoles = [];
+      const inheritedRoles = [];
+      (this.roles || []).forEach(roleView => {
+        const meta = boundRoleMeta(roleView, currentSubjectType, subject, selectedBackend, groupNames);
+        if (!meta.isBound) return;
+        const decoratedRoleView = {
+          ...roleView,
+          ...meta
+        };
+        if (meta.bindingMode === 'DIRECT') {
+          directRoles.push(decoratedRoleView);
+          return;
+        }
+        inheritedRoles.push(decoratedRoleView);
+      });
+      return [...directRoles, ...inheritedRoles];
+    },
+    preferredRoleCodeForCurrentSubject() {
+      const boundRoles = Array.isArray(this.subjectContext?.roles) ? this.subjectContext.roles : [];
+      if (!this.selectedRoleCode && boundRoles.length === 1) {
+        return boundRoles[0]?.role?.roleCode || '';
+      }
+      return this.roles[0]?.role?.roleCode || '';
+    },
+    async syncSelectedRoleForCurrentSubject() {
+      const roleCodes = (this.roles || []).map(item => item?.role?.roleCode).filter(Boolean);
+      if (!roleCodes.length) {
+        this.selectedRoleCode = '';
+        this.selectedRoleView = null;
+        this.state.selectedRolePermissionKeys = [];
+        return;
+      }
+      if (this.selectedRoleCode && roleCodes.includes(this.selectedRoleCode)) {
+        if (this.selectedRoleView?.role?.roleCode !== this.selectedRoleCode) {
+          await this.loadRoleDetail(this.selectedRoleCode);
+        }
+        return;
+      }
+      const nextRoleCode = this.preferredRoleCodeForCurrentSubject();
+      if (!nextRoleCode) {
+        this.selectedRoleCode = '';
+        this.selectedRoleView = null;
+        this.state.selectedRolePermissionKeys = [];
+        return;
+      }
+      await this.selectRole(nextRoleCode, { refreshSubjectContext: false });
+    },
+    profileGroupNames(profile) {
+      if (!profile) return [];
+      const names = [];
+      const pushName = value => {
+        if (value == null) return;
+        const name = this.resolvePrincipalGroupName(value && typeof value === 'object' ? value : { groupName: value });
+        if (name && !names.some(item => item.toLowerCase() === name.toLowerCase())) {
+          names.push(name);
+        }
+      };
+      pushName(profile.primaryGroup);
+      pushName(profile.primaryGroupName);
+      pushName(profile.ldapGroup);
+      pushName(profile.groupName);
+      if (Array.isArray(profile.supplementaryGroups)) {
+        profile.supplementaryGroups.forEach(pushName);
+      }
+      return names;
+    },
+    async loadUserLdapPrimaryGroup(username) {
+      const profile = await this.loadUserLdapProfile(username);
+      return this.resolvePrincipalGroupName(profile || null);
+    },
+    async loadUserLdapProfile(username) {
+      if (!username || !this.state.selectedCluster) return '';
+      try {
+        const res = await axios.get(`/api/access/user/${encodeURIComponent(username)}/ldap-profile`, {
+          params: { cluster: this.state.selectedCluster }
+        });
+        return res.data || null;
+      } catch (e) {
+        return null;
+      }
+    },
+    shouldPreferGroupSubject() {
+      const subjectTypes = this.subjectTypes || [];
+      if (!subjectTypes.includes('GROUP')) return false;
+      if (!this.capability) return false;
+      return Boolean(this.capability.requiresLdap)
+        || /LDAP|SENTRY|HIVE/i.test(`${this.capability.endpointType || ''} ${this.capability.authBackend || ''} ${this.capability.engineType || ''}`);
+    },
+    resolvePrincipalGroupName(principal) {
+      if (!principal) return '';
+      const nestedPrimary = principal.primaryGroup && typeof principal.primaryGroup === 'object'
+        ? this.firstNonBlank(principal.primaryGroup.name, principal.primaryGroup.cn)
+        : '';
+      const nestedLdap = principal.ldapGroup && typeof principal.ldapGroup === 'object'
+        ? this.firstNonBlank(principal.ldapGroup.name, principal.ldapGroup.cn)
+        : '';
+      const firstSupplementary = Array.isArray(principal.supplementaryGroups) && principal.supplementaryGroups.length
+        ? this.firstNonBlank(
+            principal.supplementaryGroups[0]?.name,
+            principal.supplementaryGroups[0]?.cn,
+            typeof principal.supplementaryGroups[0] === 'string' ? principal.supplementaryGroups[0] : ''
+          )
+        : '';
+      return this.firstNonBlank(
+        principal.sentryGroup,
+        principal.sentryGroupName,
+        nestedLdap,
+        typeof principal.ldapGroup === 'string' ? principal.ldapGroup : '',
+        principal.groupName,
+        principal.primaryGroupName,
+        nestedPrimary,
+        firstSupplementary,
+        principal.defaultGroupName,
+        principal.name,
+        principal.cn,
+        principal.value
+      );
+    },
+    async onClusterChanged() {
+      this.backendOptions = [];
+      this.state.selectedAuthBackend = '';
+      this.resetBackendScopedState();
+      if (!this.state.selectedCluster) {
+        return;
+      }
+      await this.loadBackendOptions();
+      const preferred = this.pickPreferredBackend();
+      if (!preferred) {
+        return;
+      }
+      this.state.selectedAuthBackend = preferred;
+      await this.onBackendChanged();
+    },
+    async onBackendChanged() {
+      this.resetBackendScopedState();
+      if (!this.state.selectedCluster || !this.state.selectedAuthBackend) {
+        return;
+      }
+      await this.loadCapability();
+      this.applyRouteSubjectType();
+      this.applyRouteUserContext();
+      const tasks = [
+        this.loadRoles(),
+        this.capabilityReady ? this.loadDatabases() : Promise.resolve()
+      ];
+      if (!this.isRoleManagement) {
+        tasks.push(this.loadPrincipals(), this.loadVerificationPrincipals());
+      }
+      await Promise.all(tasks);
+      await this.loadVerificationIfNeeded();
+    },
+    applyRouteUserContext() {
+      if (!this.routeContext.username) return;
+      this.applyRouteSubjectType();
+      if (this.state.subjectType === 'USER') {
+        this.state.subjectName = this.routeContext.username;
+      }
+      this.state.verificationUser = this.routeContext.username;
+    },
+    applyRouteSubjectType() {
+      if (!this.routeContext.username || !this.capability) return;
+      const availableSubjectTypes = allowedSubjectTypes(this.capability);
+      if (availableSubjectTypes.includes('USER')) {
+        this.state.subjectType = 'USER';
+      }
+    },
+    resetBackendScopedState() {
+      this.capability = null;
+      this.roles = [];
+      this.principals = [];
+      this.verificationPrincipals = [];
+      this.databases = [];
+      this.tables = [];
+      this.selectedRoleCode = '';
+      this.selectedRoleView = null;
+      this.activeRoleTab = 'info';
+      this.verificationSnapshot = null;
+      this.subjectContext = { loading: false, roles: [], ldapProfile: null };
+      this.batchResult = null;
+      this.state.subjectName = '';
+      this.state.verificationUser = '';
+      this.state.mode = 'ROLE';
+      this.state.scopeLevel = 'DATABASE';
+      this.state.directDatabases = [];
+      this.state.databaseName = '';
+      this.state.tableNames = [];
+      this.state.selectedRolePermissionKeys = [];
+      this.state.batchUsers = '';
+      this.state.exceptionReason = '';
+      this.state.ticketNo = '';
+      this.state.approver = '';
+      this.state.expiresAt = '';
+      this.state.riskLevel = 'LOW';
+    },
+    async loadBackendOptions() {
+      this.loading.backends = true;
+      try {
+        const res = await axios.get('/api/access/capabilities/backends', {
+          params: { cluster: this.state.selectedCluster }
+        });
+        this.backendOptions = res.data || [];
+      } catch (e) {
+        this.backendOptions = [];
+        this.$message.error(this.messageOf(e, '加载授权后端失败'));
+      } finally {
+        this.loading.backends = false;
+      }
+    },
+    pickPreferredBackend() {
+      const current = this.backendOptions.find(item => item.authBackend === this.state.selectedAuthBackend);
+      if (current) return current.authBackend;
+      if (this.isHdpCluster(this.state.selectedCluster)) {
+        const rangerReady = this.backendOptions.find(item => this.isRangerBackend(item) && item.status === 'READY');
+        if (rangerReady) return rangerReady.authBackend;
+        const ranger = this.backendOptions.find(this.isRangerBackend);
+        if (ranger) return ranger.authBackend;
+      }
+      const ready = this.backendOptions.find(item => item.status === 'READY');
+      if (ready) return ready.authBackend;
+      return this.backendOptions.length ? this.backendOptions[0].authBackend : '';
+    },
+    isHdpCluster(clusterIdentifier) {
+      const selected = (this.clusters || []).find(item => (item.clusterCode || item.clusterName) === clusterIdentifier) || {};
+      const text = [
+        clusterIdentifier,
+        selected.clusterCode,
+        selected.clusterName,
+        selected.clusterType,
+        selected.type
+      ].filter(Boolean).join(' ').toUpperCase();
+      return /\bHDP\b/.test(text) || text.includes('HDP');
+    },
+    isRangerBackend(item) {
+      const text = [
+        item && item.authBackend,
+        item && item.endpointType,
+        item && item.engineType,
+        item && item.name,
+        item && item.label
+      ].filter(Boolean).join(' ').toUpperCase();
+      return text.includes('RANGER');
+    },
+    async loadCapability() {
+      try {
+        const res = await axios.get('/api/access/capabilities', {
+          params: {
+            cluster: this.state.selectedCluster,
+            authBackend: this.state.selectedAuthBackend
+          }
+        });
+        this.capability = res.data || null;
+        this.applyCapabilityDefaults();
+      } catch (e) {
+        this.capability = null;
+        this.$message.error(this.messageOf(e, '加载授权能力失败'));
+      }
+    },
+    applyCapabilityDefaults() {
+      const capability = this.capability;
+      if (!capability) {
+        return;
+      }
+      const availableSubjectTypes = allowedSubjectTypes(capability);
+      if (!availableSubjectTypes.includes(this.state.subjectType)) {
+        this.state.subjectType = defaultSubjectType(capability);
+      }
+      if (!Array.isArray(this.state.permissions) || !this.state.permissions.length) {
+        this.state.permissions = Array.isArray(capability.permissions) && capability.permissions.length
+          ? [capability.permissions[0]]
+          : ['SELECT'];
+      } else {
+        const allowedPermissions = Array.isArray(capability.permissions) ? capability.permissions : [];
+        const filtered = this.state.permissions.filter(item => allowedPermissions.includes(item));
+        this.state.permissions = filtered.length ? filtered : (allowedPermissions.length ? [allowedPermissions[0]] : ['SELECT']);
+      }
+      if (!supportsRoles(capability) && supportsDirectGrant(capability)) {
+        this.state.mode = 'DIRECT_EXCEPTION';
+      } else if (supportsRoles(capability)) {
+        this.state.mode = 'ROLE';
+      }
+    },
+    async loadRoles() {
+      this.loading.roles = true;
+      try {
+        const res = await axios.get('/api/access/roles', {
+          params: {
+            cluster: this.state.selectedCluster,
+            authBackend: this.state.selectedAuthBackend
+          }
+        });
+        this.roles = res.data || [];
+      } catch (e) {
+        this.roles = [];
+        this.selectedRoleCode = '';
+        this.selectedRoleView = null;
+        this.state.selectedRolePermissionKeys = [];
+        this.$message.error(this.messageOf(e, '加载角色目录失败'));
+      } finally {
+        this.loading.roles = false;
+      }
+      await this.loadSubjectContext();
+    },
+    async selectRole(roleCode, { refreshSubjectContext = true } = {}) {
+      if (!roleCode) {
+        this.selectedRoleCode = '';
+        this.selectedRoleView = null;
+        this.state.selectedRolePermissionKeys = [];
+        return;
+      }
+      this.selectedRoleCode = roleCode;
+      await this.loadRoleDetail(roleCode);
+      if (refreshSubjectContext) {
+        await this.loadSubjectContext();
+      }
+    },
+    async loadRoleDetail(roleCode) {
+      this.loading.roleDetail = true;
+      try {
+        const res = await axios.get(`/api/access/roles/${encodeURIComponent(roleCode)}/effective-permissions`);
+        this.selectedRoleView = res.data || null;
+        const keys = uniqueRolePermissions(this.selectedRoleView).map(permissionKey);
+        const current = Array.isArray(this.state.selectedRolePermissionKeys) ? this.state.selectedRolePermissionKeys : [];
+        const preserved = keys.filter(key => current.includes(key));
+        this.state.selectedRolePermissionKeys = preserved.length ? preserved : keys;
+      } catch (e) {
+        this.selectedRoleView = null;
+        this.state.selectedRolePermissionKeys = [];
+        this.$message.error(this.messageOf(e, '加载角色详情失败'));
+      } finally {
+        this.loading.roleDetail = false;
+      }
+    },
+    async fetchPrincipalOptions(subjectType) {
+      const res = await axios.get('/api/access/resources/principals', {
+        params: {
+          cluster: this.state.selectedCluster,
+          authBackend: this.state.selectedAuthBackend,
+          subjectType
+        }
+      });
+      return Array.isArray(res.data) ? res.data : [];
+    },
+    async loadPrincipals() {
+      if (!this.state.selectedCluster || !this.state.selectedAuthBackend) {
+        this.principals = [];
+        return;
+      }
+      this.loading.principals = true;
+      try {
+        this.principals = await this.fetchPrincipalOptions(this.state.subjectType);
+      } catch (e) {
+        this.principals = [];
+        this.$message.error(this.messageOf(e, '加载主体候选失败'));
+      } finally {
+        this.loading.principals = false;
+      }
+    },
+    async loadVerificationPrincipals() {
+      if (!this.state.selectedCluster || !this.state.selectedAuthBackend) {
+        this.verificationPrincipals = [];
+        return;
+      }
+      this.loading.verificationPrincipals = true;
+      try {
+        this.verificationPrincipals = await this.fetchPrincipalOptions('USER');
+      } catch (e) {
+        this.verificationPrincipals = [];
+        this.$message.error(this.messageOf(e, '加载验证用户候选失败'));
+      } finally {
+        this.loading.verificationPrincipals = false;
       }
     },
     async loadDatabases() {
-      this.loadingResources = true;
+      this.loading.databases = true;
       try {
-        const res = await axios.get('/api/access/resources/databases', { params: { cluster: this.selectedCluster } });
+        const res = await axios.get('/api/access/resources/databases', {
+          params: {
+            cluster: this.state.selectedCluster,
+            authBackend: this.state.selectedAuthBackend
+          }
+        });
         this.databases = res.data || [];
       } catch (e) {
         this.databases = [];
-        this.$message.error('加载数据库失败，请检查授权端点配置');
+        this.$message.error(this.messageOf(e, '加载数据库失败'));
       } finally {
-        this.loadingResources = false;
+        this.loading.databases = false;
       }
     },
     async loadTables(database) {
-      if (!database) return;
-      this.loadingTables = true;
+      if (!database) {
+        this.tables = [];
+        return;
+      }
+      this.loading.tables = true;
       try {
         const res = await axios.get('/api/access/resources/tables', {
-          params: { cluster: this.selectedCluster, database }
+          params: {
+            cluster: this.state.selectedCluster,
+            authBackend: this.state.selectedAuthBackend,
+            database
+          }
         });
         this.tables = res.data || [];
       } catch (e) {
         this.tables = [];
-        this.$message.error('加载表失败，请检查授权端点配置');
+        this.$message.error(this.messageOf(e, '加载数据表失败'));
       } finally {
-        this.loadingTables = false;
+        this.loading.tables = false;
       }
     },
-    onDatabaseChange(value) {
-      if (this.form.level === 'TABLE') {
-        this.form.database = value;
-        this.form.tables = [];
-        this.loadTables(value);
-      }
-    },
-    onUserChange() {
-      this.permissionSnapshot = null;
-      this.loadPermissions();
-    },
-    async loadPermissions() {
-      if (!this.selectedCluster || !this.form.username) {
-        this.permissionSnapshot = null;
+    async loadVerificationIfNeeded() {
+      if (this.isRoleManagement) {
+        this.verificationSnapshot = null;
         return;
       }
-      this.loadingPermissions = true;
+      if (!this.state.selectedCluster || !this.state.selectedAuthBackend || !this.state.verificationUser) {
+        this.verificationSnapshot = null;
+        return;
+      }
+      this.loading.verification = true;
       try {
         const res = await axios.get('/api/access/resources/permissions', {
           params: {
-            cluster: this.selectedCluster,
-            username: this.form.username
+            cluster: this.state.selectedCluster,
+            authBackend: this.state.selectedAuthBackend,
+            username: this.state.verificationUser
           }
         });
-        this.permissionSnapshot = res.data || null;
+        this.verificationSnapshot = res.data || null;
       } catch (e) {
-        this.permissionSnapshot = null;
-        this.$message.error(e.response?.data?.message || '加载当前权限失败，请检查授权端点账号权限');
+        this.verificationSnapshot = null;
+        this.$message.error(this.messageOf(e, '加载验证用户权限失败'));
       } finally {
-        this.loadingPermissions = false;
+        this.loading.verification = false;
       }
     },
-    displayResource(record) {
-      if (!record) return '-';
-      if (record.resourceType === 'TABLE') {
-        return `${record.databaseName || '-'}.${record.tableName || '*'}`;
+    async syncVerificationUser() {
+      if (!this.state.selectedCluster || !this.state.verificationUser) {
+        this.$message.warning('请先选择验证用户');
+        return;
       }
-      if (['VIEW', 'MATERIALIZED_VIEW', 'FUNCTION'].includes(record.resourceType)) {
-        const database = record.databaseName || 'ALL DATABASES';
-        return `${database} / ${record.tableName || this.scopeLabel(record.resourceType)}`;
+      this.loading.verification = true;
+      try {
+        await axios.post(`/api/access/sync/${encodeURIComponent(this.state.verificationUser)}`, null, {
+          params: { cluster: this.state.selectedCluster }
+        });
+        this.$message.success('已同步后端权限');
+        await this.loadVerificationIfNeeded();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '同步后端权限失败'));
+      } finally {
+        this.loading.verification = false;
       }
-      if (record.resourceType === 'GLOBAL') {
-        return record.databaseName || 'ALL DATABASES';
-      }
-      return record.databaseName || '未解析资源';
     },
-    scopeLabel(type) {
-      const labels = {
-        GLOBAL: '全局',
-        DATABASE: '库级',
-        TABLE: '表级',
-        VIEW: '视图',
-        MATERIALIZED_VIEW: '物化视图',
-        FUNCTION: '函数'
+    selectedRolePermissions() {
+      const selected = new Set(this.state.selectedRolePermissionKeys || []);
+      return uniqueRolePermissions(this.selectedRoleView)
+        .filter(item => selected.has(permissionKey(item)))
+        .map(rolePermissionSelection);
+    },
+    async saveRole(payload) {
+      if (!payload || !this.state.selectedCluster || !this.state.selectedAuthBackend) {
+        this.$message.warning('请先选择集群和授权后端');
+        return;
+      }
+      this.loading.submitting = true;
+      try {
+        const body = {
+          ...payload,
+          cluster: this.state.selectedCluster,
+          authBackend: this.state.selectedAuthBackend,
+          engineType: this.capability?.engineType || payload.engineType
+        };
+        let savedRoleView = null;
+        if (payload.id && payload.roleCode) {
+          const res = await axios.put(`/api/access/roles/${encodeURIComponent(payload.roleCode)}`, body);
+          savedRoleView = res.data || null;
+        } else {
+          const res = await axios.post('/api/access/roles', body);
+          savedRoleView = res.data || null;
+        }
+        this.$message.success(payload.id ? '角色已更新' : '角色已创建');
+        await this.loadRoles();
+        const savedRoleCode = savedRoleView?.role?.roleCode || this.findSavedRoleCode(body.roleCode);
+        if (savedRoleCode) {
+          await this.selectRole(savedRoleCode);
+        }
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '保存角色失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    findSavedRoleCode(inputRoleCode) {
+      const normalizedInput = String(inputRoleCode || '').trim().toLowerCase();
+      if (!normalizedInput) return '';
+      const prefixedInput = normalizedInput.startsWith('dga_') ? normalizedInput : `dga_${normalizedInput}`;
+      const matched = (this.roles || []).find(item => {
+        const roleCode = String(item?.role?.roleCode || '').trim().toLowerCase();
+        return roleCode === normalizedInput || roleCode === prefixedInput;
+      });
+      return matched?.role?.roleCode || '';
+    },
+    async deleteRole(roleCode) {
+      if (!roleCode) return;
+      this.loading.submitting = true;
+      try {
+        await axios.delete(`/api/access/roles/${encodeURIComponent(roleCode)}`);
+        this.$message.success('角色已删除');
+        this.selectedRoleCode = '';
+        this.selectedRoleView = null;
+        await this.loadRoles();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '删除角色失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    async addRolePermissions({ roleCode, permissions }) {
+      if (!roleCode || !Array.isArray(permissions) || !permissions.length) return;
+      this.loading.submitting = true;
+      try {
+        for (const permission of permissions) {
+          await axios.post(`/api/access/roles/${encodeURIComponent(roleCode)}/permissions`, permission);
+        }
+        this.$message.success(`已添加 ${permissions.length} 项权限范围`);
+        await this.loadRoleDetail(roleCode);
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '添加角色权限范围失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    async deleteRolePermission({ roleCode, permissionId }) {
+      if (!roleCode || !permissionId) return;
+      this.loading.submitting = true;
+      try {
+        await axios.delete(`/api/access/roles/${encodeURIComponent(roleCode)}/permissions/${permissionId}`);
+        this.$message.success('角色权限范围已删除');
+        await this.loadRoleDetail(roleCode);
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '删除角色权限范围失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    async assignRole() {
+      if (!this.selectedRoleCode || !this.state.subjectName) {
+        return;
+      }
+      if (!this.ensureRangerPrincipalExists()) {
+        return;
+      }
+      this.loading.submitting = true;
+      try {
+        await axios.post(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/assignments`, {
+          subjectType: this.state.subjectType,
+          subjectName: this.state.subjectName,
+          authBackend: this.state.selectedAuthBackend
+        });
+        this.$message.success('角色绑定已提交');
+        await this.afterMutation();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '角色绑定失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    async revokeRole() {
+      if (!this.selectedRoleCode || !this.state.subjectName) {
+        return;
+      }
+      this.loading.submitting = true;
+      try {
+        await axios.delete(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/assignments`, {
+          params: {
+            subjectType: this.state.subjectType,
+            subjectName: this.state.subjectName,
+            authBackend: this.state.selectedAuthBackend
+          }
+        });
+        this.$message.success('角色绑定已回收');
+        await this.afterMutation();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '角色绑定回收失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    buildSubsetPayload() {
+      return {
+        username: this.state.subjectType === 'GROUP' ? this.state.verificationUser : this.state.subjectName,
+        cluster: this.state.selectedCluster,
+        authBackend: this.state.selectedAuthBackend,
+        grantMode: 'ROLE',
+        roleSubsetMode: true,
+        roleCode: this.selectedRoleCode,
+        subjectType: this.state.subjectType,
+        subjectName: this.state.subjectName,
+        rolePermissions: this.selectedRolePermissions()
       };
-      return labels[type] || type || '未知';
     },
-    scopeColor(type) {
-      const colors = {
-        GLOBAL: 'purple',
-        DATABASE: 'cyan',
-        TABLE: 'blue',
-        VIEW: 'geekblue',
-        MATERIALIZED_VIEW: 'volcano',
-        FUNCTION: 'gold'
-      };
-      return colors[type] || 'default';
-    },
-    onActionChange() {
-      this.resetResourceSelection();
-    },
-    resetResourceSelection() {
-      this.databases = [];
-      this.tables = [];
-      this.form.databases = [];
-      this.form.database = '';
-      this.form.tables = [];
-      if (this.selectedCluster && this.capability && this.capability.status === 'READY') {
-        this.loadDatabases();
+    async grantSubset() {
+      if (!this.ensureRangerPrincipalExists(true)) {
+        return;
+      }
+      this.loading.submitting = true;
+      try {
+        await axios.post('/api/access/grants/batch', this.buildSubsetPayload());
+        this.$message.success('角色权限子集已下发');
+        await this.afterMutation();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '角色权限子集授权失败'));
+      } finally {
+        this.loading.submitting = false;
       }
     },
-    async submit() {
+    async revokeSubset() {
+      this.loading.submitting = true;
+      try {
+        await axios.post('/api/access/revokes/batch', this.buildSubsetPayload());
+        this.$message.success('角色权限子集已回收');
+        await this.afterMutation();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '角色权限子集回收失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    buildDirectPayload() {
       const payload = {
-        username: this.form.username,
-        permission: this.form.permissions[0],
-        permissions: this.form.permissions,
-        level: this.form.level,
-        cluster: this.selectedCluster
+        username: this.state.subjectName,
+        cluster: this.state.selectedCluster,
+        authBackend: this.state.selectedAuthBackend,
+        grantMode: 'DIRECT_EXCEPTION',
+        level: this.state.scopeLevel,
+        permission: this.state.permissions[0],
+        permissions: this.state.permissions,
+        exceptionReason: this.state.exceptionReason,
+        ticketNo: this.state.ticketNo,
+        approver: this.state.approver,
+        expiresAt: this.normalizeDateTimeInput(this.state.expiresAt),
+        riskLevel: this.state.riskLevel
       };
-      if (this.form.level === 'DATABASE') {
-        payload.databases = this.form.databases;
+      if (this.state.scopeLevel === 'DATABASE') {
+        payload.databases = this.state.directDatabases;
       } else {
-        payload.tables = this.form.tables.map(table => ({
-          database: this.form.database,
+        payload.tables = (this.state.tableNames || []).map(table => ({
+          database: this.state.databaseName,
           table
         }));
       }
-
-      this.submitting = true;
+      return payload;
+    },
+    async grantDirect() {
+      if (!this.ensureRangerPrincipalExists(true)) {
+        return;
+      }
+      this.loading.submitting = true;
       try {
-        const url = this.form.actionType === 'GRANT'
-          ? '/api/access/grants/batch'
-          : '/api/access/revokes/batch';
-        await axios.post(url, payload);
-        this.$message.success(this.form.actionType === 'GRANT' ? '授权成功' : '回收成功');
-        this.loadPermissions();
+        await axios.post('/api/access/grants/batch', this.buildDirectPayload());
+        this.$message.success('直接例外权限已下发');
+        await this.afterMutation();
       } catch (e) {
-        this.$message.error((this.form.actionType === 'GRANT' ? '授权失败: ' : '回收失败: ')
-          + (e.response?.data?.message || e.message));
+        this.$message.error(this.messageOf(e, '直接例外授权失败'));
       } finally {
-        this.submitting = false;
+        this.loading.submitting = false;
       }
     },
-    statusColor(status) {
-      switch (status) {
-        case 'READY': return 'green';
-        case 'PLANNED': return 'gold';
-        case 'UNCONFIGURED': return 'red';
-        default: return 'default';
+    async revokeDirect() {
+      this.loading.submitting = true;
+      try {
+        await axios.post('/api/access/revokes/batch', this.buildDirectPayload());
+        this.$message.success('直接例外权限已回收');
+        await this.afterMutation();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '直接例外回收失败'));
+      } finally {
+        this.loading.submitting = false;
       }
+    },
+    async dryRunBatch() {
+      if (!this.selectedRoleCode) {
+        return;
+      }
+      this.loading.dryRunning = true;
+      try {
+        const res = await axios.post(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/assignments/batch/dry-run`, {
+          cluster: this.state.selectedCluster,
+          authBackend: this.state.selectedAuthBackend,
+          usernames: parseBatchUsers(this.state.batchUsers)
+        });
+        this.batchResult = res.data || null;
+        this.$message.success('Dry-run 已完成');
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '批量 dry-run 失败'));
+      } finally {
+        this.loading.dryRunning = false;
+      }
+    },
+    async assignBatch() {
+      if (!this.selectedRoleCode) {
+        return;
+      }
+      this.loading.submitting = true;
+      try {
+        const res = await axios.post(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/assignments/batch`, {
+          cluster: this.state.selectedCluster,
+          authBackend: this.state.selectedAuthBackend,
+          usernames: parseBatchUsers(this.state.batchUsers)
+        });
+        this.batchResult = res.data || null;
+        this.$message.success('批量补绑定已处理');
+        await this.afterMutation();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '批量补绑定失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    selectAllRolePermissions() {
+      this.state.selectedRolePermissionKeys = uniqueRolePermissions(this.selectedRoleView).map(permissionKey);
+    },
+    async afterMutation() {
+      if (this.state.selectedCluster && this.state.selectedAuthBackend) {
+        await this.loadRoles();
+      }
+      await this.loadVerificationIfNeeded();
+    },
+    findPrincipalOption(options, name) {
+      const target = String(name || '').trim().toLowerCase();
+      if (!target) return null;
+      return (options || []).find(item => String(item?.name || item?.value || '').trim().toLowerCase() === target) || null;
+    },
+    isRangerBackend() {
+      return String(this.state.selectedAuthBackend || '').toUpperCase().includes('RANGER');
+    },
+    ensureRangerPrincipalExists(checkVerificationUser = false) {
+      if (!this.isRangerBackend()) {
+        return true;
+      }
+      const subjectName = String(this.state.subjectName || '').trim();
+      const subjectType = String(this.state.subjectType || 'USER').toUpperCase();
+      if (!subjectName || !this.findPrincipalOption(this.principals, subjectName)) {
+        this.$message.warning(`${subjectType === 'GROUP' ? '授权组' : '授权用户'}不在 Ranger 中，请先完成 Ranger 用户/组同步后再授权。`);
+        return false;
+      }
+      const verificationUser = String(this.state.verificationUser || '').trim();
+      if (checkVerificationUser && verificationUser && !this.findPrincipalOption(this.verificationPrincipals, verificationUser)) {
+        this.$message.warning('权限验证用户不在 Ranger 中，无法作为本次授权后的实时校验账号。');
+        return false;
+      }
+      return true;
+    },
+    messageOf(error, fallback) {
+      return error && error.response && error.response.data && error.response.data.message
+        ? error.response.data.message
+        : (error && error.message) || fallback;
+    },
+    normalizeDateTimeInput(value) {
+      if (!value) return null;
+      return String(value).length === 16 ? `${value}:00` : value;
+    },
+    firstNonBlank(...values) {
+      for (const value of values) {
+        if (value == null) continue;
+        const text = String(value).trim();
+        if (text) return text;
+      }
+      return '';
     }
   }
 };
 </script>
 
 <style scoped>
-.authorization-center {
+.authorization-center-v2 {
   min-height: 100%;
+  padding: 0 4px 24px;
+  background: linear-gradient(180deg, #f7faff 0%, #ffffff 260px);
 }
-.hero {
+.page-heading {
   display: flex;
-  justify-content: space-between;
   align-items: flex-start;
-  margin-bottom: 18px;
-  padding: 24px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #102a43 0%, #1f6f8b 55%, #37a2a5 100%);
-  color: #fff;
-  box-shadow: 0 12px 30px rgba(16, 42, 67, 0.18);
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+  padding: 12px 18px;
+  border: 1px solid #e7edf5;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.94);
+  box-shadow: 0 10px 28px rgba(31, 45, 61, 0.05);
 }
-.hero h1 {
-  color: #fff;
-  margin: 0 0 8px;
-}
-.hero p {
-  margin: 0;
-  color: rgba(255, 255, 255, 0.82);
-}
-.eyebrow {
-  letter-spacing: 0.12em;
+.page-eyebrow {
+  margin-bottom: 6px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  font-size: 12px;
-  margin-bottom: 8px !important;
-}
-.eyebrow.dark {
   color: #667085;
 }
-.top-row {
-  margin-bottom: 16px;
-}
-.panel-card,
-.capability-card,
-.permission-card,
-.operation-card {
-  border-radius: 8px;
-}
-.permission-card {
-  margin-bottom: 16px;
-}
-.card-title-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 16px;
-}
-.card-title-row h3 {
+.page-heading h2 {
   margin: 0 0 6px;
   color: #1f2d3d;
-  font-weight: 700;
 }
-.card-title-row p {
+.page-heading p {
   margin: 0;
   color: #667085;
 }
-.permission-toolbar {
-  display: flex;
-  gap: 10px;
-  min-width: 360px;
+.context-panel {
+  margin-bottom: 12px;
 }
-.permission-toolbar .ant-select {
-  flex: 1;
-}
-.permission-summary {
+.flow-role-panel {
   display: grid;
-  grid-template-columns: repeat(4, minmax(120px, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
-}
-.summary-pill {
-  padding: 12px 14px;
-  border-radius: 10px;
-  background: linear-gradient(135deg, #f6fbff 0%, #eef8f8 100%);
-  border: 1px solid #e2eef5;
-}
-.summary-pill span {
-  display: block;
-  color: #667085;
-  font-size: 12px;
-}
-.summary-pill strong {
-  display: block;
-  margin-top: 6px;
-  color: #102a43;
-  word-break: break-all;
-}
-.permission-table code {
-  display: inline-block;
-  max-width: 520px;
-  color: #334e68;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: middle;
-}
-.permission-empty {
-  padding: 16px 0;
-}
-.resource-cell {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.hint {
-  color: #667085;
-  font-size: 12px;
-  margin-top: 12px;
-}
-.field-hint {
-  color: #667085;
-  font-size: 12px;
-  margin-top: 6px;
-}
-.capability-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
-  gap: 12px;
-}
-.capability-item {
-  padding: 12px;
-  border: 1px solid #edf0f5;
-  border-radius: 8px;
-  background: #fbfdff;
-}
-.capability-item span,
-.capability-item small {
-  display: block;
-  color: #667085;
-  font-size: 12px;
-}
-.capability-item strong {
-  display: block;
-  margin-top: 6px;
-  color: #1f2d3d;
-  word-break: break-all;
-}
-.capability-alert {
-  margin-top: 14px;
-}
-.operation-heading {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 16px;
-  margin-bottom: 18px;
-  padding-bottom: 16px;
-  border-bottom: 1px solid #edf0f5;
-}
-.operation-heading h3 {
-  margin: 0 0 6px;
-  color: #1f2d3d;
-  font-weight: 700;
-}
-.operation-heading p {
-  margin: 0;
-  color: #667085;
-}
-.operation-grid {
-  display: grid;
-  grid-template-columns: 320px minmax(0, 1fr);
-  gap: 16px;
+  grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.6fr);
+  gap: 14px;
   align-items: stretch;
+  margin-bottom: 16px;
 }
-.operation-step {
-  padding: 18px;
-  border: 1px solid #e6edf3;
-  border-radius: 12px;
-  background: linear-gradient(180deg, #fbfdff 0%, #f7fbfc 100%);
+.flow-strip {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  gap: 8px;
+  height: 100%;
 }
-.resource-step {
-  background: #fff;
-}
-.step-title {
+.flow-step {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin-bottom: 16px;
-  color: #102a43;
-  font-weight: 700;
+  gap: 10px;
+  min-height: 54px;
+  padding: 10px 12px;
+  border: 1px solid #e7edf5;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(31, 45, 61, 0.05);
 }
-.step-title span {
+.flow-step.is-current {
+  border-color: #b2ddff;
+  background: #f5faff;
+}
+.flow-step.is-done {
+  border-color: #abefc6;
+  background: #f6fef9;
+}
+.flow-step-index {
   display: inline-flex;
-  width: 24px;
-  height: 24px;
   align-items: center;
   justify-content: center;
+  width: 24px;
+  height: 24px;
   border-radius: 999px;
-  background: #1890ff;
-  color: #fff;
+  background: #eff4ff;
+  color: #175cd3;
   font-size: 12px;
+  font-weight: 700;
+  flex-shrink: 0;
 }
-.operation-footer {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-  padding-top: 16px;
-  border-top: 1px solid #edf0f5;
+.flow-step.is-done .flow-step-index {
+  background: #ecfdf3;
+  color: #067647;
 }
-.operation-summary {
+.flow-step-body {
+  min-width: 0;
+  flex: 1;
+}
+.flow-step-title {
+  color: #1f2d3d;
+  font-size: 13px;
+  font-weight: 600;
+}
+.flow-step-hint {
+  overflow: hidden;
   color: #667085;
+  font-size: 12px;
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-@media (max-width: 900px) {
-  .hero,
-  .card-title-row,
-  .operation-heading,
-  .operation-footer {
-    flex-direction: column;
-    align-items: stretch;
+.context-strip {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 16px 18px;
+  border-radius: 14px;
+  border: 1px solid #e7edf5;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 10px 28px rgba(31, 45, 61, 0.06);
+}
+.context-main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.context-label {
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #8a94a6;
+}
+.context-title {
+  overflow: hidden;
+  font-size: 16px;
+  font-weight: 700;
+  color: #1f2d3d;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.context-meta-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.context-meta {
+  display: inline-flex;
+  align-items: center;
+  max-width: 260px;
+  min-height: 28px;
+  padding: 4px 10px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #f5f8fc;
+  color: #667085;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.role-catalog-strip-panel,
+.role-catalog-strip-panel :deep(.role-card) {
+  min-height: 100%;
+}
+.role-catalog-strip-panel :deep(.ant-card-body) {
+  padding: 12px 14px;
+}
+.role-catalog-strip-panel :deep(.toolbar) {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+}
+.role-catalog-strip-panel :deep(.selected-role-summary) {
+  margin-bottom: 10px;
+  padding: 9px 12px;
+}
+.role-catalog-strip-panel :deep(.role-list) {
+  min-height: 116px;
+  padding-bottom: 8px;
+}
+.role-catalog-strip-panel :deep(.role-item) {
+  flex-basis: 230px;
+  min-width: 230px;
+  padding: 10px 11px;
+}
+.role-catalog-strip-panel :deep(.catalog-hint) {
+  display: none;
+}
+.workspace-row {
+  align-items: stretch;
+}
+.workspace-col {
+  display: flex;
+  flex-direction: column;
+  margin-bottom: 20px;
+}
+.workspace-col :deep(.ant-card) {
+  width: 100%;
+  min-height: 100%;
+  box-shadow: 0 12px 32px rgba(31, 45, 61, 0.06);
+}
+@media (max-width: 1400px) {
+  .flow-role-panel {
+    grid-template-columns: minmax(260px, 0.9fr) minmax(0, 1.4fr);
   }
-  .permission-toolbar {
-    min-width: 0;
-  }
-  .capability-grid {
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
-  }
-  .permission-summary {
-    grid-template-columns: repeat(2, minmax(120px, 1fr));
-  }
-  .operation-grid {
+}
+@media (max-width: 991px) {
+  .flow-role-panel,
+  .context-strip {
     grid-template-columns: 1fr;
+  }
+  .flow-strip {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    height: auto;
+  }
+  .context-meta-grid {
+    justify-content: flex-start;
+  }
+}
+@media (max-width: 768px) {
+  .authorization-center-v2 {
+    padding: 0 0 16px;
+  }
+  .page-heading {
+    flex-direction: column;
+    padding: 14px;
+  }
+  .flow-strip,
+  .context-strip {
+    grid-template-columns: 1fr;
+  }
+  .context-strip {
+    padding: 14px;
+  }
+  .context-meta {
+    max-width: 100%;
   }
 }
 </style>

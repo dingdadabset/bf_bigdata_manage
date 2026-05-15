@@ -1,5 +1,7 @@
 package com.dga.access.service;
 
+import com.dga.access.entity.LdapGroupEmptyState;
+import com.dga.access.repository.LdapGroupEmptyStateRepository;
 import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
 import com.dga.cluster.repository.ClusterEndpointRepository;
@@ -24,9 +26,12 @@ import javax.naming.directory.DirContext;
 import javax.naming.directory.ModificationItem;
 import javax.naming.ldap.LdapName;
 import javax.naming.ldap.Rdn;
+import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -46,6 +51,8 @@ public class LdapService {
             "inetOrgPerson"
     );
 
+    public static final int STALE_EMPTY_GROUP_DAYS = 30;
+
     private static final String POSIX_ACCOUNT = "posixAccount";
     private static final String SHADOW_ACCOUNT = "shadowAccount";
     private static final String LOCKED_TIME_VALUE = "000001010000Z";
@@ -58,6 +65,9 @@ public class LdapService {
 
     @Autowired
     private ClusterEndpointRepository endpointRepository;
+
+    @Autowired
+    private LdapGroupEmptyStateRepository ldapGroupEmptyStateRepository;
 
     @Value("${spring.ldap.user-base:cn=users,cn=accounts}")
     private String defaultUserBaseDn;
@@ -107,14 +117,20 @@ public class LdapService {
         GroupSelection groupSelection = posixAccount
                 ? resolveGroupSelection(ldapTemplate, cluster, gidNumber, groupName)
                 : null;
+        Long selectedGidNumber = groupSelection == null ? null : groupSelection.gidNumber;
+        String selectedGroupName = groupSelection == null ? null : groupSelection.groupName;
+        if (posixAccount && selectedGidNumber == null) {
+            throw new IllegalStateException("无法解析 OpenLDAP 用户默认组");
+        }
+        long targetGidNumber = selectedGidNumber == null ? 0L : selectedGidNumber;
         BasicAttributes attrs = posixAccount
-                ? buildUserAttributes(ldapTemplate, cluster, username, password, email, groupSelection.gidNumber)
+                ? buildUserAttributes(ldapTemplate, cluster, username, password, email, targetGidNumber)
                 : buildLdapIdentityAttributes(username, password, email);
 
         try {
             ldapTemplate.bind(dn, null, attrs);
             if (posixAccount) {
-                addUserToGroupMemberUidIfPossible(ldapTemplate, cluster, username, groupSelection.groupName, groupSelection.gidNumber);
+                addUserToGroupMemberUidIfPossible(ldapTemplate, cluster, username, selectedGroupName, targetGidNumber);
             }
             System.out.println("LDAP user created: " + username);
         } catch (Exception e) {
@@ -195,6 +211,7 @@ public class LdapService {
         List<Map<String, Object>> groups = ldapTemplate.search("", "(objectClass=posixGroup)",
                 (ContextMapper<Map<String, Object>>) this::mapGroupContext);
         groups.removeIf(group -> group.get("name") == null || group.get("gidNumber") == null);
+        enrichPosixGroups(clusterIdentifier, cluster, ldapTemplate, groups);
         groups.sort((left, right) -> {
             long leftGid = ((Number) left.get("gidNumber")).longValue();
             long rightGid = ((Number) right.get("gidNumber")).longValue();
@@ -215,6 +232,7 @@ public class LdapService {
         if (groups.isEmpty()) {
             throw new IllegalArgumentException("LDAP 用户组不存在: " + normalized);
         }
+        enrichPosixGroups(clusterIdentifier, cluster, ldapTemplate, groups);
         return groups.get(0);
     }
 
@@ -303,7 +321,7 @@ public class LdapService {
         if (!primaryUsers.isEmpty()) {
             throw new IllegalArgumentException("该组仍是用户主组，不能删除。请先迁移用户: " + String.join(",", primaryUsers));
         }
-        List<String> members = group.get("members") instanceof List ? (List<String>) group.get("members") : Collections.emptyList();
+        List<String> members = toStringList(group.get("members"));
         if (!members.isEmpty() && !force) {
             throw new IllegalArgumentException("该组仍包含 memberUid，请先清空成员或启用强制删除");
         }
@@ -311,12 +329,104 @@ public class LdapService {
         if (groupDn == null) {
             throw new IllegalArgumentException("LDAP 用户组不存在: " + normalized);
         }
-        ldapTemplate.unbind(groupDn);
+        Attributes groupAttrs = readEntryAttributes(ldapTemplate, groupDn, "LDAP Group Lookup Error");
+        boolean managedEntry = isManagedGroupEntry(groupAttrs);
+        if (managedEntry && !force) {
+            throw new IllegalArgumentException("该组是 LDAP 托管条目，请先解除关联用户或启用强制删除");
+        }
+        if (managedEntry) {
+            unlinkManagedGroup(ldapTemplate, groupDn, groupAttrs);
+        }
+        try {
+            ldapTemplate.unbind(groupDn);
+        } catch (Exception e) {
+            if (isManagedEntryDeleteError(e)) {
+                throw new RuntimeException("LDAP Group Delete Error: 该组仍是托管条目，请先解除关联用户后再删除", e);
+            }
+            throw new RuntimeException("LDAP Group Delete Error: " + e.getMessage(), e);
+        }
+        String clusterName = clusterNameValue(cluster, clusterIdentifier);
+        if (clusterName != null) {
+            ldapGroupEmptyStateRepository.deleteByClusterNameAndGroupNameIgnoreCase(clusterName, normalized);
+        }
         Map<String, Object> result = new HashMap<>();
         result.put("name", normalized);
         result.put("deleted", true);
-        result.put("message", "LDAP 用户组已删除");
+        result.put("managedEntry", managedEntry);
+        result.put("message", managedEntry ? "LDAP 用户组已解除托管关联并删除" : "LDAP 用户组已删除");
         return result;
+    }
+
+    private Attributes readEntryAttributes(LdapTemplate ldapTemplate, Name dn, String errorPrefix) {
+        try {
+            return ldapTemplate.lookup(dn, (AttributesMapper<Attributes>) attributes -> attributes);
+        } catch (Exception e) {
+            throw new RuntimeException(errorPrefix + ": " + e.getMessage(), e);
+        }
+    }
+
+    private boolean isManagedGroupEntry(Attributes attrs) {
+        return attributeContainsIgnoreCase(attrs.get("objectClass"), "mepManagedEntry")
+                || !attributeValues(attrs.get("mepManagedBy")).isEmpty();
+    }
+
+    private void unlinkManagedGroup(LdapTemplate ldapTemplate, Name groupDn, Attributes groupAttrs) {
+        List<String> managerDns = attributeValues(groupAttrs.get("mepManagedBy"));
+        for (String managerDnValue : managerDns) {
+            Name managerDn = parseLdapName(managerDnValue);
+            if (managerDn == null) {
+                continue;
+            }
+            removeAttributeReference(ldapTemplate, managerDn, "mepManagedEntry", groupDn.toString());
+        }
+        removeAttributeReference(ldapTemplate, groupDn, "mepManagedBy", null);
+    }
+
+    private void removeAttributeReference(LdapTemplate ldapTemplate, Name dn, String attributeName, String expectedValue) {
+        Attributes attrs = readEntryAttributes(ldapTemplate, dn, "LDAP Managed Entry Lookup Error");
+        Attribute attribute = attrs.get(attributeName);
+        if (attribute == null || attribute.size() == 0) {
+            return;
+        }
+        try {
+            ModificationItem modification;
+            List<String> values = attributeValues(attribute);
+            if (expectedValue == null || values.size() <= 1) {
+                modification = new ModificationItem(DirContext.REMOVE_ATTRIBUTE, new BasicAttribute(attributeName));
+            } else {
+                modification = new ModificationItem(DirContext.REMOVE_ATTRIBUTE, new BasicAttribute(attributeName, expectedValue));
+            }
+            ldapTemplate.modifyAttributes(dn, new ModificationItem[]{modification});
+        } catch (Exception e) {
+            throw new RuntimeException("LDAP Managed Entry Unlink Error: " + e.getMessage(), e);
+        }
+    }
+
+    private Name parseLdapName(String value) {
+        String normalized = trimToNull(value);
+        if (normalized == null) {
+            return null;
+        }
+        try {
+            return new LdapName(normalized);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private boolean isManagedEntryDeleteError(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase(Locale.ROOT);
+                if (lower.contains("managed entry") && lower.contains("unlinked first")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
     }
 
     public Map<String, Object> getUserPrimaryGroup(String clusterIdentifier, String username) {
@@ -359,7 +469,7 @@ public class LdapService {
         }
 
         removeUserFromAllPosixGroups(ldapTemplate, username);
-        addUserToGroupMemberUidIfPossible(ldapTemplate, cluster, username, String.valueOf(targetGroup.get("name")), targetGid);
+        addUserToGroupMemberUid(ldapTemplate, cluster, username, String.valueOf(targetGroup.get("name")), targetGid, true);
 
         Map<String, Object> result = new HashMap<>(targetGroup);
         result.put("username", username);
@@ -435,7 +545,7 @@ public class LdapService {
         Attributes attrs = readUserAttributes(ldapTemplate, buildUserDn(cluster, username));
         long primaryGid = firstLongAttributeValue(attrs, "gidNumber").orElse(-1L);
 
-        removeUserFromAllSupplementaryGroups(ldapTemplate, username, primaryGid);
+        removeUserFromAllSupplementaryGroups(ldapTemplate, cluster, username, primaryGid);
         List<Map<String, Object>> selectedGroups = new ArrayList<>();
         if (groupNames != null) {
             for (String groupName : groupNames) {
@@ -451,7 +561,7 @@ public class LdapService {
                 if (gid != null && gid == primaryGid) {
                     continue;
                 }
-                addUserToGroupMemberUidIfPossible(ldapTemplate, cluster, username, String.valueOf(group.get("name")), gid);
+                addUserToGroupMemberUid(ldapTemplate, cluster, username, String.valueOf(group.get("name")), gid, true);
                 selectedGroups.add(group);
             }
         }
@@ -742,27 +852,44 @@ public class LdapService {
 
     private void addUserToGroupMemberUidIfPossible(LdapTemplate ldapTemplate, Cluster cluster, String username,
                                                    String groupName, Long gidNumber) {
-        Name groupDn = findGroupDn(ldapTemplate, cluster, groupName, gidNumber);
-        if (groupDn == null) {
+        addUserToGroupMemberUid(ldapTemplate, cluster, username, groupName, gidNumber, false);
+    }
+
+    private void addUserToGroupMemberUid(LdapTemplate ldapTemplate, Cluster cluster, String username,
+                                         String groupName, Long gidNumber, boolean strict) {
+        List<Name> groupDns = findGroupDns(ldapTemplate, cluster, groupName, gidNumber);
+        if (groupDns.isEmpty()) {
+            if (strict) {
+                String target = trimToNull(groupName) != null ? groupName.trim() : String.valueOf(gidNumber);
+                throw new IllegalArgumentException("LDAP 用户组不存在: " + target);
+            }
             return;
         }
-        try {
-            Attributes attributes = ldapTemplate.lookup(groupDn, (AttributesMapper<Attributes>) attrs -> attrs);
-            Attribute memberUid = attributes.get("memberUid");
-            if (attributeContainsIgnoreCase(memberUid, username)) {
+        Exception lastError = null;
+        for (Name groupDn : groupDns) {
+            try {
+                Attributes attributes = ldapTemplate.lookup(groupDn, (AttributesMapper<Attributes>) attrs -> attrs);
+                Attribute memberUid = attributes.get("memberUid");
+                if (!attributeContainsIgnoreCase(memberUid, username)) {
+                    ldapTemplate.modifyAttributes(groupDn, new ModificationItem[]{
+                            new ModificationItem(DirContext.ADD_ATTRIBUTE, new BasicAttribute("memberUid", username))
+                    });
+                }
                 return;
+            } catch (Exception e) {
+                lastError = e;
+                System.err.println("Failed to append memberUid for group " + groupDn + ": " + e.getMessage());
             }
-            ldapTemplate.modifyAttributes(groupDn, new ModificationItem[]{
-                    new ModificationItem(DirContext.ADD_ATTRIBUTE, new BasicAttribute("memberUid", username))
-            });
-        } catch (Exception e) {
-            System.err.println("Failed to append memberUid for group " + groupDn + ": " + e.getMessage());
+        }
+        if (strict && lastError != null) {
+            throw new RuntimeException("LDAP Group Update Error: 写入 memberUid 失败 - " + lastError.getMessage(), lastError);
         }
     }
 
     private void removeUserFromAllPosixGroups(LdapTemplate ldapTemplate, String username) {
         List<Name> groups = ldapTemplate.search("", "(&(objectClass=posixGroup)(memberUid=" + Rdn.escapeValue(username) + "))",
                 (ContextMapper<Name>) ctx -> ((DirContextOperations) ctx).getDn());
+        groups.sort(Comparator.comparingInt(this::groupDnPriority));
         for (Name groupDn : groups) {
             try {
                 ldapTemplate.modifyAttributes(groupDn, new ModificationItem[]{
@@ -774,42 +901,55 @@ public class LdapService {
         }
     }
 
-    private void removeUserFromAllSupplementaryGroups(LdapTemplate ldapTemplate, String username, long primaryGid) {
+    private void removeUserFromAllSupplementaryGroups(LdapTemplate ldapTemplate, Cluster cluster, String username, long primaryGid) {
         List<Map<String, Object>> groups = findUserMemberGroups(ldapTemplate, username, -1L);
         for (Map<String, Object> group : groups) {
             Long gid = group.get("gidNumber") instanceof Number ? ((Number) group.get("gidNumber")).longValue() : null;
             if (gid != null && gid == primaryGid) {
                 continue;
             }
-            Name groupDn = findGroupDn(ldapTemplate, null, (String) group.get("name"), gid);
-            if (groupDn == null) {
-                continue;
-            }
-            try {
-                ldapTemplate.modifyAttributes(groupDn, new ModificationItem[]{
-                        new ModificationItem(DirContext.REMOVE_ATTRIBUTE, new BasicAttribute("memberUid", username))
-                });
-            } catch (Exception e) {
-                System.err.println("Failed to remove supplementary group memberUid from " + groupDn + ": " + e.getMessage());
+            for (Name groupDn : findGroupDns(ldapTemplate, cluster, (String) group.get("name"), gid)) {
+                try {
+                    ldapTemplate.modifyAttributes(groupDn, new ModificationItem[]{
+                            new ModificationItem(DirContext.REMOVE_ATTRIBUTE, new BasicAttribute("memberUid", username))
+                    });
+                    break;
+                } catch (Exception e) {
+                    System.err.println("Failed to remove supplementary group memberUid from " + groupDn + ": " + e.getMessage());
+                }
             }
         }
     }
 
     private Name findGroupDn(LdapTemplate ldapTemplate, Cluster cluster, String groupName, Long gidNumber) {
+        List<Name> matches = findGroupDns(ldapTemplate, cluster, groupName, gidNumber);
+        return matches.isEmpty() ? null : matches.get(0);
+    }
+
+    private List<Name> findGroupDns(LdapTemplate ldapTemplate, Cluster cluster, String groupName, Long gidNumber) {
         String filter;
         if (trimToNull(groupName) != null) {
             filter = "(&(objectClass=posixGroup)(cn=" + Rdn.escapeValue(groupName) + "))";
         } else if (gidNumber != null && gidNumber > 0) {
             filter = "(&(objectClass=posixGroup)(gidNumber=" + gidNumber + "))";
         } else {
-            return null;
+            return Collections.emptyList();
         }
         List<Name> matches = ldapTemplate.search("", filter,
                 (ContextMapper<Name>) ctx -> ((DirContextOperations) ctx).getDn());
-        if (!matches.isEmpty()) {
-            return matches.get(0);
+        matches.sort(Comparator.comparingInt(this::groupDnPriority));
+        return matches;
+    }
+
+    private int groupDnPriority(Name dn) {
+        String value = dn == null ? "" : dn.toString().toLowerCase(Locale.ROOT);
+        if (value.contains("cn=compat")) {
+            return 10;
         }
-        return null;
+        if (value.contains("cn=groups,cn=accounts")) {
+            return 0;
+        }
+        return 5;
     }
 
     private Name buildGroupDn(LdapTemplate ldapTemplate, Cluster cluster, String groupName) {
@@ -945,6 +1085,150 @@ public class LdapService {
         group.put("members", attributeValues(attrs.get("memberUid")));
         group.put("memberCount", attributeValues(attrs.get("memberUid")).size());
         return group;
+    }
+
+    private void enrichPosixGroups(String clusterIdentifier, Cluster cluster, LdapTemplate ldapTemplate,
+                                   List<Map<String, Object>> groups) {
+        if (groups == null || groups.isEmpty()) {
+            return;
+        }
+        String clusterName = clusterNameValue(cluster, clusterIdentifier);
+        Map<String, LdapGroupEmptyState> stateMap = loadEmptyStateMap(clusterName);
+        for (Map<String, Object> group : groups) {
+            GroupBindingSnapshot snapshot = buildGroupBindingSnapshot(ldapTemplate, cluster, group);
+            String stateKey = groupStateKey(stringValue(group.get("name")));
+            LdapGroupEmptyState state = refreshGroupEmptyState(cluster, clusterIdentifier, group, snapshot,
+                    stateMap.get(stateKey));
+            if (state != null) {
+                stateMap.put(stateKey, state);
+            }
+            applyGroupDerivedFields(group, snapshot, state);
+        }
+    }
+
+    private Map<String, LdapGroupEmptyState> loadEmptyStateMap(String clusterName) {
+        Map<String, LdapGroupEmptyState> stateMap = new HashMap<>();
+        if (clusterName == null) {
+            return stateMap;
+        }
+        for (LdapGroupEmptyState state : ldapGroupEmptyStateRepository.findByClusterName(clusterName)) {
+            stateMap.put(groupStateKey(state.getGroupName()), state);
+        }
+        return stateMap;
+    }
+
+    private GroupBindingSnapshot buildGroupBindingSnapshot(LdapTemplate ldapTemplate, Cluster cluster,
+                                                           Map<String, Object> group) {
+        List<String> directMembers = normalizeUidList(toStringList(group.get("members")));
+        Long gidNumber = longValue(group.get("gidNumber"));
+        List<String> primaryUsers = gidNumber == null
+                ? new ArrayList<>()
+                : findPrimaryUsersByGid(ldapTemplate, cluster, gidNumber);
+        LinkedHashSet<String> boundUsers = new LinkedHashSet<>();
+        boundUsers.addAll(directMembers);
+        boundUsers.addAll(primaryUsers);
+
+        GroupBindingSnapshot snapshot = new GroupBindingSnapshot();
+        snapshot.directMembers = directMembers;
+        snapshot.primaryUsers = primaryUsers;
+        snapshot.boundUsers = new ArrayList<>(boundUsers);
+        snapshot.boundUsers.sort(String::compareToIgnoreCase);
+        snapshot.boundUserCount = snapshot.boundUsers.size();
+        return snapshot;
+    }
+
+    private LdapGroupEmptyState refreshGroupEmptyState(Cluster cluster, String clusterIdentifier,
+                                                       Map<String, Object> group, GroupBindingSnapshot snapshot,
+                                                       LdapGroupEmptyState existing) {
+        String clusterName = clusterNameValue(cluster, clusterIdentifier);
+        String groupName = stringValue(group.get("name"));
+        if (clusterName == null || groupName == null) {
+            return null;
+        }
+        LdapGroupEmptyState state = existing == null ? new LdapGroupEmptyState() : existing;
+        state.setClusterCode(clusterCodeValue(cluster, clusterIdentifier));
+        state.setClusterName(clusterName);
+        state.setGroupName(groupName);
+        state.setGidNumber(longValue(group.get("gidNumber")));
+        LocalDateTime now = LocalDateTime.now();
+        if (snapshot.boundUserCount > 0) {
+            state.setEmptySince(null);
+            state.setLastSeenEmptyAt(null);
+            state.setLastSeenNonEmptyAt(now);
+        } else {
+            if (state.getEmptySince() == null) {
+                state.setEmptySince(now);
+            }
+            state.setLastSeenEmptyAt(now);
+        }
+        return ldapGroupEmptyStateRepository.save(state);
+    }
+
+    private void applyGroupDerivedFields(Map<String, Object> group, GroupBindingSnapshot snapshot,
+                                         LdapGroupEmptyState state) {
+        LocalDateTime emptySince = state == null ? null : state.getEmptySince();
+        long staleEmptyDays = emptySince == null ? 0 : Math.max(0, ChronoUnit.DAYS.between(emptySince, LocalDateTime.now()));
+        boolean empty = snapshot.boundUserCount <= 0;
+        group.put("directMemberCount", snapshot.directMembers.size());
+        group.put("primaryUsers", snapshot.primaryUsers);
+        group.put("primaryUserCount", snapshot.primaryUsers.size());
+        group.put("boundUsers", snapshot.boundUsers);
+        group.put("boundUserCount", snapshot.boundUserCount);
+        group.put("empty", empty);
+        group.put("emptySince", empty ? emptySince : null);
+        group.put("staleEmptyDays", empty ? staleEmptyDays : 0);
+        group.put("staleEmpty", empty && emptySince != null && staleEmptyDays >= STALE_EMPTY_GROUP_DAYS);
+    }
+
+    private String clusterNameValue(Cluster cluster, String clusterIdentifier) {
+        if (cluster != null && trimToNull(cluster.getClusterName()) != null) {
+            return cluster.getClusterName().trim();
+        }
+        return trimToNull(clusterIdentifier);
+    }
+
+    private String clusterCodeValue(Cluster cluster, String clusterIdentifier) {
+        if (cluster != null && trimToNull(cluster.getClusterCode()) != null) {
+            return cluster.getClusterCode().trim();
+        }
+        return trimToNull(clusterIdentifier);
+    }
+
+    private String groupStateKey(String groupName) {
+        return groupName == null ? "" : groupName.toLowerCase(Locale.ROOT);
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : trimToNull(String.valueOf(value));
+    }
+
+    private Long longValue(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        String text = stringValue(value);
+        if (text == null) {
+            return null;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private List<String> toStringList(Object value) {
+        if (!(value instanceof List)) {
+            return new ArrayList<>();
+        }
+        List<String> items = new ArrayList<>();
+        for (Object item : (List<?>) value) {
+            String text = stringValue(item);
+            if (text != null) {
+                items.add(text);
+            }
+        }
+        return items;
     }
 
     private String requireGroupName(String groupName) {
@@ -1132,6 +1416,13 @@ public class LdapService {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    private static final class GroupBindingSnapshot {
+        private List<String> directMembers = new ArrayList<>();
+        private List<String> primaryUsers = new ArrayList<>();
+        private List<String> boundUsers = new ArrayList<>();
+        private int boundUserCount;
     }
 
     private static final class GroupSelection {

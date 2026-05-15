@@ -1,5 +1,6 @@
 package com.dga.access.service.authorization;
 
+import com.dga.access.service.LdapService;
 import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
 import com.dga.cluster.service.HiveServer2ConnectionService;
@@ -10,8 +11,10 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
@@ -27,6 +30,9 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
 
     @Autowired
     private HiveServer2ConnectionService hiveServer2ConnectionService;
+
+    @Autowired
+    private LdapService ldapService;
 
     @Override
     public boolean supports(AuthorizationContext context) {
@@ -49,6 +55,21 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
     @Override
     public String authBackend() {
         return ClusterEndpoint.AUTH_SENTRY;
+    }
+
+    @Override
+    public AuthorizationProviderDescriptor descriptor() {
+        return AuthorizationProviderDescriptor.create(engineType(), authBackend(), ClusterEndpoint.TYPE_HIVE_SERVER2)
+                .endpointRequired(false)
+                .principalTypes("USER", "GROUP")
+                .resourceTypes("DATABASE", "TABLE")
+                .permissions("SELECT", "INSERT", "CREATE", "ALL")
+                .requiresLdap(true)
+                .identity("LDAP", "LDAP", false, true, "LDAP", true, true, "LDAP 用户")
+                .rbac(true, true, true, false, true, false, false, false, "GROUP", "USER", "GROUP")
+                .grant(true, true, false, true, true, true, false, true)
+                .ui("LDAP 用户", "创建 LDAP 用户", "导入 LDAP 用户",
+                        "CDH/Sentry 推荐授给 LDAP 组", "Sentry 角色对 LDAP 组原生生效，用户直绑会记录为待组映射");
     }
 
     @Override
@@ -86,6 +107,16 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
             permissions.addAll(template.queryForList("SHOW GRANT ROLE role_" + username));
         } catch (Exception e) {
             // Role may not exist. This is expected for users without role-based grants.
+        }
+
+        for (String group : userLdapGroups(context, username)) {
+            for (String role : rolesGrantedToGroup(template, group)) {
+                try {
+                    permissions.addAll(template.queryForList("SHOW GRANT ROLE " + role));
+                } catch (Exception e) {
+                    System.out.println("SHOW GRANT ROLE " + role + " failed: " + e.getMessage());
+                }
+            }
         }
 
         return permissions;
@@ -169,6 +200,75 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
         }
     }
 
+    @Override
+    public void ensureRole(AuthorizationContext context, String roleCode) {
+        AuthorizationSupport.validateName(roleCode);
+        JdbcTemplate template = jdbcTemplate(context);
+        if (roleExists(roleCode, template)) {
+            return;
+        }
+        try {
+            template.execute("CREATE ROLE " + roleCode);
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            if (!msg.toLowerCase().contains("already")) {
+                throw new RuntimeException("Failed to create role " + roleCode + ": " + msg);
+            }
+        }
+    }
+
+    @Override
+    public void grantPermissionToRole(AuthorizationContext context, String roleCode, String database, String table, String permission) {
+        AuthorizationSupport.validateName(roleCode);
+        validateDatabaseScope(database);
+        AuthorizationSupport.validatePermission(permission);
+        if (table == null || table.isEmpty()) {
+            if (isAllDatabases(database)) {
+                jdbcTemplate(context).execute(String.format("GRANT %s ON SERVER %s TO ROLE %s",
+                        permission, sentryServerName(context), roleCode));
+            } else {
+                jdbcTemplate(context).execute(String.format("GRANT %s ON DATABASE %s TO ROLE %s", permission, database, roleCode));
+            }
+        } else {
+            AuthorizationSupport.validateName(table);
+            jdbcTemplate(context).execute(String.format("GRANT %s ON TABLE %s.%s TO ROLE %s", permission, database, table, roleCode));
+        }
+    }
+
+    @Override
+    public void revokePermissionFromRole(AuthorizationContext context, String roleCode, String database, String table, String permission) {
+        AuthorizationSupport.validateName(roleCode);
+        validateDatabaseScope(database);
+        AuthorizationSupport.validatePermission(permission);
+        if (table == null || table.isEmpty()) {
+            if (isAllDatabases(database)) {
+                jdbcTemplate(context).execute(String.format("REVOKE %s ON SERVER %s FROM ROLE %s",
+                        permission, sentryServerName(context), roleCode));
+            } else {
+                jdbcTemplate(context).execute(String.format("REVOKE %s ON DATABASE %s FROM ROLE %s", permission, database, roleCode));
+            }
+        } else {
+            AuthorizationSupport.validateName(table);
+            jdbcTemplate(context).execute(String.format("REVOKE %s ON TABLE %s.%s FROM ROLE %s", permission, database, table, roleCode));
+        }
+    }
+
+    @Override
+    public void assignRoleToGroup(AuthorizationContext context, String roleCode, String groupName) {
+        AuthorizationSupport.validateName(roleCode);
+        AuthorizationSupport.validateName(groupName);
+        jdbcTemplate(context).execute(String.format("GRANT ROLE %s TO GROUP %s", roleCode, groupName));
+    }
+
+    @Override
+    public void revokeRoleAssignment(AuthorizationContext context, String roleCode, String subjectType, String subjectName) {
+        AuthorizationSupport.validateName(roleCode);
+        AuthorizationSupport.validateName(subjectName);
+        if ("GROUP".equalsIgnoreCase(subjectType)) {
+            jdbcTemplate(context).execute(String.format("REVOKE ROLE %s FROM GROUP %s", roleCode, subjectName));
+        }
+    }
+
     private JdbcTemplate jdbcTemplate(AuthorizationContext context) {
         ClusterEndpoint endpoint = AuthorizationSupport.firstEndpoint(context, ClusterEndpoint.TYPE_HIVE_SERVER2);
         if (endpoint != null && endpoint.getUrl() != null && !endpoint.getUrl().trim().isEmpty()) {
@@ -181,6 +281,100 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
         dataSource.setUsername(fallbackHiveUser);
         dataSource.setPassword(fallbackHivePassword);
         return new JdbcTemplate(dataSource);
+    }
+
+    private void validateDatabaseScope(String database) {
+        if (!isAllDatabases(database)) {
+            AuthorizationSupport.validateName(database);
+        }
+    }
+
+    private boolean isAllDatabases(String database) {
+        return "*".equals(database);
+    }
+
+    private String sentryServerName(AuthorizationContext context) {
+        ClusterEndpoint endpoint = AuthorizationSupport.firstEndpoint(context, ClusterEndpoint.TYPE_HIVE_SERVER2);
+        String serverName = endpoint == null ? null : endpoint.getServiceName();
+        if (serverName == null || serverName.trim().isEmpty()) {
+            serverName = "server1";
+        }
+        AuthorizationSupport.validateName(serverName);
+        return serverName;
+    }
+
+    @SuppressWarnings("unchecked")
+    private Set<String> userLdapGroups(AuthorizationContext context, String username) {
+        Set<String> groups = new LinkedHashSet<>();
+        Cluster cluster = context.getCluster();
+        String clusterIdentifier = cluster == null
+                ? null
+                : (cluster.getClusterCode() != null && !cluster.getClusterCode().trim().isEmpty()
+                ? cluster.getClusterCode()
+                : cluster.getClusterName());
+        try {
+            Map<String, Object> profile = ldapService.getUserLdapProfile(clusterIdentifier, username);
+            Object primary = profile.get("primaryGroup");
+            if (primary instanceof Map) {
+                addGroupName(groups, ((Map<String, Object>) primary).get("name"));
+            }
+            Object supplementary = profile.get("supplementaryGroups");
+            if (supplementary instanceof List) {
+                for (Object item : (List<?>) supplementary) {
+                    if (item instanceof Map) {
+                        addGroupName(groups, ((Map<String, Object>) item).get("name"));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("LDAP group lookup failed for " + username + ": " + e.getMessage());
+        }
+        return groups;
+    }
+
+    private void addGroupName(Set<String> groups, Object value) {
+        if (value == null) {
+            return;
+        }
+        String group = String.valueOf(value).trim();
+        if (!group.isEmpty()) {
+            groups.add(group);
+        }
+    }
+
+    private Set<String> rolesGrantedToGroup(JdbcTemplate template, String group) {
+        Set<String> roles = new LinkedHashSet<>();
+        try {
+            AuthorizationSupport.validateName(group);
+            List<Map<String, Object>> rows = template.queryForList("SHOW ROLE GRANT GROUP " + group);
+            for (Map<String, Object> row : rows) {
+                String role = roleNameFromRow(row);
+                if (role != null && !role.trim().isEmpty()) {
+                    roles.add(role.trim());
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("SHOW ROLE GRANT GROUP " + group + " failed: " + e.getMessage());
+        }
+        return roles;
+    }
+
+    private String roleNameFromRow(Map<String, Object> row) {
+        if (row == null || row.isEmpty()) {
+            return null;
+        }
+        for (Map.Entry<String, Object> entry : row.entrySet()) {
+            String key = entry.getKey() == null ? "" : entry.getKey().toLowerCase();
+            if ((key.contains("role") || key.equals("name")) && entry.getValue() != null) {
+                return String.valueOf(entry.getValue());
+            }
+        }
+        for (Object value : row.values()) {
+            if (value != null) {
+                return String.valueOf(value);
+            }
+        }
+        return null;
     }
 
     private void grantViaRole(GrantCommand command, JdbcTemplate template) {

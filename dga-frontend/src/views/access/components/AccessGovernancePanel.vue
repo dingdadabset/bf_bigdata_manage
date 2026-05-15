@@ -3,7 +3,7 @@
     <div class="module-header">
       <div>
         <h1>权限治理风险</h1>
-        <p>按授权明细识别高权限复核和无人负责权限；未使用权限仅在接入精确审计后判定</p>
+        <p>按授权明细识别角色基线外权限、高权限复核、无人负责权限，并提醒长期空置 LDAP 组；未使用权限仅在接入精确审计后判定</p>
       </div>
       <div class="header-actions">
         <a-select
@@ -109,12 +109,20 @@
         <strong>{{ typeCount('UNUSED_DATABASE_PERMISSION') }}</strong>
       </div>
       <div class="summary-item">
+        <span>超出角色</span>
+        <strong>{{ typeCount('ROLE_BASELINE_EXCEEDED') }}</strong>
+      </div>
+      <div class="summary-item">
         <span>高权限复核</span>
         <strong>{{ typeCount('HIGH_PRIVILEGE_REVIEW') }}</strong>
       </div>
       <div class="summary-item">
         <span>无人负责权限</span>
         <strong>{{ typeCount('UNOWNED_PERMISSION') }}</strong>
+      </div>
+      <div class="summary-item">
+        <span>长期空组</span>
+        <strong>{{ typeCount('STALE_EMPTY_LDAP_GROUP') }}</strong>
       </div>
     </div>
 
@@ -137,7 +145,7 @@
         <a-select-option value="RESOLVED">已关闭</a-select-option>
         <a-select-option value="ALL">全部</a-select-option>
       </a-select>
-      <a-input-search v-model="filters.username" allow-clear placeholder="搜索账号" style="width: 220px" @search="fetchIssues" />
+      <a-input-search v-model="filters.username" allow-clear placeholder="搜索账号 / 组" style="width: 220px" @search="fetchIssues" />
       <a-tag v-if="currentCluster" color="blue">当前集群：{{ currentCluster }}</a-tag>
     </div>
 
@@ -339,6 +347,7 @@ export default {
   name: 'AccessGovernancePanel',
   data() {
     const sourceOptions = [
+      { value: 'LDAP', label: 'OpenLDAP' },
       { value: 'HIVE_SERVER2', label: 'HiveServer2' },
       { value: 'RANGER', label: 'Ranger Audit' },
       { value: 'HDFS', label: 'HDFS Audit' },
@@ -389,15 +398,17 @@ export default {
       },
       issueTypeOptions: [
         { value: 'UNUSED_DATABASE_PERMISSION', label: '未使用数据库权限' },
+        { value: 'ROLE_BASELINE_EXCEEDED', label: '超出角色权限' },
         { value: 'HIGH_PRIVILEGE_REVIEW', label: '高权限复核' },
-        { value: 'UNOWNED_PERMISSION', label: '无人负责权限' }
+        { value: 'UNOWNED_PERMISSION', label: '无人负责权限' },
+        { value: 'STALE_EMPTY_LDAP_GROUP', label: '长期空组' }
       ],
       governanceRuleSections: [
         {
           engine: 'Hive',
           sourceSystem: 'HIVE_SERVER2',
           source: 'Hive 强证据来自 Ranger Audit MySQL x_access_audit/xa_access_audit 或 HiveServer2 audit/query log；HDP 可配置 RANGER_DB 端点直接读取 Ranger 审计库。',
-          rules: 'HiveServer2 授权明细只说明账号拥有哪些权限，不能说明是否长期未使用。只有 Ranger Audit、HiveServer2 query/audit log 等可按 user + database + operation 精确匹配的审计来源，才参与未使用权限判定。',
+          rules: 'HiveServer2 授权明细只说明账号拥有哪些权限，不能说明是否长期未使用。扫描会同时将账号实际权限与其有效 RBAC 角色范围比对，识别角色基线外权限。',
           example: '用户有 tmp_db 的 SELECT 权限：若仅采集 HiveServer2 授权明细，只生成高权限复核/无人负责类风险；若 Ranger/Hive 审计最近 N 天无 select/query 命中，才生成未使用数据库权限。'
         },
         {
@@ -701,8 +712,10 @@ export default {
     issueTypeColor(type) {
       const colors = {
         UNUSED_DATABASE_PERMISSION: 'orange',
+        ROLE_BASELINE_EXCEEDED: 'red',
         HIGH_PRIVILEGE_REVIEW: 'red',
-        UNOWNED_PERMISSION: 'geekblue'
+        UNOWNED_PERMISSION: 'geekblue',
+        STALE_EMPTY_LDAP_GROUP: 'volcano'
       };
       return colors[type] || 'default';
     },
@@ -766,6 +779,9 @@ export default {
     resourceName(record) {
       if (record.resourceType === 'ACCOUNT') {
         return `${record.clusterName || record.clusterCode || '-'} · 账号粒度`;
+      }
+      if (record.resourceType === 'LDAP_GROUP') {
+        return `${record.clusterName || record.clusterCode || '-'} · LDAP 组`;
       }
       if (!record.databaseName && !record.tableName) {
         return record.clusterName || record.clusterCode || '-';
@@ -893,7 +909,7 @@ export default {
 }
 .summary-row {
   display: grid;
-  grid-template-columns: repeat(5, minmax(120px, 1fr));
+  grid-template-columns: repeat(6, minmax(120px, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 }

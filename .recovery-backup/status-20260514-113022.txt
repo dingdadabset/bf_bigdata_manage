@@ -1,0 +1,52 @@
+ M .learnings/ERRORS.md
+ M dga-backend/src/main/java/com/dga/access/controller/AccessController.java
+ M dga-backend/src/main/java/com/dga/access/dto/BatchGrantRequest.java
+ M dga-backend/src/main/java/com/dga/access/entity/UserResourceAccess.java
+ M dga-backend/src/main/java/com/dga/access/repository/DgaUserRepository.java
+ M dga-backend/src/main/java/com/dga/access/repository/UserResourceAccessRepository.java
+ M dga-backend/src/main/java/com/dga/access/service/LdapService.java
+ M dga-backend/src/main/java/com/dga/access/service/RangerService.java
+ M dga-backend/src/main/java/com/dga/access/service/authorization/AuthorizationCapability.java
+ M dga-backend/src/main/java/com/dga/access/service/authorization/AuthorizationContext.java
+ M dga-backend/src/main/java/com/dga/access/service/authorization/AuthorizationProvider.java
+ M dga-backend/src/main/java/com/dga/access/service/authorization/AuthorizationService.java
+ M dga-backend/src/main/java/com/dga/access/service/authorization/CdhSentryAuthorizationProvider.java
+ M dga-backend/src/main/java/com/dga/access/service/authorization/DorisSqlAuthorizationProvider.java
+ M dga-backend/src/main/java/com/dga/access/service/authorization/RangerAuthorizationProvider.java
+ M dga-backend/src/main/java/com/dga/access/service/authorization/StarRocksSqlAuthorizationProvider.java
+ M dga-backend/src/main/java/com/dga/config/ApiExceptionHandler.java
+ M dga-backend/src/main/java/com/dga/config/SpaController.java
+ M dga-backend/src/main/resources/schema.sql
+ M dga-frontend/package-lock.json
+ M dga-frontend/package.json
+ M dga-frontend/src/layouts/MainLayout.vue
+ M dga-frontend/src/router/index.js
+ M dga-frontend/src/store.js
+ M dga-frontend/src/views/access/AuthorizationCenter.vue
+ M dga-frontend/src/views/access/components/CreateUserModal.vue
+ M dga-frontend/src/views/access/components/GrantModal.vue
+ M dga-frontend/src/views/access/components/PermissionPanel.vue
+ M dga-frontend/src/views/access/components/UserList.vue
+ M run-local.sh
+ M stop-local.sh
+?? .recovery-backup/
+?? dga-backend/src/main/java/com/dga/access/dto/AuthRoleAssignmentRequest.java
+?? dga-backend/src/main/java/com/dga/access/dto/AuthRolePermissionRequest.java
+?? dga-backend/src/main/java/com/dga/access/dto/AuthRoleRequest.java
+?? dga-backend/src/main/java/com/dga/access/dto/AuthRoleView.java
+?? dga-backend/src/main/java/com/dga/access/dto/BatchRoleAssignmentItem.java
+?? dga-backend/src/main/java/com/dga/access/dto/BatchRoleAssignmentRequest.java
+?? dga-backend/src/main/java/com/dga/access/dto/BatchRoleAssignmentResult.java
+?? dga-backend/src/main/java/com/dga/access/entity/AuthRole.java
+?? dga-backend/src/main/java/com/dga/access/entity/AuthRoleAssignmentAudit.java
+?? dga-backend/src/main/java/com/dga/access/entity/AuthRolePermission.java
+?? dga-backend/src/main/java/com/dga/access/entity/AuthUserRole.java
+?? dga-backend/src/main/java/com/dga/access/repository/AuthRoleAssignmentAuditRepository.java
+?? dga-backend/src/main/java/com/dga/access/repository/AuthRolePermissionRepository.java
+?? dga-backend/src/main/java/com/dga/access/repository/AuthRoleRepository.java
+?? dga-backend/src/main/java/com/dga/access/repository/AuthUserRoleRepository.java
+?? dga-backend/src/main/java/com/dga/access/service/AuthRoleService.java
+?? dga-backend/src/main/java/com/dga/access/service/authorization/AuthorizationProviderDescriptor.java
+?? dga-backend/src/test/
+?? dga-frontend/src/views/access/authorizationCenterHelpers.js
+?? dga-frontend/src/views/access/authorizationCenterHelpers.test.js

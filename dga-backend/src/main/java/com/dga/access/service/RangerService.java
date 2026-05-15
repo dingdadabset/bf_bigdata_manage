@@ -36,9 +36,20 @@ public class RangerService {
         Map<String, Object> policy = findPolicy(config, database, finalTable);
 
         if (policy == null) {
-            createPolicy(config, user, database, finalTable, permission);
+            createPolicy(config, user, null, database, finalTable, permission);
         } else {
             updatePolicyGrant(config, policy, user, permission);
+        }
+    }
+
+    public void grantGroupPermission(String group, String database, String table, String permission, ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
+        String finalTable = (table == null || table.isEmpty()) ? "*" : table;
+        Map<String, Object> policy = findPolicy(config, database, finalTable);
+        if (policy == null) {
+            createPolicy(config, null, group, database, finalTable, permission);
+        } else {
+            updatePolicyGroupGrant(config, policy, group, permission);
         }
     }
 
@@ -157,6 +168,46 @@ public class RangerService {
         return new ArrayList<>(users);
     }
 
+    public List<String> listUsers(ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
+        Set<String> users = new TreeSet<>();
+        users.addAll(listXUsers(config));
+        if (users.isEmpty()) {
+            users.addAll(listPolicyUsers(endpoint));
+        }
+        return new ArrayList<>(users);
+    }
+
+    public List<String> listGroups(ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
+        Set<String> groups = new TreeSet<>();
+        groups.addAll(listXGroups(config));
+        if (groups.isEmpty()) {
+            groups.addAll(listPolicyGroups(endpoint));
+        }
+        return new ArrayList<>(groups);
+    }
+
+    public List<String> listPolicyGroups(ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
+        Set<String> groups = new TreeSet<>();
+        try {
+            List<Map<String, Object>> policies = listPolicies(config);
+            if (policies == null) {
+                return new ArrayList<>();
+            }
+            for (Map<String, Object> policy : policies) {
+                collectGroups(groups, (List<Map<String, Object>>) policy.get("policyItems"));
+                collectGroups(groups, (List<Map<String, Object>>) policy.get("denyPolicyItems"));
+                collectGroups(groups, (List<Map<String, Object>>) policy.get("allowExceptions"));
+                collectGroups(groups, (List<Map<String, Object>>) policy.get("denyExceptions"));
+            }
+        } catch (Exception e) {
+            System.err.println("Error listing Ranger policy groups: " + e.getMessage());
+        }
+        return new ArrayList<>(groups);
+    }
+
     public List<String> listPolicyDatabases(ClusterEndpoint endpoint) {
         RangerConfig config = config(endpoint);
         Set<String> databases = new TreeSet<>();
@@ -224,6 +275,83 @@ public class RangerService {
                     if (user != null && !user.trim().isEmpty() && !user.trim().startsWith("{")) {
                         result.add(user.trim());
                     }
+                }
+            }
+        }
+    }
+
+    private void collectGroups(Set<String> result, List<Map<String, Object>> policyItems) {
+        if (policyItems == null) {
+            return;
+        }
+        for (Map<String, Object> item : policyItems) {
+            List<String> itemGroups = (List<String>) item.get("groups");
+            if (itemGroups != null) {
+                for (String group : itemGroups) {
+                    if (group != null && !group.trim().isEmpty() && !group.trim().startsWith("{")) {
+                        result.add(group.trim());
+                    }
+                }
+            }
+        }
+    }
+
+    private List<String> listXUsers(RangerConfig config) {
+        Set<String> users = new TreeSet<>();
+        for (String path : Arrays.asList("/service/xusers/users", "/service/xusers/secure/users")) {
+            try {
+                collectNamesFromRangerList(users, getMap(config, path), "vXUsers", "name", "userName");
+                if (!users.isEmpty()) {
+                    return new ArrayList<>(users);
+                }
+            } catch (Exception e) {
+                System.err.println("Error listing Ranger xusers from " + path + ": " + e.getMessage());
+            }
+        }
+        return new ArrayList<>(users);
+    }
+
+    private List<String> listXGroups(RangerConfig config) {
+        Set<String> groups = new TreeSet<>();
+        for (String path : Arrays.asList("/service/xusers/groups", "/service/xusers/secure/groups")) {
+            try {
+                collectNamesFromRangerList(groups, getMap(config, path), "vXGroups", "name", "groupName");
+                if (!groups.isEmpty()) {
+                    return new ArrayList<>(groups);
+                }
+            } catch (Exception e) {
+                System.err.println("Error listing Ranger xgroups from " + path + ": " + e.getMessage());
+            }
+        }
+        return new ArrayList<>(groups);
+    }
+
+    private Map<String, Object> getMap(RangerConfig config, String path) {
+        String url = config.url + path;
+        ResponseEntity<Map> response = restTemplate.exchange(url, HttpMethod.GET,
+                new HttpEntity<>(createHeaders(config)), Map.class);
+        return response.getBody();
+    }
+
+    private void collectNamesFromRangerList(Set<String> result, Map<String, Object> body,
+                                            String listKey, String... nameKeys) {
+        if (body == null) {
+            return;
+        }
+        Object rows = body.get(listKey);
+        if (!(rows instanceof List)) {
+            return;
+        }
+        for (Object row : (List<?>) rows) {
+            if (!(row instanceof Map)) {
+                continue;
+            }
+            Map<?, ?> item = (Map<?, ?>) row;
+            for (String key : nameKeys) {
+                Object value = item.get(key);
+                if (value != null && !String.valueOf(value).trim().isEmpty()) {
+                    result.add(String.valueOf(value).trim());
+                    break;
                 }
             }
         }
@@ -342,7 +470,7 @@ public class RangerService {
         return null;
     }
 
-    private void createPolicy(RangerConfig config, String user, String database, String table, String permission) {
+    private void createPolicy(RangerConfig config, String user, String group, String database, String table, String permission) {
         try {
             Map<String, Object> policy = new HashMap<>();
             policy.put("service", config.serviceName);
@@ -372,7 +500,7 @@ public class RangerService {
             policy.put("resources", resources);
 
             List<Map<String, Object>> policyItems = new ArrayList<>();
-            policyItems.add(createPolicyItem(user, permission));
+            policyItems.add(createPolicyItem(user, group, permission));
             policy.put("policyItems", policyItems);
 
             String url = config.url + "/service/public/v2/api/policy";
@@ -432,7 +560,7 @@ public class RangerService {
             }
 
             if (!added) {
-                policyItems.add(createPolicyItem(user, permission));
+                policyItems.add(createPolicyItem(user, null, permission));
             }
 
             submitUpdate(config, policy);
@@ -440,6 +568,42 @@ public class RangerService {
 
         } catch (Exception e) {
             throw new RuntimeException("Failed to update Ranger policy (Grant): " + e.getMessage());
+        }
+    }
+
+    private void updatePolicyGroupGrant(RangerConfig config, Map<String, Object> policy, String group, String permission) {
+        try {
+            List<Map<String, Object>> policyItems = (List<Map<String, Object>>) policy.get("policyItems");
+            if (policyItems == null) {
+                policyItems = new ArrayList<>();
+                policy.put("policyItems", policyItems);
+            }
+            Set<String> targetAccesses = getAccessTypes(permission);
+            boolean added = false;
+            for (Map<String, Object> item : policyItems) {
+                List<Map<String, Object>> accesses = (List<Map<String, Object>>) item.get("accesses");
+                Set<String> itemAccessTypes = accesses == null ? Collections.emptySet() : accesses.stream()
+                        .map(a -> (String) a.get("type"))
+                        .collect(Collectors.toSet());
+                if (itemAccessTypes.equals(targetAccesses)) {
+                    List<String> groups = (List<String>) item.get("groups");
+                    if (groups == null) {
+                        groups = new ArrayList<>();
+                        item.put("groups", groups);
+                    }
+                    if (!groups.contains(group)) {
+                        groups.add(group);
+                    }
+                    added = true;
+                    break;
+                }
+            }
+            if (!added) {
+                policyItems.add(createPolicyItem(null, group, permission));
+            }
+            submitUpdate(config, policy);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to update Ranger policy (Group Grant): " + e.getMessage());
         }
     }
 
@@ -482,9 +646,10 @@ public class RangerService {
         restTemplate.exchange(url, HttpMethod.PUT, entity, Map.class);
     }
 
-    private Map<String, Object> createPolicyItem(String user, String permission) {
+    private Map<String, Object> createPolicyItem(String user, String group, String permission) {
         Map<String, Object> item = new HashMap<>();
-        item.put("users", new ArrayList<>(Collections.singletonList(user)));
+        item.put("users", user == null ? new ArrayList<>() : new ArrayList<>(Collections.singletonList(user)));
+        item.put("groups", group == null ? new ArrayList<>() : new ArrayList<>(Collections.singletonList(group)));
         item.put("accesses", getAccessesList(permission));
         item.put("delegateAdmin", false);
         return item;
