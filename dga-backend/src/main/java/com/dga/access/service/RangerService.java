@@ -63,9 +63,25 @@ public class RangerService {
         Map<String, Object> policy = findPolicy(config, database, finalTable);
 
         if (policy != null) {
-            updatePolicyRevoke(config, policy, user);
+            updatePolicyRevoke(config, policy, user, null, permission);
         } else {
             System.out.println("Ranger policy not found for revoke: " + database + "." + finalTable);
+        }
+    }
+
+    public void revokeGroupPermission(String group, String database, String table, String permission) {
+        revokeGroupPermission(group, database, table, permission, null);
+    }
+
+    public void revokeGroupPermission(String group, String database, String table, String permission, ClusterEndpoint endpoint) {
+        RangerConfig config = config(endpoint);
+        String finalTable = (table == null || table.isEmpty()) ? "*" : table;
+        Map<String, Object> policy = findPolicy(config, database, finalTable);
+
+        if (policy != null) {
+            updatePolicyRevoke(config, policy, null, group, permission);
+        } else {
+            System.out.println("Ranger policy not found for group revoke: " + database + "." + finalTable);
         }
     }
 
@@ -607,22 +623,33 @@ public class RangerService {
         }
     }
 
-    private void updatePolicyRevoke(RangerConfig config, Map<String, Object> policy, String user) {
+    private void updatePolicyRevoke(RangerConfig config, Map<String, Object> policy, String user, String group, String permission) {
         try {
             List<Map<String, Object>> policyItems = (List<Map<String, Object>>) policy.get("policyItems");
             if (policyItems == null) return;
 
+            Set<String> targetAccesses = getAccessTypes(permission);
             boolean changed = false;
             Iterator<Map<String, Object>> iterator = policyItems.iterator();
             while (iterator.hasNext()) {
                 Map<String, Object> item = iterator.next();
+                List<Map<String, Object>> accesses = (List<Map<String, Object>>) item.get("accesses");
+                Set<String> itemAccessTypes = accesses == null ? Collections.emptySet() : accesses.stream()
+                        .map(a -> (String) a.get("type"))
+                        .collect(Collectors.toSet());
+                if (!itemAccessTypes.equals(targetAccesses)) {
+                    continue;
+                }
                 List<String> users = (List<String>) item.get("users");
-                if (users != null && users.contains(user)) {
+                if (user != null && users != null && users.contains(user)) {
                     users.remove(user);
                     changed = true;
                 }
-                // If item is empty (no users, no groups), remove it
                 List<String> groups = (List<String>) item.get("groups");
+                if (group != null && groups != null && groups.contains(group)) {
+                    groups.remove(group);
+                    changed = true;
+                }
                 if ((users == null || users.isEmpty()) && (groups == null || groups.isEmpty())) {
                     iterator.remove();
                     changed = true;
@@ -631,7 +658,7 @@ public class RangerService {
 
             if (changed) {
                 submitUpdate(config, policy);
-                System.out.println("Revoked Ranger policy for " + user);
+                System.out.println("Revoked Ranger policy for " + (user != null ? user : group));
             }
 
         } catch (Exception e) {

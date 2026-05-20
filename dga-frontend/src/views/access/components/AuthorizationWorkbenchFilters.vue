@@ -76,15 +76,31 @@
           </a-select-option>
         </a-select>
       </div>
-      <div class="inline-field full-span">
-        <div class="inline-label">授权对象</div>
+      <div class="inline-field full-span target-user-field">
+        <div class="inline-label">目标用户</div>
         <a-alert
-          v-if="state.subjectType === 'USER' && prefersGroupSubject"
+          v-if="prefersGroupSubject"
           class="subject-route-alert"
           type="info"
           show-icon
-          :message="roleDefaultGroupName ? `选择用户时会作为权限验证用户；Sentry 默认绑定该用户所属 LDAP 组，查不到用户组时才使用角色绑定组 ${roleDefaultGroupName}。` : '选择用户时会作为权限验证用户；Sentry 默认绑定该用户所属 LDAP 主组或附加组。'"
+          :message="roleDefaultGroupName ? `先选择真实用户；系统会优先使用该用户所属 LDAP 组作为授权对象，查不到用户组时才使用角色绑定组 ${roleDefaultGroupName}。` : '先选择真实用户；系统会优先使用该用户所属 LDAP 主组或附加组作为授权对象。'"
         />
+        <div class="verification-row">
+          <a-auto-complete
+            :value="state.verificationUser"
+            :data-source="verificationUserNames"
+            placeholder="请先搜索或输入目标用户"
+            :disabled="!capability"
+            @change="update('verificationUser', $event)"
+          />
+          <a-button :disabled="!state.verificationUser" @click="useVerificationAsSubject">
+            填入授权对象
+          </a-button>
+        </div>
+        <div class="field-hint">{{ targetUserHintText }}</div>
+      </div>
+      <div class="inline-field full-span">
+        <div class="inline-label">授权对象</div>
         <div class="subject-row">
           <a-radio-group
             :value="state.subjectType"
@@ -99,28 +115,12 @@
           <a-auto-complete
             :value="state.subjectName"
             :data-source="principalNames"
-            placeholder="请选择或输入授权对象"
+            placeholder="选择用户后自动填入，也可手动输入授权对象"
             :disabled="!capability"
             @change="update('subjectName', $event)"
           />
         </div>
         <div class="field-hint">{{ principalHintText }}</div>
-      </div>
-      <div class="inline-field full-span">
-        <div class="inline-label">权限验证用户</div>
-        <div class="verification-row">
-          <a-auto-complete
-            :value="state.verificationUser"
-            :data-source="verificationUserNames"
-            placeholder="默认跟随授权对象；组选中时请选择组内用户"
-            :disabled="!capability"
-            @change="update('verificationUser', $event)"
-          />
-          <a-button :disabled="!state.subjectName || state.subjectType !== 'USER'" @click="useSubjectAsVerification">
-            跟随授权对象
-          </a-button>
-        </div>
-        <div class="field-hint">{{ verificationHintText }}</div>
       </div>
     </div>
 
@@ -306,10 +306,24 @@ export default {
       }
       return parts.join(' ');
     },
+    targetUserHintText() {
+      const parts = [
+        this.prefersGroupSubject
+          ? '目标用户用于定位所属 LDAP 组和最终权限校验；不会自动改写授权对象。'
+          : '目标用户用于权限校验；如需作为授权对象请点击“填入授权对象”。'
+      ];
+      if (this.verificationPrincipal) {
+        const source = principalSourceLabel(this.verificationPrincipal);
+        if (source) parts.push(`来源：${source}`);
+        const warnings = principalWarnings(this.verificationPrincipal);
+        if (warnings.length) parts.push(warnings.join('；'));
+      }
+      return parts.join(' ');
+    },
     verificationHintText() {
       const parts = [
         verificationUserRequired(this.state.subjectType)
-          ? '组选中时请选择组内真实用户做权限复核。'
+          ? (this.state.subjectName ? `仅展示 ${this.state.subjectName} 组内用户，请选择真实用户做权限复核。` : '组选中时请选择组内真实用户做权限复核。')
           : '用户模式默认跟随授权对象，仅在需要代验时切换。'
       ];
       if (this.verificationPrincipal) {
@@ -331,6 +345,11 @@ export default {
     useSubjectAsVerification() {
       if (this.state.subjectType !== 'USER' || !this.state.subjectName) return;
       this.update('verificationUser', this.state.subjectName);
+    },
+    useVerificationAsSubject() {
+      const targetUser = String(this.state.verificationUser || '').trim();
+      if (!targetUser) return;
+      this.update('subjectFromVerificationUser', targetUser);
     }
   }
 };

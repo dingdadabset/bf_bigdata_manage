@@ -2,6 +2,8 @@
 
 本文档用于对接 DGA 授权能力的外部系统，覆盖集群查询、用户查询、库表查询、用户权限查询、批量授权和批量回收。
 
+> **当前开放接口定位**：`/openapi/v1/authz/grants` 与 `/openapi/v1/authz/revokes` 属于**直接用户授权 / 直接用户回收**接口，会直接调用当前集群对应的授权后端（如 Sentry、Ranger、StarRocks、Doris）并写入 DGA 本地授权记录。它不走授权中心页面的 RBAC 角色绑定、角色权限子集下发或强制按用户回收流程，因此请求体中不需要也不支持 `roleCode`、`subjectType`、`grantMode` 等角色字段。
+
 ## 1. 基础信息
 
 - 接口前缀：`/openapi/v1/authz`
@@ -26,7 +28,7 @@
 
 export DGA_BASE_URL="http://{host}:8081"
 export DGA_USERNAME="openapi_auth"
-export DGA_PASSWORD="jfiae;jgie123"
+export DGA_PASSWORD="<由 DGA 管理员单独提供，不建议写入文档或代码仓库>"
 
 请求：
 
@@ -36,7 +38,7 @@ Content-Type: application/json
 
 {
   "username": "openapi_auth",
-  "password": "jfiae;jgie123"
+  "password": "<由 DGA 管理员单独提供>"
 }
 ```
 
@@ -225,6 +227,13 @@ GET /openapi/v1/authz/permissions?clusterCode=CDH&username=dingquan
 
 ### 3.6 批量授权
 
+接口语义：
+
+- 该接口用于对指定 `username` 直接授予库级或表级权限。
+- 不依赖 DGA RBAC 角色，也不会自动创建或绑定角色。
+- 授权后会同步写入 DGA 本地 `OPENAPI` 来源的授权记录，用于后续审计和回收。
+- 当前不支持在请求体中传入角色相关字段，外部系统如需走角色审批或角色子集授权，应对接 DGA 内部 RBAC 流程，而不是直接调用该开放写接口。
+
 请求：
 
 ```http
@@ -267,8 +276,16 @@ Content-Type: application/json
 - `permission` 当前复用平台已有权限校验，例如 `SELECT`、`INSERT`、`CREATE`、`ALL`
 - `TABLE` 级授权必须传 `tableName`
 - 写接口仅允许 `admin` 或平台超级用户调用
+- 写接口根据 `clusterCode` 自动选择该集群配置的授权后端，不支持在请求体中覆盖 `authBackend`
 
 ### 3.7 批量回收
+
+接口语义：
+
+- 该接口用于对指定 `username` 直接回收库级或表级权限。
+- 不依赖 DGA RBAC 角色，也不会回收角色绑定关系。
+- 回收成功后会软删除或补记 DGA 本地 `OPENAPI` 来源的授权记录。
+- 该接口与授权中心页面中的“回收子集权限”“强制按用户回收”不是同一条链路：开放接口直接基于请求中的资源和权限逐条执行回收。
 
 请求：
 
@@ -340,7 +357,7 @@ Content-Type: application/json
 ```bash
 export DGA_BASE_URL="http://localhost:8081"
 export DGA_USERNAME="openapi_auth"
-export DGA_PASSWORD="jfiae;jgie123"
+export DGA_PASSWORD="<由 DGA 管理员单独提供>"
 ```
 
 ### 5.1 登录并取 token
@@ -539,5 +556,7 @@ curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/revokes" \
 
 - 外部系统只使用 `clusterCode`，不要混用 `clusterName`
 - 写接口调用前，先查一遍库表和现有权限，避免重复授权
+- 写接口适合工单系统、审批系统在审批通过后做“直接用户授权/回收”落地；如果需要 RBAC 角色绑定、角色权限子集或管理员强制回收，应对接 DGA 内部授权中心流程
+- 调用方不要在文档、代码仓库或日志中保存明文密码；建议使用环境变量、密钥管理系统或 CI/CD Secret 注入
 - 建议调用方记录请求体、响应体和时间，用于审计追溯
 - 如果后续需要审批流，可以继续在这一层外部接口前增加工单编排，不必改底层授权实现

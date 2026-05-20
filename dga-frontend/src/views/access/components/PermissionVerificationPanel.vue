@@ -44,6 +44,15 @@
       </div>
     </div>
 
+    <a-alert
+      v-if="verificationUser && snapshot"
+      class="status-help"
+      type="info"
+      show-icon
+      message="状态说明"
+      description="MATCHED=后端与 DGA 记录一致；LIVE_ONLY=仅授权后端存在，DGA 没有对应记录，常见于历史授权、手工授权或 LDAP 组继承；RECORDED_ONLY=仅 DGA 有记录，授权后端已没有对应权限。来源显示为历史接管记录时，只代表 DGA 已记录该历史权限，不代表接管动作修改过后端授权。"
+    />
+
     <div v-if="verificationUser && snapshot" class="toolbar">
       <a-input-search v-model="keyword" allow-clear placeholder="搜索资源、权限或原始返回" style="width: 280px" />
       <a-select v-model="statusFilter" style="width: 180px">
@@ -65,7 +74,9 @@
       :locale="{ emptyText: '当前验证用户暂无可对照权限' }"
     >
       <template slot="status" slot-scope="text">
-        <a-tag :color="verificationStatusColor(text)">{{ text }}</a-tag>
+        <a-tooltip :title="verificationStatusDescription(text)">
+          <a-tag :color="verificationStatusColor(text)">{{ verificationStatusLabel(text) }}</a-tag>
+        </a-tooltip>
       </template>
       <template slot="resource" slot-scope="text, record">
         <div class="resource-cell">
@@ -124,6 +135,7 @@ export default {
         { title: '对照结果', dataIndex: 'status', key: 'status', scopedSlots: { customRender: 'status' } },
         { title: '资源范围', key: 'resource', scopedSlots: { customRender: 'resource' } },
         { title: '权限', dataIndex: 'permission', key: 'permission', scopedSlots: { customRender: 'permission' } },
+        { title: '来源', key: 'source', customRender: (_, record) => this.sourceText(record) },
         { title: '原始返回', dataIndex: 'grantText', key: 'grantText', scopedSlots: { customRender: 'grantText' } }
       ]
     };
@@ -143,6 +155,9 @@ export default {
           row.tableName,
           row.permission,
           row.resourceType,
+          row.source,
+          row.sourceRole,
+          row.sourceGroup,
           row.grantText,
           row.status
         ].some(field => String(field || '').toLowerCase().includes(keyword));
@@ -155,6 +170,38 @@ export default {
   methods: {
     resourceTypeLabel,
     verificationStatusColor,
+    verificationStatusLabel(status) {
+      const normalized = String(status || '').toUpperCase();
+      if (normalized === 'MATCHED') return '完全一致';
+      if (normalized === 'LIVE_ONLY') return '仅后端存在';
+      if (normalized === 'RECORDED_ONLY') return '仅 DGA 记录';
+      return status || '-';
+    },
+    verificationStatusDescription(status) {
+      const normalized = String(status || '').toUpperCase();
+      if (normalized === 'MATCHED') return 'MATCHED：授权后端与 DGA 本地记录都存在这项权限。';
+      if (normalized === 'LIVE_ONLY') return 'LIVE_ONLY：授权后端实时查到了这项权限，但 DGA 本地没有对应记录，常见于历史授权、手工授权或 LDAP 组继承。';
+      if (normalized === 'RECORDED_ONLY') return 'RECORDED_ONLY：DGA 本地有记录，但授权后端实时查询不到这项权限。';
+      return status || '-';
+    },
+    sourceText(record) {
+      const source = String(record?.source || '').toUpperCase();
+      const grantMode = String(record?.grantMode || record?.recorded?.grantMode || '').toUpperCase();
+      if (grantMode === 'ROLE_ADOPTION') {
+        const subjectType = String(record?.recorded?.subjectType || record?.subjectType || '').toUpperCase();
+        const subjectName = record?.recorded?.subjectName || record?.subjectName || record?.sourceGroup || '-';
+        const sourceLabel = source === 'GROUP_ROLE' ? `LDAP 组 ${record?.sourceGroup || subjectName}` : '历史用户权限';
+        return `历史接管记录（${sourceLabel}，未修改后端授权，${subjectType || '主体'} ${subjectName}）`;
+      }
+      if (source === 'GROUP_ROLE') {
+        const group = record.sourceGroup || '-';
+        return record.sourceRole ? `继承自组 ${group} / 角色 ${record.sourceRole}` : `继承自组 ${group}`;
+      }
+      if (source === 'USER_ROLE') return `用户私有角色 ${record.sourceRole || '-'}`;
+      if (source === 'USER') return '用户直授权';
+      if (record?.sourceRole) return `角色 ${record.sourceRole}`;
+      return record?.source || '-';
+    },
     formatResource(record) {
       if (!record) return '-';
       if (record.resourceType === 'TABLE') {
@@ -230,6 +277,9 @@ export default {
   display: block;
   margin-top: 6px;
   color: #1f2d3d;
+}
+.status-help {
+  margin-bottom: 12px;
 }
 .toolbar {
   align-items: center;

@@ -1,9 +1,14 @@
 package com.dga.access.service;
 
 import com.dga.access.dto.AuthRoleAssignmentRequest;
+import com.dga.access.dto.AuthRoleImportRequest;
+import com.dga.access.dto.AuthRoleImportResult;
 import com.dga.access.dto.AuthRolePermissionRequest;
 import com.dga.access.dto.AuthRoleRequest;
 import com.dga.access.dto.AuthRoleView;
+import com.dga.access.dto.BackendRoleInventoryRequest;
+import com.dga.access.dto.BackendRolePermissionSnapshot;
+import com.dga.access.dto.BackendRoleSnapshot;
 import com.dga.access.dto.BatchRoleAssignmentItem;
 import com.dga.access.dto.BatchRoleAssignmentRequest;
 import com.dga.access.dto.BatchRoleAssignmentResult;
@@ -66,6 +71,250 @@ public class AuthRoleService {
             result.add(view(role));
         }
         return result;
+    }
+
+    public List<BackendRoleSnapshot> listBackendRoles(BackendRoleInventoryRequest request) {
+        if (request == null) {
+            request = new BackendRoleInventoryRequest();
+        }
+        String cluster = required(request.getCluster(), "请选择集群");
+        String authBackend = resolveRoleAuthBackend(cluster, request.getAuthBackend(), null);
+        if (!"SENTRY".equalsIgnoreCase(authBackend)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前授权后端没有原生角色盘点能力，Ranger 角色请在 DGA 本地维护，授权时会物化为 Ranger 策略。");
+        }
+        request.setCluster(cluster);
+        request.setAuthBackend(authBackend);
+        List<BackendRoleSnapshot> snapshots = authorizationService.listBackendRoles(request);
+        for (BackendRoleSnapshot snapshot : snapshots) {
+            AuthRole local = roleRepository.findByRoleCode(snapshot.getRoleCode());
+            snapshot.setLocalExists(local != null && !"DELETED".equalsIgnoreCase(local.getStatus()));
+            snapshot.setLocalStatus(local == null ? null : local.getStatus());
+        }
+        return snapshots;
+    }
+
+    @Transactional
+    public AuthRoleImportResult importBackendRoles(AuthRoleImportRequest request, String operator) {
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "导入参数不能为空");
+        }
+        String cluster = required(request.getCluster(), "请选择集群");
+        String authBackend = resolveRoleAuthBackend(cluster, request.getAuthBackend(), null);
+        if (!"SENTRY".equalsIgnoreCase(authBackend)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前授权后端没有原生角色盘点能力，Ranger 角色请在 DGA 本地维护，授权时会物化为 Ranger 策略。");
+        }
+        if (request.getRoleCodes() == null || request.getRoleCodes().isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择要接管的后端角色");
+        }
+        BackendRoleInventoryRequest inventoryRequest = new BackendRoleInventoryRequest();
+        inventoryRequest.setCluster(cluster);
+        inventoryRequest.setAuthBackend(authBackend);
+        inventoryRequest.setRoleCodes(request.getRoleCodes());
+        inventoryRequest.setIncludePermissions(request.isImportPermissions());
+        inventoryRequest.setIncludeAssignments(request.isImportAssignments());
+
+        AuthRoleImportResult result = new AuthRoleImportResult();
+        List<BackendRoleSnapshot> snapshots = authorizationService.listBackendRoles(inventoryRequest);
+        Map<String, BackendRoleSnapshot> snapshotByRole = new LinkedHashMap<>();
+        for (BackendRoleSnapshot snapshot : snapshots) {
+            snapshotByRole.put(lower(snapshot.getRoleCode()), snapshot);
+        }
+        result.setTotal(request.getRoleCodes().size());
+        for (String requestedRoleCode : request.getRoleCodes()) {
+            String roleCode = required(requestedRoleCode, "角色编码不能为空");
+            BackendRoleSnapshot snapshot = snapshotByRole.get(lower(roleCode));
+            if (snapshot == null) {
+                addImportItem(result, roleCode, "SKIPPED", "SKIPPED", "后端未发现该角色", 0, 0);
+                continue;
+            }
+            try {
+                ImportOutcome outcome = importBackendRoleSnapshot(snapshot, cluster, authBackend, request, operator);
+                addImportItem(result, snapshot.getRoleCode(), outcome.action, "SUCCESS", outcome.message,
+                        outcome.permissionCount, outcome.assignmentCount);
+            } catch (Exception e) {
+                AuthRole failedRole = roleRepository.findByRoleCode(roleCode);
+                if (failedRole != null) {
+                    auditImport(failedRole, "BACKEND_ROLE_IMPORT_FAILED", null, null, null,
+                            "FAILED", firstNonBlank(e.getMessage(), "后端角色接管失败"), operator);
+                }
+                addImportItem(result, roleCode, "FAILED", "FAILED", firstNonBlank(e.getMessage(), "后端角色接管失败"), 0, 0);
+            }
+        }
+        return result;
+    }
+
+    private ImportOutcome importBackendRoleSnapshot(BackendRoleSnapshot snapshot, String cluster, String authBackend,
+                                                    AuthRoleImportRequest request, String operator) {
+        String roleCode = required(snapshot.getRoleCode(), "后端角色编码不能为空");
+        AuthRole role = roleRepository.findByRoleCode(roleCode);
+        boolean created = role == null || "DELETED".equalsIgnoreCase(role.getStatus());
+        if (role == null) {
+            role = new AuthRole();
+            role.setRoleCode(roleCode);
+        }
+        role.setRoleName(firstNonBlank(snapshot.getRoleName(), roleCode));
+        role.setCluster(cluster);
+        role.setAuthBackend(authBackend);
+        role.setEngineType(firstNonBlank(snapshot.getEngineType(), safeEngineType(cluster, authBackend)));
+        role.setRiskLevel(firstNonBlank(role.getRiskLevel(), "LOW"));
+        role.setStatus("ACTIVE");
+        if (trimToNull(role.getDescription()) == null) {
+            role.setDescription("从 " + authBackend + " 后端接管的已有角色");
+        }
+        AuthRole saved = roleRepository.save(role);
+
+        int permissionCount = request.isImportPermissions() ? importBackendRolePermissions(saved, snapshot.getPermissions(), authBackend) : 0;
+        int assignmentCount = request.isImportAssignments() ? importBackendRoleAssignments(saved, snapshot.getGroupNames(), authBackend) : 0;
+        String action = created ? "CREATED" : (permissionCount == 0 && assignmentCount == 0 ? "SKIPPED" : "UPDATED");
+        String message = "SKIPPED".equals(action) ? "本地角色记录已是最新" : "后端角色已接管到 DGA 本地记录";
+        auditImport(saved, created ? "BACKEND_ROLE_IMPORTED" : "BACKEND_ROLE_UPDATED", null, null,
+                "permissions=" + permissionCount + ", assignments=" + assignmentCount, action, message, operator);
+        return new ImportOutcome(action, message, permissionCount, assignmentCount);
+    }
+
+    private int importBackendRolePermissions(AuthRole role, List<BackendRolePermissionSnapshot> permissions, String authBackend) {
+        if (permissions == null || permissions.isEmpty()) {
+            return 0;
+        }
+        int imported = 0;
+        List<AuthRolePermission> existingPermissions = permissionRepository.findByRoleCodeAndStatus(role.getRoleCode(), "ACTIVE");
+        for (BackendRolePermissionSnapshot snapshot : permissions) {
+            String database = trimToNull(snapshot.getDatabaseName());
+            String table = trimToNull(snapshot.getTableName());
+            String permission = normalizePermission(snapshot.getPermission());
+            if (database == null || permission == null) {
+                continue;
+            }
+            if (containsPermission(existingPermissions, database, table, permission, authBackend)) {
+                continue;
+            }
+            AuthRolePermission item = new AuthRolePermission();
+            item.setRoleCode(role.getRoleCode());
+            item.setCluster(role.getCluster());
+            item.setResourceType(table == null ? "DATABASE" : "TABLE");
+            item.setDatabaseName(database);
+            item.setTableName(table);
+            item.setPermission(permission);
+            item.setAuthBackend(authBackend);
+            item.setStatus("ACTIVE");
+            AuthRolePermission saved = permissionRepository.save(item);
+            existingPermissions.add(saved);
+            imported++;
+        }
+        return imported;
+    }
+
+    private int importBackendRoleAssignments(AuthRole role, List<String> groupNames, String authBackend) {
+        if (groupNames == null || groupNames.isEmpty()) {
+            return 0;
+        }
+        int imported = 0;
+        for (String groupNameValue : groupNames) {
+            String groupName = trimToNull(groupNameValue);
+            if (groupName == null) {
+                continue;
+            }
+            if (hasUsableAssignment(role.getRoleCode(), "GROUP", groupName, authBackend)) {
+                continue;
+            }
+            AuthUserRole assignment = new AuthUserRole();
+            assignment.setRoleCode(role.getRoleCode());
+            assignment.setCluster(role.getCluster());
+            assignment.setSubjectType("GROUP");
+            assignment.setSubjectName(groupName);
+            assignment.setAuthBackend(authBackend);
+            assignment.setStatus("ACTIVE");
+            assignment.setBackendSyncStatus("SUCCESS");
+            assignment.setSyncMessage("从 " + authBackend + " 后端接管已有角色绑定");
+            userRoleRepository.save(assignment);
+            imported++;
+        }
+        return imported;
+    }
+
+    private boolean containsPermission(List<AuthRolePermission> permissions, String database, String table, String permission, String authBackend) {
+        for (AuthRolePermission existing : permissions) {
+            if (samePermission(existing, database, table, permission, authBackend)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean hasUsableAssignment(String roleCode, String subjectType, String subjectName, String authBackend) {
+        for (AuthUserRole assignment : userRoleRepository.findByRoleCodeAndSubjectTypeAndSubjectNameAndStatus(
+                roleCode, subjectType, subjectName, "ACTIVE")) {
+            String backend = resolveRoleAuthBackend(assignment.getCluster(), assignment.getAuthBackend(), authBackend);
+            if (equalsIgnoreCase(backend, authBackend) && isUsableAssignmentStatus(assignment.getBackendSyncStatus())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void addImportItem(AuthRoleImportResult result, String roleCode, String action, String status,
+                               String message, int permissionCount, int assignmentCount) {
+        AuthRoleImportResult.Item item = new AuthRoleImportResult.Item();
+        item.setRoleCode(roleCode);
+        item.setAction(action);
+        item.setStatus(status);
+        item.setMessage(message);
+        item.setPermissionCount(permissionCount);
+        item.setAssignmentCount(assignmentCount);
+        result.getItems().add(item);
+        if ("FAILED".equalsIgnoreCase(status)) {
+            result.setFailed(result.getFailed() + 1);
+        } else if ("SKIPPED".equalsIgnoreCase(action)) {
+            result.setSkipped(result.getSkipped() + 1);
+        } else if ("CREATED".equalsIgnoreCase(action)) {
+            result.setCreated(result.getCreated() + 1);
+        } else {
+            result.setUpdated(result.getUpdated() + 1);
+        }
+    }
+
+    private String normalizePermission(String permission) {
+        String normalized = trimToNull(permission);
+        if (normalized == null) {
+            return null;
+        }
+        normalized = normalized.toUpperCase(Locale.ROOT);
+        if (normalized.endsWith("_PRIV")) {
+            normalized = normalized.substring(0, normalized.length() - 5);
+        }
+        if ("*".equals(normalized) || "ALL PRIVILEGES".equals(normalized) || "ALL_PRIVILEGES".equals(normalized)) {
+            return "ALL";
+        }
+        return normalized;
+    }
+
+    private void auditImport(AuthRole role, String action, String subjectType, String subjectName,
+                             String resourceSummary, String backendStatus, String message, String operator) {
+        AuthRoleAssignmentAudit audit = new AuthRoleAssignmentAudit();
+        audit.setRoleCode(role.getRoleCode());
+        audit.setCluster(role.getCluster());
+        audit.setAction(action);
+        audit.setSubjectType(subjectType);
+        audit.setSubjectName(subjectName);
+        audit.setResourceSummary(resourceSummary);
+        audit.setBackendStatus(backendStatus);
+        audit.setMessage(message);
+        audit.setOperator(firstNonBlank(operator, CurrentUser.usernameOrUnknown()));
+        auditRepository.save(audit);
+    }
+
+    private static class ImportOutcome {
+        private final String action;
+        private final String message;
+        private final int permissionCount;
+        private final int assignmentCount;
+
+        private ImportOutcome(String action, String message, int permissionCount, int assignmentCount) {
+            this.action = action;
+            this.message = message;
+            this.permissionCount = permissionCount;
+            this.assignmentCount = assignmentCount;
+        }
     }
 
     @Transactional
@@ -164,8 +413,7 @@ public class AuthRoleService {
         }
         String authBackend = resolveRoleAuthBackend(role.getCluster(), permission.getAuthBackend(), role.getAuthBackend());
         try {
-            authorizationService.revokePermissionFromRole(role.getCluster(), role.getRoleCode(),
-                    permission.getDatabaseName(), permission.getTableName(), permission.getPermission(), authBackend);
+            revokeRolePermissionFromBackend(role, permission, authBackend);
             permission.setStatus("DELETED");
             permissionRepository.save(permission);
             audit(role, "ROLE_PERMISSION_DELETED", null, null, resourceSummary(permission), "SUCCESS", "角色权限范围已删除");
@@ -190,6 +438,51 @@ public class AuthRoleService {
         String authBackend = resolveRoleAuthBackend(role.getCluster(), request.getAuthBackend(), role.getAuthBackend());
         assignRoleToSubject(role, subjectType, subjectName, authBackend, request.getExpiresAt(), true);
         return view(role);
+    }
+
+    @Transactional
+    public AuthUserRole addLocalOnlyAssignmentForAdoption(String roleCode, String subjectTypeValue, String subjectNameValue,
+                                                         String authBackendValue, LocalDateTime expiresAt,
+                                                         String operator, String message) {
+        AuthRole role = activeRole(roleCode);
+        if (isExpired(role)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "角色已过期，不能接管历史权限");
+        }
+        String subjectType = required(subjectTypeValue, "请选择绑定对象类型").toUpperCase(Locale.ROOT);
+        String subjectName = required(subjectNameValue, "请输入绑定对象");
+        if (!"USER".equals(subjectType) && !"GROUP".equals(subjectType)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "绑定对象类型仅支持 USER 或 GROUP");
+        }
+        String authBackend = resolveRoleAuthBackend(role.getCluster(), authBackendValue, role.getAuthBackend());
+        AuthUserRole assignment = null;
+        for (AuthUserRole existing : userRoleRepository.findByRoleCodeAndSubjectTypeAndSubjectNameAndStatus(
+                role.getRoleCode(), subjectType, subjectName, "ACTIVE")) {
+            String existingBackend = resolveRoleAuthBackend(role.getCluster(), existing.getAuthBackend(), authBackend);
+            if (!equalsIgnoreCase(existingBackend, authBackend)) {
+                continue;
+            }
+            if (isUsableAssignmentStatus(existing.getBackendSyncStatus())) {
+                return existing;
+            }
+            assignment = existing;
+            break;
+        }
+        if (assignment == null) {
+            assignment = new AuthUserRole();
+        }
+        assignment.setRoleCode(role.getRoleCode());
+        assignment.setCluster(role.getCluster());
+        assignment.setSubjectType(subjectType);
+        assignment.setSubjectName(subjectName);
+        assignment.setAuthBackend(authBackend);
+        assignment.setExpiresAt(expiresAt);
+        assignment.setStatus("ACTIVE");
+        assignment.setBackendSyncStatus("LOCAL_ONLY");
+        assignment.setSyncMessage(firstNonBlank(message, "历史权限接管：仅建立 DGA 绑定范围，未修改 Hive/Sentry 后端授权"));
+        AuthUserRole saved = userRoleRepository.save(assignment);
+        auditImport(role, "HISTORICAL_PERMISSION_ADOPTION_ASSIGNMENT", subjectType, subjectName,
+                null, "LOCAL_ONLY", saved.getSyncMessage(), operator);
+        return saved;
     }
 
     public boolean hasActiveAssignment(String roleCode, String subjectTypeValue, String subjectNameValue, String authBackendValue) {
@@ -313,7 +606,9 @@ public class AuthRoleService {
 
     private boolean isUsableAssignmentStatus(String status) {
         String normalized = firstNonBlank(status, "SUCCESS");
-        return "SUCCESS".equalsIgnoreCase(normalized) || "PENDING_GROUP_MAPPING".equalsIgnoreCase(normalized);
+        return "SUCCESS".equalsIgnoreCase(normalized)
+                || "PENDING_GROUP_MAPPING".equalsIgnoreCase(normalized)
+                || "LOCAL_ONLY".equalsIgnoreCase(normalized);
     }
 
     private void addBatchItem(BatchRoleAssignmentResult result, BatchRoleAssignmentItem item) {
@@ -353,7 +648,7 @@ public class AuthRoleService {
                 continue;
             }
             String syncStatus = firstNonBlank(existing.getBackendSyncStatus(), "");
-            if ("SUCCESS".equalsIgnoreCase(syncStatus) || "PENDING_GROUP_MAPPING".equalsIgnoreCase(syncStatus)) {
+            if (isUsableAssignmentStatus(syncStatus)) {
                 return existing;
             }
             assignment = existing;
@@ -369,6 +664,13 @@ public class AuthRoleService {
         assignment.setAuthBackend(authBackend);
         assignment.setExpiresAt(expiresAt);
         assignment.setStatus("ACTIVE");
+        if (isSubsetControlledGroupAssignment(role.getCluster(), assignment.getAuthBackend(), subjectType)) {
+            assignment.setBackendSyncStatus("LOCAL_ONLY");
+            assignment.setSyncMessage("角色绑定仅作为可授权范围，后端权限请通过子集授权下发");
+            audit(role, "ROLE_ASSIGNED", subjectType, subjectName, null, "LOCAL_ONLY", assignment.getSyncMessage());
+            userRoleRepository.save(assignment);
+            return assignment;
+        }
         try {
             if ("USER".equals(subjectType)) {
                 if (backendSupportsNativeUserRole(role.getCluster(), assignment.getAuthBackend())) {
@@ -431,7 +733,11 @@ public class AuthRoleService {
         }
         try {
             if (hasBackendSuccess) {
-                authorizationService.revokeRoleAssignment(role.getCluster(), role.getRoleCode(), subjectType, subjectName, authBackend);
+                if (assignmentUsesMaterializedPolicies(role.getCluster(), authBackend, subjectType)) {
+                    revokeRolePermissionsFromSubject(role, subjectType, subjectName, authBackend);
+                } else {
+                    authorizationService.revokeRoleAssignment(role.getCluster(), role.getRoleCode(), subjectType, subjectName, authBackend);
+                }
             }
             for (AuthUserRole assignment : assignments) {
                 assignment.setStatus("REVOKED");
@@ -469,6 +775,9 @@ public class AuthRoleService {
         for (AuthUserRole assignment : userRoleRepository.findByRoleCodeAndStatus(role.getRoleCode(), "ACTIVE")) {
             String backend = resolveRoleAuthBackend(role.getCluster(), assignment.getAuthBackend(), role.getAuthBackend());
             assignment.setAuthBackend(backend);
+            if (!"SUCCESS".equalsIgnoreCase(assignment.getBackendSyncStatus())) {
+                continue;
+            }
             if (!assignmentUsesMaterializedPolicies(role.getCluster(), backend, assignment.getSubjectType())) {
                 continue;
             }
@@ -478,6 +787,31 @@ public class AuthRoleService {
             } catch (UnsupportedOperationException ignored) {
                 // Native role backends do not need separate user/group policy expansion.
             }
+        }
+    }
+
+    private void revokeRolePermissionFromBackend(AuthRole role, AuthRolePermission permission, String authBackend) {
+        if (backendUsesMaterializedPolicies(role.getCluster(), authBackend)) {
+            revokePermissionFromMaterializedAssignments(role, permission, authBackend);
+            return;
+        }
+        authorizationService.revokePermissionFromRole(role.getCluster(), role.getRoleCode(),
+                permission.getDatabaseName(), permission.getTableName(), permission.getPermission(), authBackend);
+    }
+
+    private void revokePermissionFromMaterializedAssignments(AuthRole role, AuthRolePermission permission, String authBackend) {
+        for (AuthUserRole assignment : userRoleRepository.findByRoleCodeAndStatus(role.getRoleCode(), "ACTIVE")) {
+            String backend = resolveRoleAuthBackend(role.getCluster(), assignment.getAuthBackend(), authBackend);
+            if (!equalsIgnoreCase(backend, authBackend)) {
+                continue;
+            }
+            if (!isUsableAssignmentStatus(assignment.getBackendSyncStatus())) {
+                continue;
+            }
+            if (!assignmentUsesMaterializedPolicies(role.getCluster(), backend, assignment.getSubjectType())) {
+                continue;
+            }
+            revokePermissionFromSubject(role.getCluster(), backend, assignment.getSubjectType(), assignment.getSubjectName(), permission);
         }
     }
 
@@ -493,6 +827,28 @@ public class AuthRoleService {
             expandPermissionToSubject(role.getCluster(), assignment.getAuthBackend(), assignment.getSubjectType(),
                     assignment.getSubjectName(), permission);
         }
+    }
+
+    private void revokeRolePermissionsFromSubject(AuthRole role, String subjectType, String subjectName, String authBackend) {
+        for (AuthRolePermission permission : permissionRepository.findByRoleCodeAndStatus(role.getRoleCode(), "ACTIVE")) {
+            revokePermissionFromSubject(role.getCluster(), authBackend, subjectType, subjectName, permission);
+        }
+    }
+
+    private void revokePermissionFromSubject(String cluster, String authBackend, String subjectType,
+                                             String subjectName, AuthRolePermission permission) {
+        if ("GROUP".equalsIgnoreCase(subjectType)) {
+            authorizationService.revokePermissionFromGroup(cluster, subjectName, permission.getDatabaseName(),
+                    permission.getTableName(), permission.getPermission(), authBackend);
+            return;
+        }
+        com.dga.access.service.authorization.RevokeCommand command = new com.dga.access.service.authorization.RevokeCommand();
+        command.setCluster(cluster);
+        command.setUsername(subjectName);
+        command.setDatabase(permission.getDatabaseName());
+        command.setTable(permission.getTableName());
+        command.setPermission(permission.getPermission());
+        authorizationService.revoke(command, authBackend);
     }
 
     private void expandPermissionToSubject(String cluster, String authBackend, String subjectType,
@@ -670,6 +1026,17 @@ public class AuthRoleService {
             return capability.getRbac().isGroupAssignmentUsesMaterializedPolicies();
         }
         return false;
+    }
+
+    private boolean isSubsetControlledGroupAssignment(String cluster, String authBackend, String subjectType) {
+        if (!"GROUP".equalsIgnoreCase(subjectType)) {
+            return false;
+        }
+        AuthorizationCapability capability = capabilityFor(cluster, authBackend);
+        return capability != null
+                && capability.getGrant() != null
+                && capability.getGrant().isSupportsRoleSubsetGrant()
+                && capability.getGrant().isSupportsGroupRoleSubsetGrant();
     }
 
     private boolean backendSupportsNativeGroupRole(String cluster, String authBackend) {

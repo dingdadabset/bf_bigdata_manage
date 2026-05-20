@@ -31,7 +31,7 @@ export function permissionKey(permission) {
     String(permission?.resourceType || '').toUpperCase(),
     String(permission?.databaseName || '').toLowerCase(),
     String(permission?.tableName || '*').toLowerCase(),
-    String(permission?.permission || '').toUpperCase(),
+    normalizePermissionName(permission?.permission),
     String(permission?.authBackend || '').toUpperCase()
   ].join('|');
 }
@@ -55,6 +55,14 @@ export function uniqueBy(items, keyFn) {
   });
 }
 
+export function normalizePermissionName(permission) {
+  let normalized = String(permission || '').trim().toUpperCase();
+  if (normalized.endsWith('_PRIV')) {
+    normalized = normalized.slice(0, -5);
+  }
+  return normalized === '*' || normalized === 'ALL PRIVILEGES' || normalized === 'ALL_PRIVILEGES' ? 'ALL' : normalized;
+}
+
 export function uniqueRolePermissions(roleView) {
   return uniqueBy(roleView && roleView.permissions ? roleView.permissions : [], permissionKey);
 }
@@ -62,13 +70,13 @@ export function uniqueRolePermissions(roleView) {
 export function rolePermissionText(permission) {
   const database = permission?.databaseName || '*';
   const table = permission?.tableName || '*';
-  return `${permission?.resourceType || 'RESOURCE'} ${database}.${table} ${permission?.permission || ''}`;
+  return `${permission?.resourceType || 'RESOURCE'} ${database}.${table} ${normalizePermissionName(permission?.permission)}`;
 }
 
 export function rolePermissionShortText(permission) {
   const database = permission?.databaseName || '*';
   const table = permission?.tableName ? `.${permission.tableName}` : '.*';
-  return `${database}${table} ${permission?.permission || ''}`;
+  return `${database}${table} ${normalizePermissionName(permission?.permission)}`;
 }
 
 export function operationModeLabel(mode) {
@@ -79,7 +87,7 @@ export function filterRolePermissions(permissions, keyword, permissionFilter = '
   const normalizedKeyword = String(keyword || '').trim().toLowerCase();
   const normalizedFilter = String(permissionFilter || 'ALL').toUpperCase();
   return (permissions || []).filter(item => {
-    const permission = String(item?.permission || '').toUpperCase();
+    const permission = normalizePermissionName(item?.permission);
     if (normalizedFilter !== 'ALL' && permission !== normalizedFilter) return false;
     if (!normalizedKeyword) return true;
     return [
@@ -116,7 +124,7 @@ export function rolePermissionSelection(permission) {
     resourceType: permission?.resourceType || (permission?.tableName ? 'TABLE' : 'DATABASE'),
     databaseName: permission?.databaseName || '',
     tableName: permission?.tableName || null,
-    permission: String(permission?.permission || '').toUpperCase(),
+    permission: normalizePermissionName(permission?.permission),
     authBackend: permission?.authBackend || ''
   };
 }
@@ -302,7 +310,7 @@ export function assignmentStatusColor(status) {
 
 export function usableAssignmentStatus(status) {
   const normalized = String(status || 'SUCCESS').toUpperCase();
-  return normalized === 'SUCCESS' || normalized === 'PENDING_GROUP_MAPPING';
+  return normalized === 'SUCCESS' || normalized === 'PENDING_GROUP_MAPPING' || normalized === 'LOCAL_ONLY';
 }
 
 export function findMatchingAssignments(roleView, subjectType, subjectName, authBackend, groupNames = []) {
@@ -391,11 +399,93 @@ function recordResourceType(record) {
 }
 
 function recordPermission(record) {
-  return String(record?.permission || '').toUpperCase();
+  return normalizePermissionName(record?.permission);
 }
 
 function recordAuthBackend(record, fallbackAuthBackend) {
   return String(record?.authBackend || fallbackAuthBackend || '').toUpperCase();
+}
+
+export function isGroupInheritedGrant(record) {
+  const source = String(record?.source || '').toUpperCase();
+  if (source === 'GROUP_ROLE') return true;
+  const subjectType = String(record?.subjectType || '').toUpperCase();
+  return subjectType === 'GROUP' && source.includes('GROUP');
+}
+
+export function reconciliationStatusLabel(status) {
+  const map = {
+    EXACT_MATCH: '完全一致',
+    SUBSET_OF_ROLE: '历史权限少于角色',
+    SUPERSET_OF_ROLE: '历史权限超出角色',
+    PARTIAL_OVERLAP: '部分重叠',
+    GROUP_INHERITED_ONLY: '仅组继承匹配',
+    NO_OVERLAP: '无可接管交集',
+    ALREADY_ADOPTED: '已接管'
+  };
+  return map[String(status || '').toUpperCase()] || status || '-';
+}
+
+export function reconciliationStatusColor(status) {
+  const normalized = String(status || '').toUpperCase();
+  if (normalized === 'EXACT_MATCH' || normalized === 'ALREADY_ADOPTED') return 'green';
+  if (normalized === 'SUBSET_OF_ROLE' || normalized === 'SUPERSET_OF_ROLE' || normalized === 'PARTIAL_OVERLAP') return 'orange';
+  if (normalized === 'GROUP_INHERITED_ONLY') return 'purple';
+  if (normalized === 'NO_OVERLAP') return 'red';
+  return 'default';
+}
+
+export function adoptionStatusLabel(status) {
+  const map = {
+    DIRECT_MATCH: '可直接接管',
+    GROUP_INHERITED_MATCH: 'LDAP 组继承',
+    ROLE_MISSING_LIVE: '角色权限未在后端出现',
+    LIVE_EXTRA_DIRECT: '角色外历史权限',
+    LIVE_EXTRA_GROUP_INHERITED: '角色外组继承',
+    ALREADY_RECORDED: '已有 DGA 记录',
+    RECORDED_ONLY: '仅 DGA 记录'
+  };
+  return map[String(status || '').toUpperCase()] || status || '-';
+}
+
+export function adoptionStatusColor(status) {
+  const normalized = String(status || '').toUpperCase();
+  if (normalized === 'DIRECT_MATCH') return 'green';
+  if (normalized === 'GROUP_INHERITED_MATCH') return 'purple';
+  if (normalized === 'ALREADY_RECORDED') return 'blue';
+  if (normalized === 'ROLE_MISSING_LIVE' || normalized === 'LIVE_EXTRA_DIRECT' || normalized === 'LIVE_EXTRA_GROUP_INHERITED') return 'orange';
+  if (normalized === 'RECORDED_ONLY') return 'cyan';
+  return 'default';
+}
+
+export function defaultHistoricalAdoptionKeys(preview) {
+  return (preview?.items || [])
+    .filter(item => item?.adoptable && String(item?.adoptionStatus || '').toUpperCase() === 'DIRECT_MATCH')
+    .map(item => item.key)
+    .filter(Boolean);
+}
+
+export function selectedHistoricalAdoptionItems(preview, selectedKeys) {
+  const selected = new Set(selectedKeys || []);
+  return (preview?.items || []).filter(item => selected.has(item?.key));
+}
+
+export function historicalAdoptionNeedsGroupAcknowledgement(preview, selectedKeys) {
+  return selectedHistoricalAdoptionItems(preview, selectedKeys)
+    .some(item => String(item?.source || '').toUpperCase() === 'GROUP_ROLE'
+      || String(item?.adoptionStatus || '').toUpperCase() === 'GROUP_INHERITED_MATCH');
+}
+
+export function historicalAdoptionNeedsRoleMissingAcknowledgement(preview) {
+  return Number(preview?.summary?.roleMissingLiveCount || 0) > 0;
+}
+
+export function historicalAdoptionNeedsExtraAcknowledgement(preview) {
+  return Number(preview?.summary?.liveExtraDirectCount || 0) > 0;
+}
+
+export function historicalAdoptionNeedsPartialAcknowledgement(preview) {
+  return String(preview?.reconciliationStatus || '').toUpperCase() === 'PARTIAL_OVERLAP';
 }
 
 export function permissionRecordKey(record, fallbackAuthBackend) {
@@ -427,6 +517,10 @@ export function verificationDiffRows(snapshot) {
       tableName: recordTableName(liveItem || recordedItem),
       permission: recordPermission(liveItem || recordedItem),
       authBackend: recordAuthBackend(liveItem || recordedItem, fallbackAuthBackend),
+      source: liveItem?.source || recordedItem?.source || '',
+      sourceRole: liveItem?.sourceRole || recordedItem?.sourceRole || '',
+      sourceGroup: liveItem?.sourceGroup || recordedItem?.sourceGroup || '',
+      groupInherited: isGroupInheritedGrant(liveItem || recordedItem),
       live: liveItem || null,
       recorded: recordedItem || null,
       grantText: liveItem?.grantText || recordedItem?.grantText || ''

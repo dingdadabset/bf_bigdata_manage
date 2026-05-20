@@ -47,15 +47,15 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
     public AuthorizationProviderDescriptor descriptor() {
         return AuthorizationProviderDescriptor.create(engineType(), authBackend(), ClusterEndpoint.TYPE_STARROCKS_JDBC)
                 .missingEndpointWarning("StarRocks 授权需要 STARROCKS_JDBC 端点。")
-                .principalTypes("USER", "GROUP")
+                .principalTypes("USER")
                 .resourceTypes("DATABASE", "TABLE")
                 .permissions("SELECT", "INSERT", "CREATE", "ALTER", "DROP", "ALL")
                 .requiresLdap(false)
                 .identity("AUTH_BACKEND", "SQL", true, true, "AUTH_BACKEND", false, false, "StarRocks 用户")
-                .rbac(true, true, true, true, true, false, false, false, "USER", "USER", "GROUP")
-                .grant(true, true, true, true, true, true, false, true)
+                .rbac(true, true, true, true, false, false, false, false, "USER", "USER")
+                .grant(true, true, true, false, true, true, false, true)
                 .ui("StarRocks 用户", "创建 StarRocks 用户", "导入 StarRocks 用户",
-                        "StarRocks 支持用户直绑，也支持外部组角色绑定", "StarRocks 原生角色对用户或外部组生效");
+                        "StarRocks 支持用户直绑", "StarRocks 原生角色对用户生效");
     }
 
     @Override

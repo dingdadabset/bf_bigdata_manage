@@ -3,6 +3,14 @@
     <div class="toolbar">
       <a-input-search v-model="keyword" placeholder="搜索角色编码或名称" allow-clear />
       <a-tag color="blue">{{ filteredRoles.length }} 个角色</a-tag>
+      <a-tooltip v-if="allowManageRoles && !canSyncBackendRoles" title="当前授权后端没有原生角色盘点能力，Ranger 角色请在 DGA 本地维护，授权时会物化为 Ranger 策略。">
+        <a-button icon="cloud-sync" size="small" disabled>
+          同步后端角色
+        </a-button>
+      </a-tooltip>
+      <a-button v-else-if="allowManageRoles" icon="cloud-sync" size="small" :disabled="!capability" @click="$emit('sync-backend-roles')">
+        同步后端角色
+      </a-button>
       <a-button v-if="allowManageRoles" type="primary" icon="plus" size="small" :disabled="!capability" @click="openRoleModal()">
         新增角色
       </a-button>
@@ -281,6 +289,9 @@ export default {
     },
     capabilityEngineType() {
       return this.capability && this.capability.engineType ? this.capability.engineType : '';
+    },
+    canSyncBackendRoles() {
+      return String(this.selectedAuthBackend || this.capabilityAuthBackend || '').trim().toUpperCase() === 'SENTRY';
     },
     permissionOptions() {
       return Array.isArray(this.capability?.permissions) && this.capability.permissions.length

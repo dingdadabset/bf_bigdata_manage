@@ -139,6 +139,11 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
     }
 
     @Override
+    public void revokePermissionFromGroup(AuthorizationContext context, String groupName, String database, String table, String permission) {
+        rangerService.revokeGroupPermission(groupName, database, table, permission, rangerEndpoint(context));
+    }
+
+    @Override
     public void revoke(AuthorizationContext context, RevokeCommand command) {
         rangerService.revokePermission(command.getUsername(), command.getDatabase(), command.getTable(),
                 command.getPermission(), rangerEndpoint(context));

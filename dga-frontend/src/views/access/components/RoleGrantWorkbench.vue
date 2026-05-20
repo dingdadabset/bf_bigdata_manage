@@ -295,7 +295,7 @@
               <a-select v-model="bindingStatusFilter" style="width: 220px">
                 <a-select-option value="ALL">全部状态</a-select-option>
                 <a-select-option v-for="item in bindingStatusOptions" :key="item" :value="item">
-                  {{ item }}
+                  {{ assignmentSyncStatusLabel(item) }}
                 </a-select-option>
               </a-select>
             </div>
@@ -311,7 +311,7 @@
                 <a-tag>{{ subjectTypeLabel(text) }}</a-tag>
               </template>
               <template slot="backendSyncStatus" slot-scope="text">
-                <a-tag :color="assignmentStatusColor(text)">{{ text || 'UNKNOWN' }}</a-tag>
+                <a-tag :color="assignmentStatusColor(text)">{{ assignmentSyncStatusLabel(text) }}</a-tag>
               </template>
             </a-table>
           </div>
@@ -335,7 +335,7 @@
             <div class="section-head">
               <div>
                 <h4>步骤 3：绑定角色</h4>
-                <span>角色绑定决定该对象可使用的角色范围；未绑定前不能执行角色内子集授权。</span>
+                <span>角色绑定只确认该对象可使用的角色范围，不会默认下发整个角色权限。</span>
               </div>
               <a-tag :color="hasCurrentBinding ? 'green' : 'orange'">
                 {{ hasCurrentBinding ? '已绑定' : '待绑定' }}
@@ -472,6 +472,38 @@
                     回收子集权限
                   </a-button>
                 </a-popconfirm>
+                <a-tooltip v-if="showHistoricalAdoptionButton" :title="historicalAdoptionDisabledReason">
+                  <span class="historical-adoption-action-wrap">
+                    <a-button
+                      icon="audit"
+                      :loading="loading.submitting"
+                      :disabled="!canPreviewHistoricalAdoption"
+                      @click="$emit('preview-historical-adoption')"
+                    >
+                      历史权限接管
+                    </a-button>
+                  </span>
+                </a-tooltip>
+                <a-tooltip v-if="showForceUserRevokeButton" :title="forceRevokeDisabledReason">
+                  <span class="force-revoke-action-wrap">
+                    <a-button
+                      type="danger"
+                      ghost
+                      icon="warning"
+                      :loading="loading.submitting"
+                      :disabled="!canForceRevokeByUser"
+                      @click="openForceRevokeModal"
+                    >
+                      强制按用户回收
+                    </a-button>
+                  </span>
+                </a-tooltip>
+              </div>
+              <div v-if="showHistoricalAdoptionButton" class="historical-adoption-hint">
+                {{ historicalAdoptionHint }}
+              </div>
+              <div v-if="showForceUserRevokeButton" class="admin-force-hint">
+                {{ forceRevokeUserHint }}
               </div>
             </div>
 
@@ -706,11 +738,94 @@
 
       </div>
     </a-spin>
+
+    <a-modal
+      :visible="forceRevokeModalVisible"
+      title="选择强制回收权限"
+      ok-text="确认回收"
+      cancel-text="取消"
+      ok-type="danger"
+      width="760px"
+      destroy-on-close
+      :confirm-loading="loading.submitting"
+      :ok-button-props="{ props: { disabled: !forceRevokePermissionKeys.length } }"
+      @ok="confirmForceRevokeUser"
+      @cancel="closeForceRevokeModal"
+    >
+      <div class="force-revoke-modal">
+        <a-alert
+          class="force-revoke-alert"
+          type="warning"
+          show-icon
+          :message="`将按用户 ${forceRevokeTargetUser || '-'} 直接回收所选权限；来自 LDAP 组角色继承的权限不会出现在这里，需回收组绑定或组权限。`"
+        />
+        <div class="force-revoke-summary">
+          <div class="summary-chip">
+            <span>目标用户</span>
+            <strong>{{ forceRevokeTargetUser || '-' }}</strong>
+          </div>
+          <div class="summary-chip">
+            <span>可按用户回收</span>
+            <strong>{{ forceRevokeUserPermissions.length }}</strong>
+          </div>
+          <div class="summary-chip">
+            <span>已选权限</span>
+            <strong>{{ forceRevokePermissionKeys.length }}</strong>
+          </div>
+        </div>
+        <div class="force-revoke-toolbar">
+          <a-input-search
+            v-model="forceRevokeKeyword"
+            allow-clear
+            placeholder="搜索库名、表名或权限"
+            class="force-revoke-search"
+          />
+          <a-select v-model="forceRevokePermissionFilter" class="force-revoke-filter">
+            <a-select-option value="ALL">全部权限</a-select-option>
+            <a-select-option v-for="item in forceRevokePermissionOptions" :key="item" :value="item">
+              {{ item }}
+            </a-select-option>
+          </a-select>
+          <a-select v-model="forceRevokeStatusFilter" class="force-revoke-status-filter">
+            <a-select-option value="ALL">全部状态</a-select-option>
+            <a-select-option value="MATCHED">完全一致</a-select-option>
+            <a-select-option value="LIVE_ONLY">仅后端存在</a-select-option>
+            <a-select-option value="RECORDED_ONLY">仅 DGA 记录</a-select-option>
+          </a-select>
+        </div>
+        <div class="force-revoke-actions">
+          <span>筛选命中 {{ filteredForceRevokePermissions.length }} 项，共 {{ forceRevokeUserPermissions.length }} 项</span>
+          <div>
+            <a-button size="small" :disabled="!filteredForceRevokePermissions.length" @click="selectFilteredForceRevokePermissions">全选筛选结果</a-button>
+            <a-button size="small" :disabled="!filteredForceRevokePermissions.length" @click="clearFilteredForceRevokePermissions">清空筛选结果</a-button>
+            <a-button size="small" @click="restoreCurrentForceRevokeSelection">还原当前勾选</a-button>
+          </div>
+        </div>
+        <a-empty v-if="!filteredForceRevokePermissions.length" class="force-revoke-empty" description="没有匹配的权限范围" />
+        <a-checkbox-group
+          v-else
+          :value="forceRevokePermissionKeys"
+          class="force-revoke-permission-list"
+          @change="forceRevokePermissionKeys = $event"
+        >
+          <a-checkbox
+            v-for="item in filteredForceRevokePermissions"
+            :key="permissionKey(item)"
+            :value="permissionKey(item)"
+            class="force-revoke-permission-item"
+          >
+            <span class="permission-item-main">{{ forceRevokePermissionText(item) }}</span>
+            <a-tag :color="verificationStatusColor(item.status)">{{ previewStatusLabel(item.status) }}</a-tag>
+          </a-checkbox>
+        </a-checkbox-group>
+      </div>
+    </a-modal>
   </a-card>
 </template>
 
 <script>
 import PermissionVerificationPanel from './PermissionVerificationPanel.vue';
+import { canDelete } from '../../../utils/currentUser';
 import {
   assignmentKey,
   assignmentStatusColor,
@@ -720,6 +835,7 @@ import {
   filterRoleAssignments,
   filterRolePermissions,
   hasUsableRoleAssignment,
+  isGroupInheritedGrant,
   operationModeLabel,
   permissionKey,
   resourceTypeLabel,
@@ -811,6 +927,11 @@ export default {
       subsetPermissionFilter: 'ALL',
       subsetPermissionPage: 1,
       subsetPermissionPageSize: 12,
+      forceRevokeModalVisible: false,
+      forceRevokeKeyword: '',
+      forceRevokePermissionFilter: 'ALL',
+      forceRevokeStatusFilter: 'ALL',
+      forceRevokePermissionKeys: [],
       bindingKeyword: '',
       bindingStatusFilter: 'ALL',
       bindingSubjectTypeFilter: 'ALL',
@@ -844,6 +965,12 @@ export default {
     showAuthorization() {
       return this.mode !== 'role-management';
     },
+    showForceUserRevokeButton() {
+      return this.showAuthorization && canDelete();
+    },
+    showHistoricalAdoptionButton() {
+      return this.showAuthorization && String(this.state.selectedAuthBackend || '').trim().toUpperCase() === 'SENTRY';
+    },
     workspaceEyebrow() {
       return this.showAuthorization ? 'Authorization Workspace' : 'Role Management';
     },
@@ -864,6 +991,41 @@ export default {
     },
     filteredSubsetRolePermissions() {
       return filterRolePermissions(this.rolePermissions, this.subsetPermissionKeyword, this.subsetPermissionFilter);
+    },
+    forceRevokeAllPermissionRows() {
+      return verificationDiffRows(this.verificationSnapshot)
+        .filter(item => item.status === 'MATCHED' || item.status === 'LIVE_ONLY' || item.status === 'RECORDED_ONLY');
+    },
+    forceRevokeUserPermissions() {
+      return this.forceRevokeAllPermissionRows.filter(item => !isGroupInheritedGrant(item.live || item.recorded));
+    },
+    forceRevokeInheritedPermissionCount() {
+      return this.forceRevokeAllPermissionRows.length - this.forceRevokeUserPermissions.length;
+    },
+    forceRevokePermissionOptions() {
+      return Array.from(new Set(this.forceRevokeUserPermissions.map(item => item.permission).filter(Boolean)));
+    },
+    filteredForceRevokePermissions() {
+      const normalizedKeyword = String(this.forceRevokeKeyword || '').trim().toLowerCase();
+      const normalizedPermission = String(this.forceRevokePermissionFilter || 'ALL').toUpperCase();
+      const normalizedStatus = String(this.forceRevokeStatusFilter || 'ALL').toUpperCase();
+      return this.forceRevokeUserPermissions.filter(item => {
+        if (normalizedPermission !== 'ALL' && String(item.permission || '').toUpperCase() !== normalizedPermission) return false;
+        if (normalizedStatus !== 'ALL' && String(item.status || '').toUpperCase() !== normalizedStatus) return false;
+        if (!normalizedKeyword) return true;
+        return [
+          item.databaseName,
+          item.tableName,
+          item.permission,
+          item.resourceType,
+          item.authBackend,
+          item.status,
+          item.source,
+          item.sourceRole,
+          item.sourceGroup,
+          item.grantText
+        ].some(field => String(field || '').toLowerCase().includes(normalizedKeyword));
+      });
     },
     pagedSubsetRolePermissions() {
       const start = (this.subsetPermissionPage - 1) * this.subsetPermissionPageSize;
@@ -929,7 +1091,7 @@ export default {
       );
     },
     bindingStatusText() {
-      return `${this.currentSubjectLabel} 已绑定当前角色，可继续在角色范围内选择权限子集并执行授权。`;
+      return `${this.currentSubjectLabel} 已绑定当前角色；绑定只表示可授权范围，真正下发以后续勾选的权限子集为准。`;
     },
     canAssignRole() {
       return Boolean(this.selectedRoleView && this.state.subjectName);
@@ -944,6 +1106,72 @@ export default {
         && this.hasCurrentBinding
         && (!this.requiresVerificationUser || this.state.verificationUser)
       );
+    },
+    historicalAdoptionTargetUser() {
+      if (this.state.subjectType === 'USER') {
+        return String(this.state.subjectName || '').trim();
+      }
+      return String(this.state.verificationUser || '').trim();
+    },
+    canPreviewHistoricalAdoption() {
+      return Boolean(
+        this.showHistoricalAdoptionButton
+        && this.selectedRoleView
+        && this.state.subjectName
+        && this.historicalAdoptionTargetUser
+        && this.rolePermissions.length
+      );
+    },
+    historicalAdoptionDisabledReason() {
+      if (this.canPreviewHistoricalAdoption) return '读取用户 live 权限，与当前 DGA 角色范围对账后仅写入本地接管记录。';
+      if (!this.selectedRoleView) return '请先选择要对账的 DGA 角色。';
+      if (!this.state.subjectName) return '请先选择要绑定的授权对象。';
+      if (!this.historicalAdoptionTargetUser) return '组选中时需要先指定一个校验用户，用于读取历史 live 权限。';
+      if (!this.rolePermissions.length) return '当前角色没有权限范围，无法与历史权限对账。';
+      return '历史权限接管当前仅支持 Hive + Sentry。';
+    },
+    historicalAdoptionHint() {
+      if (this.historicalAdoptionDisabledReason && !this.canPreviewHistoricalAdoption) {
+        return `历史权限接管不可用：${this.historicalAdoptionDisabledReason}`;
+      }
+      return `历史权限接管：对用户 ${this.historicalAdoptionTargetUser} 的现有 Hive/Sentry 权限与当前角色范围做对账，只写入 DGA 记录和 LOCAL_ONLY 绑定。`;
+    },
+    forceRevokeTargetUser() {
+      if (this.state.subjectType === 'USER') {
+        return String(this.state.subjectName || '').trim();
+      }
+      return String(this.state.verificationUser || '').trim();
+    },
+    canForceRevokeByUser() {
+      return Boolean(
+        this.showForceUserRevokeButton
+        && this.forceRevokeUserPermissions.length
+        && this.forceRevokeTargetUser
+      );
+    },
+    forceRevokeDisabledReason() {
+      if (this.canForceRevokeByUser) return '';
+      if (!this.forceRevokeTargetUser) {
+        return this.state.subjectType === 'GROUP'
+          ? '组选中时需要先指定校验用户，才能按用户强制回收。'
+          : '请先选择目标用户，再执行强制回收。';
+      }
+      if (!this.forceRevokeAllPermissionRows.length) {
+        return `当前用户 ${this.forceRevokeTargetUser} 暂无可回收的 live 或 DGA 记录权限，请先刷新权限校验。`;
+      }
+      if (!this.forceRevokeUserPermissions.length && this.forceRevokeInheritedPermissionCount) {
+        return `当前用户 ${this.forceRevokeTargetUser} 的权限均继承自 LDAP 组，不能按用户强制回收；请回收组绑定或组权限。`;
+      }
+      return `当前用户 ${this.forceRevokeTargetUser} 暂无可按用户直接回收的权限。`;
+    },
+    forceRevokeUserHint() {
+      if (this.forceRevokeDisabledReason) {
+        return `管理员操作不可用：${this.forceRevokeDisabledReason}`;
+      }
+      if (this.forceRevokeInheritedPermissionCount) {
+        return `管理员操作：将直接按用户 ${this.forceRevokeTargetUser} 回收可选权限；已排除 ${this.forceRevokeInheritedPermissionCount} 项 LDAP 组继承权限。`;
+      }
+      return `管理员操作：将直接按用户 ${this.forceRevokeTargetUser} 回收所选用户已有权限，不依赖角色绑定状态。`;
     },
     canSubmitDirect() {
       if (this.state.subjectType !== 'USER' || !this.state.subjectName) return false;
@@ -1070,9 +1298,19 @@ export default {
     },
     previewStatusLabel(status) {
       if (status === 'MATCHED') return '一致';
-      if (status === 'LIVE_ONLY') return '仅 live';
-      if (status === 'RECORDED_ONLY') return '仅 recorded';
+      if (status === 'LIVE_ONLY') return '仅后端存在';
+      if (status === 'RECORDED_ONLY') return '仅 DGA 记录';
       return status || '-';
+    },
+    assignmentSyncStatusLabel(status) {
+      const normalized = String(status || 'UNKNOWN').toUpperCase();
+      if (normalized === 'SUCCESS') return '已下发';
+      if (normalized === 'LOCAL_ONLY') return '仅绑定范围';
+      if (normalized === 'PENDING_GROUP_MAPPING') return '待组映射';
+      if (normalized === 'FAILED') return '下发失败';
+      if (normalized === 'REVOKED') return '已回收';
+      if (normalized === 'LOCAL_REVOKED') return '本地已回收';
+      return normalized;
     },
     groupNameOf(value) {
       if (value == null) return '';
@@ -1103,6 +1341,43 @@ export default {
       const removeKeys = new Set(this.filteredSubsetRolePermissions.map(item => permissionKey(item)));
       const existing = Array.isArray(this.state.selectedRolePermissionKeys) ? this.state.selectedRolePermissionKeys : [];
       this.update('selectedRolePermissionKeys', existing.filter(item => !removeKeys.has(item)));
+    },
+    openForceRevokeModal() {
+      this.forceRevokeKeyword = '';
+      this.forceRevokePermissionFilter = 'ALL';
+      this.forceRevokeStatusFilter = 'ALL';
+      this.restoreCurrentForceRevokeSelection();
+      this.forceRevokeModalVisible = true;
+    },
+    closeForceRevokeModal() {
+      this.forceRevokeModalVisible = false;
+    },
+    restoreCurrentForceRevokeSelection() {
+      this.forceRevokePermissionKeys = this.forceRevokeUserPermissions.map(item => permissionKey(item));
+    },
+    selectFilteredForceRevokePermissions() {
+      const existing = Array.isArray(this.forceRevokePermissionKeys) ? this.forceRevokePermissionKeys : [];
+      const additions = this.filteredForceRevokePermissions.map(item => permissionKey(item));
+      this.forceRevokePermissionKeys = Array.from(new Set([...existing, ...additions]));
+    },
+    clearFilteredForceRevokePermissions() {
+      const removeKeys = new Set(this.filteredForceRevokePermissions.map(item => permissionKey(item)));
+      const existing = Array.isArray(this.forceRevokePermissionKeys) ? this.forceRevokePermissionKeys : [];
+      this.forceRevokePermissionKeys = existing.filter(item => !removeKeys.has(item));
+    },
+    confirmForceRevokeUser() {
+      const selectedKeys = new Set(this.forceRevokePermissionKeys || []);
+      const permissions = this.forceRevokeUserPermissions.filter(item => selectedKeys.has(permissionKey(item)));
+      if (!permissions.length) {
+        return;
+      }
+      this.$emit('force-revoke-user', { permissions });
+      this.forceRevokeModalVisible = false;
+    },
+    forceRevokePermissionText(item) {
+      const database = item?.databaseName || '*';
+      const table = item?.tableName ? `.${item.tableName}` : '.*';
+      return `${database}${table} ${item?.permission || ''}`;
     },
     update(field, value) {
       this.$emit('change', { field, value });
@@ -1380,6 +1655,102 @@ export default {
 }
 .execute-section .action-row {
   margin-top: 18px;
+}
+.force-revoke-action-wrap,
+.historical-adoption-action-wrap {
+  display: inline-flex;
+}
+.admin-force-hint,
+.historical-adoption-hint {
+  margin-top: 10px;
+  color: #8c6d1f;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.historical-adoption-hint {
+  color: #175cd3;
+}
+.force-revoke-alert {
+  margin-bottom: 12px;
+}
+.force-revoke-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 12px;
+}
+.summary-chip {
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #ffe0b2;
+  border-radius: 10px;
+  background: #fffaf0;
+}
+.summary-chip span {
+  display: block;
+  color: #8a6d3b;
+  font-size: 12px;
+}
+.summary-chip strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  color: #1f2d3d;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.force-revoke-toolbar,
+.force-revoke-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+.force-revoke-toolbar {
+  margin-bottom: 10px;
+}
+.force-revoke-search {
+  flex: 1;
+}
+.force-revoke-filter {
+  width: 140px;
+}
+.force-revoke-status-filter {
+  width: 150px;
+}
+.force-revoke-actions {
+  margin-bottom: 12px;
+  color: #667085;
+  font-size: 12px;
+}
+.force-revoke-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.force-revoke-empty {
+  padding: 24px 0;
+  border: 1px dashed #e7edf5;
+  border-radius: 10px;
+  background: #fbfdff;
+}
+.force-revoke-permission-list {
+  display: grid;
+  max-height: 360px;
+  overflow-y: auto;
+  gap: 8px;
+  padding: 2px 4px 2px 0;
+}
+.force-revoke-permission-item {
+  display: flex;
+  align-items: center;
+  min-height: 40px;
+  margin-left: 0;
+  padding: 8px 10px;
+  border: 1px solid #edf0f5;
+  border-radius: 10px;
+  background: #fff;
 }
 .verification-section {
   background: #f8fbff;

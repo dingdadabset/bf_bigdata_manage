@@ -1,18 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import {
+  adoptionStatusColor,
+  adoptionStatusLabel,
   allowedSubjectTypes,
   batchActionText,
   batchStatusColor,
   boundRoleMeta,
   canCreateProviderUser,
+  defaultHistoricalAdoptionKeys,
   defaultSubjectType,
   findMatchingAssignments,
   hasUsableRoleAssignment,
+  historicalAdoptionNeedsExtraAcknowledgement,
+  historicalAdoptionNeedsGroupAcknowledgement,
+  historicalAdoptionNeedsPartialAcknowledgement,
+  historicalAdoptionNeedsRoleMissingAcknowledgement,
   identityMode,
   importMode,
   isBoundRole,
   parseBatchUsers,
   permissionKey,
+  reconciliationStatusColor,
+  reconciliationStatusLabel,
   rolePermissionShortText,
   rolePermissionText,
   shouldShowLdapGroupInput,
@@ -93,7 +102,7 @@ describe('authorizationCenterHelpers', () => {
     const roleView = {
       assignments: [
         { subjectType: 'USER', subjectName: 'alice', authBackend: 'SENTRY', backendSyncStatus: 'SUCCESS' },
-        { subjectType: 'GROUP', subjectName: 'analytics', authBackend: 'SENTRY', backendSyncStatus: 'PENDING_GROUP_MAPPING' },
+        { subjectType: 'GROUP', subjectName: 'analytics', authBackend: 'SENTRY', backendSyncStatus: 'LOCAL_ONLY' },
         { subjectType: 'GROUP', subjectName: 'finance', authBackend: 'SENTRY', backendSyncStatus: 'FAILED' }
       ]
     };
@@ -217,5 +226,50 @@ describe('authorizationCenterHelpers', () => {
     expect(supportsRoleSubsetGrant(ldapCapability, 'GROUP')).toBe(true);
     expect(identityMode(sqlCapability)).toBe('AUTH_BACKEND');
     expect(userSourceLabel(sqlCapability)).toBe('StarRocks 用户');
+  });
+
+  it('maps historical adoption statuses to display labels and colors', () => {
+    expect(reconciliationStatusLabel('EXACT_MATCH')).toBe('完全一致');
+    expect(reconciliationStatusColor('EXACT_MATCH')).toBe('green');
+    expect(reconciliationStatusLabel('PARTIAL_OVERLAP')).toBe('部分重叠');
+    expect(reconciliationStatusColor('PARTIAL_OVERLAP')).toBe('orange');
+    expect(reconciliationStatusColor('GROUP_INHERITED_ONLY')).toBe('purple');
+    expect(adoptionStatusLabel('DIRECT_MATCH')).toBe('可直接接管');
+    expect(adoptionStatusColor('DIRECT_MATCH')).toBe('green');
+    expect(adoptionStatusLabel('GROUP_INHERITED_MATCH')).toBe('LDAP 组继承');
+    expect(adoptionStatusColor('GROUP_INHERITED_MATCH')).toBe('purple');
+  });
+
+  it('selects only direct adoptable historical permissions by default', () => {
+    const preview = {
+      items: [
+        { key: 'direct', adoptable: true, adoptionStatus: 'DIRECT_MATCH' },
+        { key: 'group', adoptable: true, adoptionStatus: 'GROUP_INHERITED_MATCH' },
+        { key: 'missing', adoptable: false, adoptionStatus: 'ROLE_MISSING_LIVE' },
+        { key: 'recorded', adoptable: true, adoptionStatus: 'ALREADY_RECORDED' }
+      ]
+    };
+
+    expect(defaultHistoricalAdoptionKeys(preview)).toEqual(['direct']);
+  });
+
+  it('detects historical adoption acknowledgement requirements', () => {
+    const preview = {
+      reconciliationStatus: 'PARTIAL_OVERLAP',
+      summary: {
+        roleMissingLiveCount: 1,
+        liveExtraDirectCount: 1
+      },
+      items: [
+        { key: 'direct', source: 'USER', adoptionStatus: 'DIRECT_MATCH' },
+        { key: 'group', source: 'GROUP_ROLE', adoptionStatus: 'GROUP_INHERITED_MATCH' }
+      ]
+    };
+
+    expect(historicalAdoptionNeedsRoleMissingAcknowledgement(preview)).toBe(true);
+    expect(historicalAdoptionNeedsExtraAcknowledgement(preview)).toBe(true);
+    expect(historicalAdoptionNeedsPartialAcknowledgement(preview)).toBe(true);
+    expect(historicalAdoptionNeedsGroupAcknowledgement(preview, ['direct'])).toBe(false);
+    expect(historicalAdoptionNeedsGroupAcknowledgement(preview, ['group'])).toBe(true);
   });
 });

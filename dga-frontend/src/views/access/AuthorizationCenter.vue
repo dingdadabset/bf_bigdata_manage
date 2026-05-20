@@ -77,6 +77,7 @@
           @delete-role="deleteRole"
           @add-role-permissions="addRolePermissions"
           @delete-role-permission="deleteRolePermission"
+          @sync-backend-roles="openBackendRoleSyncModal"
         />
       </div>
     </div>
@@ -100,6 +101,7 @@
           @delete-role="deleteRole"
           @add-role-permissions="addRolePermissions"
           @delete-role-permission="deleteRolePermission"
+          @sync-backend-roles="openBackendRoleSyncModal"
         />
       </a-col>
 
@@ -135,6 +137,8 @@
           @revoke-role="revokeRole"
           @grant-subset="grantSubset"
           @revoke-subset="revokeSubset"
+          @force-revoke-user="forceRevokeByUser"
+          @preview-historical-adoption="previewHistoricalAdoption"
           @grant-direct="grantDirect"
           @revoke-direct="revokeDirect"
           @dry-run-batch="dryRunBatch"
@@ -146,22 +150,92 @@
         />
       </a-col>
     </a-row>
+
+    <a-modal
+      :visible="backendRoleSync.visible"
+      title="同步后端角色"
+      width="860px"
+      :confirm-loading="loading.submitting"
+      ok-text="接管选中角色"
+      @ok="importBackendRoles"
+      @cancel="backendRoleSync.visible = false"
+    >
+      <a-alert
+        class="backend-sync-alert"
+        type="info"
+        show-icon
+        message="非破坏性接管"
+        description="此操作只读取 CDH/Sentry 后端已有角色并写入 DGA 本地元数据，不会创建、删除、授权或回收后端权限。"
+      />
+      <div class="backend-sync-toolbar">
+        <a-input-search
+          v-model="backendRoleSync.keyword"
+          placeholder="搜索后端角色编码"
+          allow-clear
+          style="max-width: 320px"
+          @search="loadBackendRoles"
+        />
+        <a-checkbox v-model="backendRoleSync.importPermissions">导入权限范围</a-checkbox>
+        <a-checkbox v-model="backendRoleSync.importAssignments">导入组绑定关系</a-checkbox>
+        <a-button icon="reload" :loading="backendRoleSync.loading" @click="loadBackendRoles">刷新</a-button>
+      </div>
+      <a-table
+        size="small"
+        row-key="roleCode"
+        :loading="backendRoleSync.loading"
+        :columns="backendRoleColumns"
+        :data-source="backendRoleSync.roles"
+        :pagination="{ pageSize: 8 }"
+        :row-selection="{ selectedRowKeys: backendRoleSync.selectedRoleCodes, onChange: onBackendRoleSelectionChange }"
+      >
+        <template slot="roleCode" slot-scope="text, record">
+          <div class="backend-role-code">{{ record.roleCode }}</div>
+          <div class="backend-role-subtitle">{{ record.authBackend || state.selectedAuthBackend }} / {{ record.engineType || capabilityEngineTypeLabel }}</div>
+        </template>
+        <template slot="counts" slot-scope="text, record">
+          <a-tag color="blue">权限 {{ Array.isArray(record.permissions) ? record.permissions.length : 0 }}</a-tag>
+          <a-tag color="green">组 {{ Array.isArray(record.groupNames) ? record.groupNames.length : 0 }}</a-tag>
+        </template>
+        <template slot="localStatus" slot-scope="text, record">
+          <a-tag :color="record.localExists ? 'green' : 'orange'">{{ record.localExists ? '已存在' : '后端已有' }}</a-tag>
+        </template>
+        <template slot="warnings" slot-scope="text, record">
+          <span v-if="!record.warnings || !record.warnings.length">-</span>
+          <a-tooltip v-else :title="record.warnings.join('；')">
+            <a-tag color="orange">{{ record.warnings.length }} 条提示</a-tag>
+          </a-tooltip>
+        </template>
+      </a-table>
+    </a-modal>
+
+    <historical-permission-adoption-modal
+      :visible="historicalAdoption.visible"
+      :preview="historicalAdoption.preview"
+      :loading="loading.submitting"
+      :selected-keys="historicalAdoption.selectedKeys"
+      @change-selected-keys="onHistoricalAdoptionSelectionChange"
+      @confirm="confirmHistoricalAdoption"
+      @cancel="closeHistoricalAdoptionModal"
+    />
   </div>
 </template>
 
 <script>
 import axios from 'axios';
 import AuthorizationWorkbenchFilters from './components/AuthorizationWorkbenchFilters.vue';
+import HistoricalPermissionAdoptionModal from './components/HistoricalPermissionAdoptionModal.vue';
 import RoleCatalogPanel from './components/RoleCatalogPanel.vue';
 import RoleGrantWorkbench from './components/RoleGrantWorkbench.vue';
 import {
   allowedSubjectTypes,
   boundRoleMeta,
+  defaultHistoricalAdoptionKeys,
   defaultSubjectType,
   hasUsableRoleAssignment,
   operationModeLabel,
   parseBatchUsers,
   permissionKey,
+  principalOptionName,
   rolePermissionSelection,
   supportsDirectGrant,
   supportsRoles,
@@ -174,6 +248,7 @@ export default {
   name: 'AuthorizationCenter',
   components: {
     AuthorizationWorkbenchFilters,
+    HistoricalPermissionAdoptionModal,
     RoleCatalogPanel,
     RoleGrantWorkbench
   },
@@ -240,6 +315,20 @@ export default {
         approver: '',
         expiresAt: '',
         riskLevel: 'LOW'
+      },
+      backendRoleSync: {
+        visible: false,
+        loading: false,
+        keyword: '',
+        roles: [],
+        selectedRoleCodes: [],
+        importPermissions: true,
+        importAssignments: true
+      },
+      historicalAdoption: {
+        visible: false,
+        preview: null,
+        selectedKeys: []
       }
     };
   },
@@ -365,6 +454,17 @@ export default {
     },
     capabilityReady() {
       return Boolean(this.capability && this.capability.status === 'READY');
+    },
+    capabilityEngineTypeLabel() {
+      return this.capability && this.capability.engineType ? this.capability.engineType : '-';
+    },
+    backendRoleColumns() {
+      return [
+        { title: '后端角色', dataIndex: 'roleCode', scopedSlots: { customRender: 'roleCode' } },
+        { title: '范围统计', key: 'counts', width: 170, scopedSlots: { customRender: 'counts' } },
+        { title: '本地状态', dataIndex: 'localStatus', width: 110, scopedSlots: { customRender: 'localStatus' } },
+        { title: '提示', key: 'warnings', width: 120, scopedSlots: { customRender: 'warnings' } }
+      ];
     }
   },
   created() {
@@ -398,6 +498,163 @@ export default {
       if (!this.selectedRoleView?.role || !this.$refs.roleCatalogPanel) return;
       this.$refs.roleCatalogPanel.openPermissionModal();
       this.activeRoleTab = 'scope';
+    },
+    async openBackendRoleSyncModal() {
+      if (!this.state.selectedCluster || !this.state.selectedAuthBackend) {
+        this.$message.warning('请先选择集群和授权后端');
+        return;
+      }
+      if (String(this.state.selectedAuthBackend || '').trim().toUpperCase() !== 'SENTRY') {
+        this.$message.info('当前授权后端没有原生角色盘点能力，Ranger 角色请在 DGA 本地维护，授权时会物化为 Ranger 策略。');
+        return;
+      }
+      this.backendRoleSync.visible = true;
+      this.backendRoleSync.keyword = '';
+      this.backendRoleSync.selectedRoleCodes = [];
+      this.backendRoleSync.importPermissions = true;
+      this.backendRoleSync.importAssignments = true;
+      await this.loadBackendRoles();
+    },
+    async loadBackendRoles() {
+      if (!this.state.selectedCluster || !this.state.selectedAuthBackend) return;
+      this.backendRoleSync.loading = true;
+      try {
+        const res = await axios.get('/api/access/roles/backend', {
+          params: {
+            cluster: this.state.selectedCluster,
+            authBackend: this.state.selectedAuthBackend,
+            keyword: this.backendRoleSync.keyword || undefined,
+            includePermissions: this.backendRoleSync.importPermissions,
+            includeAssignments: this.backendRoleSync.importAssignments
+          }
+        });
+        this.backendRoleSync.roles = Array.isArray(res.data) ? res.data : [];
+        const available = new Set(this.backendRoleSync.roles.map(item => item.roleCode));
+        this.backendRoleSync.selectedRoleCodes = this.backendRoleSync.selectedRoleCodes.filter(roleCode => available.has(roleCode));
+      } catch (e) {
+        this.backendRoleSync.roles = [];
+        this.backendRoleSync.selectedRoleCodes = [];
+        this.$message.error(this.messageOf(e, '同步后端角色列表失败'));
+      } finally {
+        this.backendRoleSync.loading = false;
+      }
+    },
+    onBackendRoleSelectionChange(selectedRoleCodes) {
+      this.backendRoleSync.selectedRoleCodes = selectedRoleCodes || [];
+    },
+    async importBackendRoles() {
+      if (!this.backendRoleSync.selectedRoleCodes.length) {
+        this.$message.warning('请选择要接管的后端角色');
+        return;
+      }
+      this.loading.submitting = true;
+      try {
+        const res = await axios.post('/api/access/roles/backend/import', {
+          cluster: this.state.selectedCluster,
+          authBackend: this.state.selectedAuthBackend,
+          roleCodes: this.backendRoleSync.selectedRoleCodes,
+          importPermissions: this.backendRoleSync.importPermissions,
+          importAssignments: this.backendRoleSync.importAssignments
+        });
+        const result = res.data || {};
+        this.$message.success(`后端角色接管完成：新增 ${result.created || 0}，更新 ${result.updated || 0}，跳过 ${result.skipped || 0}`);
+        const preferredRoleCode = this.backendRoleSync.selectedRoleCodes[0];
+        this.backendRoleSync.visible = false;
+        await this.loadRoles();
+        if (preferredRoleCode) {
+          await this.selectRole(preferredRoleCode);
+        }
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '接管后端角色失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    historicalAdoptionUsername() {
+      return this.state.subjectType === 'USER'
+        ? String(this.state.subjectName || '').trim()
+        : String(this.state.verificationUser || '').trim();
+    },
+    async previewHistoricalAdoption() {
+      if (!this.selectedRoleCode || !this.state.subjectName) {
+        this.$message.warning('请先选择角色和授权对象');
+        return;
+      }
+      const username = this.historicalAdoptionUsername();
+      if (!username) {
+        this.$message.warning(this.state.subjectType === 'GROUP' ? '请先选择校验用户，再接管历史权限' : '请先选择目标用户');
+        return;
+      }
+      if (String(this.state.selectedAuthBackend || '').trim().toUpperCase() !== 'SENTRY') {
+        this.$message.info('历史权限接管当前仅支持 Hive + Sentry。');
+        return;
+      }
+      this.loading.submitting = true;
+      try {
+        const res = await axios.post(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/historical-adoption/preview`, {
+          username,
+          cluster: this.state.selectedCluster,
+          authBackend: this.state.selectedAuthBackend,
+          subjectType: this.state.subjectType,
+          subjectName: this.state.subjectName,
+          includeGroupInherited: true
+        });
+        const preview = res.data || null;
+        this.historicalAdoption.preview = preview;
+        this.historicalAdoption.selectedKeys = defaultHistoricalAdoptionKeys(preview);
+        this.historicalAdoption.visible = true;
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '历史权限接管预览失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
+    onHistoricalAdoptionSelectionChange(keys) {
+      this.historicalAdoption.selectedKeys = Array.isArray(keys) ? keys : [];
+    },
+    closeHistoricalAdoptionModal() {
+      this.historicalAdoption.visible = false;
+    },
+    async confirmHistoricalAdoption(payload) {
+      const preview = this.historicalAdoption.preview;
+      const selectedKeys = new Set(payload?.selectedKeys || []);
+      const selectedItems = (preview?.items || []).filter(item => selectedKeys.has(item.key));
+      if (!selectedItems.length) {
+        this.$message.warning('请选择至少一项可接管权限');
+        return;
+      }
+      this.loading.submitting = true;
+      try {
+        const acknowledgements = payload?.acknowledgements || {};
+        const res = await axios.post(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/historical-adoption`, {
+          username: this.historicalAdoptionUsername(),
+          cluster: this.state.selectedCluster,
+          authBackend: this.state.selectedAuthBackend,
+          subjectType: this.state.subjectType,
+          subjectName: this.state.subjectName,
+          rolePermissions: selectedItems.map(rolePermissionSelection),
+          expectedSnapshotHash: preview?.snapshotHash || '',
+          bindRoleLocalOnly: true,
+          adoptDirectUserPermissions: true,
+          adoptUserRolePermissions: true,
+          adoptGroupInheritedPermissions: Boolean(acknowledgements.groupInherited),
+          acknowledgeGroupInherited: Boolean(acknowledgements.groupInherited),
+          allowPartialAdoption: Boolean(acknowledgements.partial),
+          allowSupersetExtrasUnmanaged: Boolean(acknowledgements.extra),
+          allowRoleMissingBackendPermissions: Boolean(acknowledgements.roleMissing),
+          adoptionReason: payload?.adoptionReason || '',
+          ticketNo: payload?.ticketNo || '',
+          approver: payload?.approver || ''
+        });
+        const result = res.data || {};
+        this.$message.success(`历史权限接管完成：接管 ${result.adoptedCount || 0}，跳过 ${result.skippedCount || 0}，阻断 ${result.blockedCount || 0}`);
+        this.historicalAdoption.visible = false;
+        await this.afterMutation();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '历史权限接管失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
     },
     deleteSelectedRole() {
       if (!this.isRoleManagement) return;
@@ -455,6 +712,7 @@ export default {
         return;
       }
       if (field === 'subjectType') {
+        const previousSubjectNameForType = this.state.subjectName;
         this.state.subjectType = value || 'USER';
         this.state.subjectName = '';
         this.state.verificationUser = verificationUserRequired(this.state.subjectType)
@@ -462,7 +720,18 @@ export default {
           : this.state.verificationUser;
         this.verificationSnapshot = null;
         this.subjectContext = { loading: false, roles: [], ldapProfile: null };
-        await this.loadPrincipals();
+        await Promise.all([
+          this.loadPrincipals(),
+          this.loadVerificationPrincipals()
+        ]);
+        if (this.state.subjectType === 'USER' && previousSubjectNameForType) {
+          this.state.subjectName = previousSubjectNameForType;
+          this.state.verificationUser = previousSubjectNameForType;
+          await Promise.all([
+            this.loadSubjectContext(),
+            this.loadVerificationIfNeeded()
+          ]);
+        }
         return;
       }
       if (field === 'subjectName') {
@@ -470,8 +739,18 @@ export default {
         const redirected = await this.tryRedirectUserToLdapGroupSubject(nextSubjectName, previousSubjectName);
         if (redirected) return;
         this.state.subjectName = nextSubjectName;
+        if (!nextSubjectName) {
+          this.state.verificationUser = '';
+          this.verificationSnapshot = null;
+          this.subjectContext = { loading: false, roles: [], ldapProfile: null };
+          return;
+        }
         if (this.state.subjectType === 'USER' && (!this.state.verificationUser || this.state.verificationUser === previousSubjectName)) {
           this.state.verificationUser = this.state.subjectName;
+        }
+        if (this.state.subjectType === 'GROUP') {
+          await this.loadVerificationPrincipals();
+          this.applyGroupSubjectToTargetUser(previousSubjectName);
         }
         await Promise.all([
           this.loadSubjectContext(),
@@ -480,11 +759,20 @@ export default {
         return;
       }
       if (field === 'verificationUser') {
-        this.state.verificationUser = value || '';
-        await Promise.all([
-          this.loadSubjectContext(),
-          this.loadVerificationIfNeeded()
-        ]);
+        const nextVerificationUser = value || '';
+        this.state.verificationUser = nextVerificationUser;
+        this.verificationSnapshot = null;
+        await this.loadVerificationIfNeeded();
+        return;
+      }
+      if (field === 'subjectFromVerificationUser') {
+        const filled = await this.applyTargetUserToSubject(value);
+        if (filled) {
+          await Promise.all([
+            this.loadSubjectContext(),
+            this.loadVerificationIfNeeded()
+          ]);
+        }
         return;
       }
       if (field === 'scopeLevel') {
@@ -507,6 +795,70 @@ export default {
       }
       this.state[field] = value;
     },
+    applyGroupSubjectToTargetUser(previousSubjectName = '') {
+      if (this.state.subjectType !== 'GROUP' || !this.state.subjectName) {
+        return false;
+      }
+      const currentUser = String(this.state.verificationUser || '').trim();
+      const groupUsers = this.verificationPrincipals || [];
+      if (currentUser && this.findPrincipalOption(groupUsers, currentUser)) {
+        return false;
+      }
+      const previousUser = String(previousSubjectName || '').trim();
+      if (previousUser && this.findPrincipalOption(groupUsers, previousUser)) {
+        this.state.verificationUser = previousUser;
+        return true;
+      }
+      if (groupUsers.length === 1) {
+        const onlyUser = principalOptionName(groupUsers[0]);
+        if (onlyUser) {
+          this.state.verificationUser = onlyUser;
+          this.$message.info(`已根据授权组 ${this.state.subjectName} 自动填入目标用户 ${onlyUser}`);
+          return true;
+        }
+      }
+      if (currentUser && !this.findPrincipalOption(groupUsers, currentUser)) {
+        this.state.verificationUser = '';
+      }
+      return false;
+    },
+    async applyTargetUserToSubject(username) {
+      const normalizedUsername = String(username || '').trim();
+      if (!normalizedUsername) {
+        return false;
+      }
+      if (this.shouldPreferGroupSubject()) {
+        const userPrincipal = this.findPrincipalOption(this.verificationPrincipals, normalizedUsername)
+          || this.findPrincipalOption(this.principals, normalizedUsername);
+        const principalGroup = this.resolvePrincipalGroupName(userPrincipal);
+        const ldapProfileGroup = principalGroup ? '' : await this.loadUserLdapPrimaryGroup(normalizedUsername);
+        const targetGroup = principalGroup || ldapProfileGroup;
+        if (!targetGroup) {
+          this.$message.warning(`未读取到目标用户 ${normalizedUsername} 的 LDAP 组，请手动选择授权对象`);
+          return false;
+        }
+        const subjectChanged = this.state.subjectType !== 'GROUP' || this.state.subjectName !== targetGroup;
+        this.state.subjectType = 'GROUP';
+        this.state.subjectName = targetGroup;
+        this.verificationSnapshot = null;
+        if (subjectChanged) {
+          await Promise.all([
+            this.loadPrincipals(),
+            this.loadVerificationPrincipals()
+          ]);
+          this.$message.info(`已根据目标用户 ${normalizedUsername} 填入 LDAP 组 ${targetGroup} 作为授权对象`);
+        }
+        return true;
+      }
+      const subjectChanged = this.state.subjectType !== 'USER' || this.state.subjectName !== normalizedUsername;
+      this.state.subjectType = 'USER';
+      this.state.subjectName = normalizedUsername;
+      if (subjectChanged) {
+        this.verificationSnapshot = null;
+        await this.loadPrincipals();
+      }
+      return true;
+    },
     async tryRedirectUserToLdapGroupSubject(username, previousSubjectName) {
       const normalizedUsername = String(username || '').trim();
       if (!normalizedUsername || this.state.subjectType !== 'USER' || !this.shouldPreferGroupSubject()) {
@@ -516,8 +868,7 @@ export default {
         || this.findPrincipalOption(this.verificationPrincipals, normalizedUsername);
       const principalGroup = this.resolvePrincipalGroupName(userPrincipal);
       const ldapProfileGroup = principalGroup ? '' : await this.loadUserLdapPrimaryGroup(normalizedUsername);
-      const fallbackRoleGroup = this.selectedRoleGroupName;
-      const targetGroup = principalGroup || ldapProfileGroup || fallbackRoleGroup;
+      const targetGroup = principalGroup || ldapProfileGroup;
       if (!targetGroup) {
         return false;
       }
@@ -525,16 +876,16 @@ export default {
       this.state.subjectType = 'GROUP';
       this.state.subjectName = targetGroup;
       this.verificationSnapshot = null;
-      await this.loadPrincipals();
+      await Promise.all([
+        this.loadPrincipals(),
+        this.loadVerificationPrincipals()
+      ]);
       await Promise.all([
         this.loadSubjectContext(),
         this.loadVerificationIfNeeded()
       ]);
-      const reason = principalGroup || ldapProfileGroup
-        ? `已使用用户所属组 ${targetGroup} 作为授权对象，${normalizedUsername} 作为校验用户`
-        : `未读取到该用户 LDAP 组，已临时使用角色绑定组 ${targetGroup}`;
       if (normalizedUsername !== previousSubjectName) {
-        this.$message.info(reason);
+        this.$message.info(`已使用用户所属 LDAP 组 ${targetGroup} 作为授权对象，${normalizedUsername} 作为校验用户`);
       }
       return true;
     },
@@ -622,7 +973,7 @@ export default {
       const names = [];
       const pushName = value => {
         if (value == null) return;
-        const name = this.resolvePrincipalGroupName(value && typeof value === 'object' ? value : { groupName: value });
+        const name = this.resolvePrincipalGroupName(value && typeof value === 'object' ? value : { groupName: value }, true);
         if (name && !names.some(item => item.toLowerCase() === name.toLowerCase())) {
           names.push(name);
         }
@@ -638,7 +989,8 @@ export default {
     },
     async loadUserLdapPrimaryGroup(username) {
       const profile = await this.loadUserLdapProfile(username);
-      return this.resolvePrincipalGroupName(profile || null);
+      const groups = this.profileGroupNames(profile);
+      return groups[0] || '';
     },
     async loadUserLdapProfile(username) {
       if (!username || !this.state.selectedCluster) return '';
@@ -658,7 +1010,7 @@ export default {
       return Boolean(this.capability.requiresLdap)
         || /LDAP|SENTRY|HIVE/i.test(`${this.capability.endpointType || ''} ${this.capability.authBackend || ''} ${this.capability.engineType || ''}`);
     },
-    resolvePrincipalGroupName(principal) {
+    resolvePrincipalGroupName(principal, allowNameFallback = false) {
       if (!principal) return '';
       const nestedPrimary = principal.primaryGroup && typeof principal.primaryGroup === 'object'
         ? this.firstNonBlank(principal.primaryGroup.name, principal.primaryGroup.cn)
@@ -673,7 +1025,7 @@ export default {
             typeof principal.supplementaryGroups[0] === 'string' ? principal.supplementaryGroups[0] : ''
           )
         : '';
-      return this.firstNonBlank(
+      const explicitGroupName = this.firstNonBlank(
         principal.sentryGroup,
         principal.sentryGroupName,
         nestedLdap,
@@ -682,11 +1034,10 @@ export default {
         principal.primaryGroupName,
         nestedPrimary,
         firstSupplementary,
-        principal.defaultGroupName,
-        principal.name,
-        principal.cn,
-        principal.value
+        principal.defaultGroupName
       );
+      if (explicitGroupName || !allowNameFallback) return explicitGroupName;
+      return this.firstNonBlank(principal.name, principal.cn, principal.value);
     },
     async onClusterChanged() {
       this.backendOptions = [];
@@ -902,14 +1253,16 @@ export default {
         this.loading.roleDetail = false;
       }
     },
-    async fetchPrincipalOptions(subjectType) {
-      const res = await axios.get('/api/access/resources/principals', {
-        params: {
-          cluster: this.state.selectedCluster,
-          authBackend: this.state.selectedAuthBackend,
-          subjectType
-        }
-      });
+    async fetchPrincipalOptions(subjectType, groupName = '') {
+      const params = {
+        cluster: this.state.selectedCluster,
+        authBackend: this.state.selectedAuthBackend,
+        subjectType
+      };
+      if (groupName) {
+        params.groupName = groupName;
+      }
+      const res = await axios.get('/api/access/resources/principals', { params });
       return Array.isArray(res.data) ? res.data : [];
     },
     async loadPrincipals() {
@@ -934,7 +1287,12 @@ export default {
       }
       this.loading.verificationPrincipals = true;
       try {
-        this.verificationPrincipals = await this.fetchPrincipalOptions('USER');
+        const groupName = this.state.subjectType === 'GROUP' ? String(this.state.subjectName || '').trim() : '';
+        this.verificationPrincipals = await this.fetchPrincipalOptions('USER', groupName);
+        if (groupName && this.state.verificationUser && !this.findPrincipalOption(this.verificationPrincipals, this.state.verificationUser)) {
+          this.state.verificationUser = '';
+          this.verificationSnapshot = null;
+        }
       } catch (e) {
         this.verificationPrincipals = [];
         this.$message.error(this.messageOf(e, '加载验证用户候选失败'));
@@ -1200,6 +1558,38 @@ export default {
         this.loading.submitting = false;
       }
     },
+    async forceRevokeByUser({ permissions } = {}) {
+      const targetUser = this.state.subjectType === 'USER'
+        ? String(this.state.subjectName || '').trim()
+        : String(this.state.verificationUser || '').trim();
+      if (!targetUser) {
+        this.$message.warning(this.state.subjectType === 'GROUP' ? '请先选择校验用户，再执行按用户强制回收' : '请先选择目标用户');
+        return;
+      }
+      const selectedPermissions = Array.isArray(permissions) ? permissions : [];
+      const selections = selectedPermissions.map(rolePermissionSelection);
+      if (!selections.length) {
+        this.$message.warning('请先选择需要强制回收的权限');
+        return;
+      }
+      this.loading.submitting = true;
+      try {
+        await axios.post('/api/access/revokes/batch', {
+          username: targetUser,
+          cluster: this.state.selectedCluster,
+          authBackend: this.state.selectedAuthBackend,
+          grantMode: 'ADMIN_FORCE_USER',
+          forceUserRevoke: true,
+          rolePermissions: selections
+        });
+        this.$message.success(`已按用户 ${targetUser} 强制回收所选权限`);
+        await this.afterMutation();
+      } catch (e) {
+        this.$message.error(this.messageOf(e, '按用户强制回收失败'));
+      } finally {
+        this.loading.submitting = false;
+      }
+    },
     buildDirectPayload() {
       const payload = {
         username: this.state.subjectName,
@@ -1295,10 +1685,17 @@ export default {
       this.state.selectedRolePermissionKeys = uniqueRolePermissions(this.selectedRoleView).map(permissionKey);
     },
     async afterMutation() {
+      const currentRoleCode = this.selectedRoleCode;
       if (this.state.selectedCluster && this.state.selectedAuthBackend) {
         await this.loadRoles();
       }
-      await this.loadVerificationIfNeeded();
+      if (currentRoleCode) {
+        await this.loadRoleDetail(currentRoleCode);
+      }
+      await Promise.all([
+        this.loadSubjectContext(),
+        this.loadVerificationIfNeeded()
+      ]);
     },
     findPrincipalOption(options, name) {
       const target = String(name || '').trim().toLowerCase();
@@ -1326,9 +1723,30 @@ export default {
       return true;
     },
     messageOf(error, fallback) {
-      return error && error.response && error.response.data && error.response.data.message
+      const raw = error && error.response && error.response.data && error.response.data.message
         ? error.response.data.message
         : (error && error.message) || fallback;
+      return this.compactErrorMessage(raw, fallback);
+    },
+    compactErrorMessage(message, fallback) {
+      const text = String(message || fallback || '操作失败').replace(/\s+/g, ' ').trim();
+      if (!text) return fallback || '操作失败';
+      const roleMissingMatch = text.match(/Role\s+([A-Za-z0-9_\-]+)\s+(?:doesn't|does not)\s+exist/i);
+      if (roleMissingMatch) {
+        return `授权后端角色不存在：${roleMissingMatch[1]}。请先同步/创建该角色后再重试，或刷新角色目录确认后端状态。`;
+      }
+      if (/SentryNoSuchObjectException/i.test(text)) {
+        return '授权后端对象不存在，请刷新角色目录并确认 Sentry 中角色或授权对象仍存在。';
+      }
+      if (/Access denied|denied/i.test(text)) {
+        return '授权端点账号权限不足，请检查执行授权的服务账号权限。';
+      }
+      const concise = text
+        .replace(/Server Stacktrace:.*$/i, '')
+        .replace(/;\s*nested exception is.*$/i, '')
+        .replace(/；\s*根因:.*$/i, '')
+        .trim();
+      return concise.length > 180 ? `${concise.slice(0, 180)}...` : concise;
     },
     normalizeDateTimeInput(value) {
       if (!value) return null;
@@ -1381,6 +1799,25 @@ export default {
 }
 .context-panel {
   margin-bottom: 12px;
+}
+.backend-sync-alert {
+  margin-bottom: 12px;
+}
+.backend-sync-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.backend-role-code {
+  color: #1f2d3d;
+  font-weight: 600;
+}
+.backend-role-subtitle {
+  margin-top: 2px;
+  color: #667085;
+  font-size: 12px;
 }
 .flow-role-panel {
   display: grid;

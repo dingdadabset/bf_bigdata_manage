@@ -2,13 +2,21 @@ package com.dga.access.controller;
 
 import com.dga.access.dto.AccessRequest;
 import com.dga.access.dto.AuthRoleAssignmentRequest;
+import com.dga.access.dto.AuthRoleImportRequest;
+import com.dga.access.dto.AuthRoleImportResult;
 import com.dga.access.dto.AuthRolePermissionRequest;
 import com.dga.access.dto.AuthRoleRequest;
 import com.dga.access.dto.AuthRoleView;
+import com.dga.access.dto.BackendRoleInventoryRequest;
+import com.dga.access.dto.BackendRoleSnapshot;
 import com.dga.access.dto.BatchGrantRequest;
 import com.dga.access.dto.BatchRoleAssignmentRequest;
 import com.dga.access.dto.BatchRoleAssignmentResult;
 import com.dga.access.dto.CreateUserRequest;
+import com.dga.access.dto.HistoricalPermissionAdoptionPreview;
+import com.dga.access.dto.HistoricalPermissionAdoptionPreviewRequest;
+import com.dga.access.dto.HistoricalPermissionAdoptionRequest;
+import com.dga.access.dto.HistoricalPermissionAdoptionResult;
 import com.dga.access.dto.TableGrant;
 import com.dga.access.entity.AuthRolePermission;
 import com.dga.access.entity.DgaUser;
@@ -19,6 +27,7 @@ import com.dga.access.repository.DgaUserRepository;
 import com.dga.access.service.AdminGuard;
 import com.dga.access.service.AuthRoleService;
 import com.dga.access.service.DgaUserSchemaService;
+import com.dga.access.service.HistoricalPermissionAdoptionService;
 import com.dga.access.service.HiveAuthService;
 import com.dga.access.service.IpaHttpService;
 import com.dga.access.service.IpaService;
@@ -136,6 +145,9 @@ public class AccessController {
     @Autowired
     private AuthRoleService authRoleService;
 
+    @Autowired
+    private HistoricalPermissionAdoptionService historicalPermissionAdoptionService;
+
     @PostMapping("/grant")
     public String grantAccess(@RequestBody AccessRequest request, HttpServletRequest httpRequest) {
         adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可执行授权操作");
@@ -189,6 +201,54 @@ public class AccessController {
     public List<AuthRoleView> listRoles(@RequestParam(required = false) String cluster,
                                         @RequestParam(required = false) String authBackend) {
         return authRoleService.listRoles(cluster, authBackend);
+    }
+
+    @GetMapping("/roles/backend")
+    @Operation(summary = "查询授权后端已有角色", description = "只读盘点授权后端已有角色、权限和可发现的组绑定。")
+    public List<BackendRoleSnapshot> listBackendRoles(@RequestParam String cluster,
+                                                      @RequestParam(required = false) String authBackend,
+                                                      @RequestParam(required = false) String keyword,
+                                                      @RequestParam(required = false) List<String> roleCodes,
+                                                      @RequestParam(defaultValue = "true") boolean includePermissions,
+                                                      @RequestParam(defaultValue = "true") boolean includeAssignments,
+                                                      HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可同步后端角色");
+        BackendRoleInventoryRequest inventoryRequest = new BackendRoleInventoryRequest();
+        inventoryRequest.setCluster(cluster);
+        inventoryRequest.setAuthBackend(authBackend);
+        inventoryRequest.setKeyword(keyword);
+        inventoryRequest.setRoleCodes(roleCodes);
+        inventoryRequest.setIncludePermissions(includePermissions);
+        inventoryRequest.setIncludeAssignments(includeAssignments);
+        return authRoleService.listBackendRoles(inventoryRequest);
+    }
+
+    @PostMapping("/roles/backend/import")
+    @Operation(summary = "接管授权后端已有角色", description = "把授权后端已有角色写入 DGA 本地元数据，不修改后端授权。")
+    public AuthRoleImportResult importBackendRoles(@RequestBody AuthRoleImportRequest request,
+                                                   HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可接管后端角色");
+        return authRoleService.importBackendRoles(request, currentOperator());
+    }
+
+    @PostMapping("/roles/{roleCode}/historical-adoption/preview")
+    @Operation(summary = "预览历史用户权限接管", description = "对比历史用户 live 权限与 DGA 角色范围，不修改后端授权。")
+    public HistoricalPermissionAdoptionPreview previewHistoricalPermissionAdoption(
+            @PathVariable String roleCode,
+            @RequestBody HistoricalPermissionAdoptionPreviewRequest request,
+            HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可预览历史权限接管");
+        return historicalPermissionAdoptionService.preview(roleCode, request);
+    }
+
+    @PostMapping("/roles/{roleCode}/historical-adoption")
+    @Operation(summary = "接管历史用户权限", description = "把历史用户已有后端权限写入 DGA 本地记录，不下发或回收后端权限。")
+    public HistoricalPermissionAdoptionResult adoptHistoricalPermissions(
+            @PathVariable String roleCode,
+            @RequestBody HistoricalPermissionAdoptionRequest request,
+            HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可接管历史权限");
+        return historicalPermissionAdoptionService.adopt(roleCode, request, currentOperator());
     }
 
     @PostMapping("/roles/{roleCode}/permissions")
@@ -1075,7 +1135,8 @@ public class AccessController {
     @GetMapping("/resources/principals")
     public List<Map<String, Object>> listResourcePrincipals(@RequestParam(required = false) String cluster,
                                                             @RequestParam(required = false) String authBackend,
-                                                            @RequestParam(required = false) String subjectType) {
+                                                            @RequestParam(required = false) String subjectType,
+                                                            @RequestParam(required = false) String groupName) {
         String normalizedSubjectType = firstNonBlank(subjectType, "USER").toUpperCase(Locale.ROOT);
         if ("GROUP".equals(normalizedSubjectType)) {
             return listGroupPrincipalOptions(cluster, authBackend);
@@ -1083,11 +1144,13 @@ public class AccessController {
         if (!"USER".equals(normalizedSubjectType)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "subjectType 仅支持 USER 或 GROUP");
         }
-        return listUserPrincipalOptions(cluster, authBackend);
+        return listUserPrincipalOptions(cluster, authBackend, groupName);
     }
 
-    private List<Map<String, Object>> listUserPrincipalOptions(String cluster, String authBackend) {
+    private List<Map<String, Object>> listUserPrincipalOptions(String cluster, String authBackend, String groupName) {
         TreeMap<String, Map<String, Object>> options = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        String normalizedGroupName = firstNonBlank(groupName);
+        Set<String> groupUsers = normalizedGroupName == null ? null : groupUsernames(cluster, normalizedGroupName);
         boolean backendRequiresExistingUser = authorizationService.requiresExistingBackendUser(cluster, authBackend);
         List<String> principals;
         try {
@@ -1102,6 +1165,9 @@ public class AccessController {
                 String username = firstNonBlank(principal);
                 if (username != null) {
                     backendUsers.add(lower(username));
+                    if (groupUsers != null && !groupUsers.contains(lower(username))) {
+                        continue;
+                    }
                     options.putIfAbsent(username, principalOption(username, "USER", rangerBackend ? "RANGER_USER" : "AUTH_BACKEND",
                             true, true, true, true, false, new ArrayList<>()));
                 }
@@ -1131,6 +1197,9 @@ public class AccessController {
             if (username == null) {
                 continue;
             }
+            if (groupUsers != null && !groupUsers.contains(lower(username)) && !userBelongsToGroupSnapshot(user, normalizedGroupName)) {
+                continue;
+            }
             boolean existsInBackend = backendUsers.contains(lower(username));
             boolean historical = hasRecordedAccess(username, cluster) || existsInBackend;
             boolean assignable = !backendRequiresExistingUser || existsInBackend;
@@ -1151,6 +1220,67 @@ public class AccessController {
                     warnings));
         }
         return new ArrayList<>(options.values());
+    }
+
+    private Set<String> groupUsernames(String cluster, String groupName) {
+        Set<String> usernames = new LinkedHashSet<>();
+        try {
+            Map<String, Object> group = ldapService.getPosixGroup(cluster, groupName);
+            addUsernames(usernames, group.get("boundUsers"));
+            addUsernames(usernames, group.get("members"));
+            addUsernames(usernames, group.get("primaryUsers"));
+        } catch (Exception e) {
+            System.err.println("LDAP group member lookup failed for " + groupName + ": " + e.getMessage());
+        }
+
+        String resolvedCluster = cluster;
+        if (cluster != null && !cluster.trim().isEmpty()) {
+            com.dga.cluster.entity.Cluster found = clusterRepository.findByClusterCode(cluster);
+            if (found != null && found.getClusterName() != null && !found.getClusterName().trim().isEmpty()) {
+                resolvedCluster = found.getClusterName();
+            }
+        }
+        for (DgaUser user : dgaUserRepository.findActiveUsersByCluster(resolvedCluster)) {
+            if (userBelongsToGroupSnapshot(user, groupName)) {
+                String username = firstNonBlank(user.getUsername());
+                if (username != null) {
+                    usernames.add(lower(username));
+                }
+            }
+        }
+        return usernames;
+    }
+
+    private void addUsernames(Set<String> usernames, Object value) {
+        if (value instanceof List) {
+            for (Object item : (List<?>) value) {
+                addUsernames(usernames, item);
+            }
+            return;
+        }
+        String username = value == null ? null : firstNonBlank(String.valueOf(value));
+        if (username != null) {
+            usernames.add(lower(username));
+        }
+    }
+
+    private boolean userBelongsToGroupSnapshot(DgaUser user, String groupName) {
+        if (user == null || groupName == null || groupName.trim().isEmpty()) {
+            return false;
+        }
+        if (sameText(user.getPrimaryGroupName(), groupName)) {
+            return true;
+        }
+        String supplementary = user.getSupplementaryGroups();
+        if (supplementary == null) {
+            return false;
+        }
+        for (String group : supplementary.split(",")) {
+            if (sameText(group, groupName)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private List<Map<String, Object>> listGroupPrincipalOptions(String cluster, String authBackend) {
@@ -1500,6 +1630,9 @@ public class AccessController {
         try {
             boolean hasResourceSelection = (request.getDatabases() != null && !request.getDatabases().isEmpty())
                     || (request.getTables() != null && !request.getTables().isEmpty());
+            if (isForceUserRevoke(request, grantMode)) {
+                return forceRevokeUserPermissions(request, requireText(username, "请选择目标用户"), operator, cluster, authBackend);
+            }
             if (!"DIRECT_EXCEPTION".equals(grantMode) && isRoleSubsetRequest(request)) {
                 return revokeRolePermissionSubset(request, username, operator, cluster, authBackend, subjectType, subjectName);
             }
@@ -1863,6 +1996,10 @@ public class AccessController {
         }
     }
 
+    private boolean isForceUserRevoke(BatchGrantRequest request, String grantMode) {
+        return Boolean.TRUE.equals(request.getForceUserRevoke()) || "ADMIN_FORCE_USER".equals(grantMode);
+    }
+
     private boolean isRoleSubsetRequest(BatchGrantRequest request) {
         return Boolean.TRUE.equals(request.getRoleSubsetMode())
                 || (request.getRolePermissions() != null && !request.getRolePermissions().isEmpty());
@@ -1881,13 +2018,20 @@ public class AccessController {
         List<AuthRolePermission> selected = validateRolePermissionSelections(roleCode, request.getRolePermissions(), authBackend);
         LocalDateTime expiresAt = parseOptionalDateTime(request.getExpiresAt());
         if ("GROUP".equals(normalizedSubjectType)) {
-            String derivedRoleCode = derivedSubsetRoleCode(roleCode, normalizedSubjectType, normalizedSubjectName, selected);
-            authorizationService.ensureRole(cluster, derivedRoleCode, authBackend);
-            for (AuthRolePermission permission : selected) {
-                authorizationService.grantPermissionToRole(cluster, derivedRoleCode,
-                        permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), authBackend);
+            if (assignmentUsesMaterializedPolicies(cluster, authBackend, normalizedSubjectType)) {
+                for (AuthRolePermission permission : selected) {
+                    authorizationService.grantPermissionToGroup(cluster, normalizedSubjectName,
+                            permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), authBackend);
+                }
+            } else {
+                String derivedRoleCode = derivedSubsetRoleCode(roleCode, normalizedSubjectType, normalizedSubjectName, selected);
+                authorizationService.ensureRole(cluster, derivedRoleCode, authBackend);
+                for (AuthRolePermission permission : selected) {
+                    authorizationService.grantPermissionToRole(cluster, derivedRoleCode,
+                            permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), authBackend);
+                }
+                authorizationService.assignRoleToGroup(cluster, derivedRoleCode, normalizedSubjectName, authBackend);
             }
-            authorizationService.assignRoleToGroup(cluster, derivedRoleCode, normalizedSubjectName, authBackend);
         } else if ("USER".equals(normalizedSubjectType)) {
             for (AuthRolePermission permission : selected) {
                 GrantCommand command = buildGrantCommand(normalizedSubjectName, cluster,
@@ -1923,6 +2067,23 @@ public class AccessController {
         }
         if ("GROUP".equalsIgnoreCase(subjectType)) {
             return capability.getGrant().isSupportsGroupRoleSubsetGrant();
+        }
+        return false;
+    }
+
+    private boolean assignmentUsesMaterializedPolicies(String cluster, String authBackend, String subjectType) {
+        AuthorizationCapability capability = authorizationService.capability(cluster, authBackend);
+        if (capability == null || capability.getRbac() == null) {
+            return false;
+        }
+        if (capability.getRbac().isUsesMaterializedPolicies()) {
+            return true;
+        }
+        if ("USER".equalsIgnoreCase(subjectType)) {
+            return capability.getRbac().isUserAssignmentUsesMaterializedPolicies();
+        }
+        if ("GROUP".equalsIgnoreCase(subjectType)) {
+            return capability.getRbac().isGroupAssignmentUsesMaterializedPolicies();
         }
         return false;
     }
@@ -1989,13 +2150,20 @@ public class AccessController {
         requireActiveRoleAssignment(roleCode, normalizedSubjectType, normalizedSubjectName, authBackend);
         List<AuthRolePermission> selected = validateRolePermissionSelections(roleCode, request.getRolePermissions(), authBackend);
         if ("GROUP".equals(normalizedSubjectType)) {
-            String derivedRoleCode = derivedSubsetRoleCode(roleCode, normalizedSubjectType, normalizedSubjectName, selected);
-            authorizationService.revokeRoleAssignment(cluster, derivedRoleCode, "GROUP", normalizedSubjectName, authBackend);
-            for (AuthRolePermission permission : selected) {
-                try {
-                    authorizationService.revokePermissionFromRole(cluster, derivedRoleCode,
+            if (assignmentUsesMaterializedPolicies(cluster, authBackend, normalizedSubjectType)) {
+                for (AuthRolePermission permission : selected) {
+                    authorizationService.revokePermissionFromGroup(cluster, normalizedSubjectName,
                             permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), authBackend);
-                } catch (Exception ignored) {
+                }
+            } else {
+                String derivedRoleCode = derivedSubsetRoleCode(roleCode, normalizedSubjectType, normalizedSubjectName, selected);
+                authorizationService.revokeRoleAssignment(cluster, derivedRoleCode, "GROUP", normalizedSubjectName, authBackend);
+                for (AuthRolePermission permission : selected) {
+                    try {
+                        authorizationService.revokePermissionFromRole(cluster, derivedRoleCode,
+                                permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), authBackend);
+                    } catch (Exception ignored) {
+                    }
                 }
             }
         } else if ("USER".equals(normalizedSubjectType)) {
@@ -2014,6 +2182,24 @@ public class AccessController {
         return "RBAC role subset access revoked: " + roleCode;
     }
 
+    private String forceRevokeUserPermissions(BatchGrantRequest request, String username, String operator,
+                                              String cluster, String authBackend) {
+        List<BatchGrantRequest.RolePermissionSelection> selections = exactRolePermissionsOrThrow(request.getRolePermissions(), authBackend);
+        for (BatchGrantRequest.RolePermissionSelection selection : selections) {
+            String permission = requireText(normalizePermissionValue(selection.getPermission()), "请选择权限类型");
+            String database = requireText(selection.getDatabaseName(), "请选择数据库");
+            String table = normalizeAuthTable(selection.getTableName());
+            RevokeCommand command = buildRevokeCommand(username, cluster, database, table, permission);
+            authorizationService.revoke(command, authBackend);
+            if (table == null) {
+                revokeDatabaseAccessRecords(username, cluster, database, permission, operator, "ADMIN_FORCE_USER");
+            } else {
+                revokeTableAccessRecords(username, cluster, database, table, permission, operator, "ADMIN_FORCE_USER");
+            }
+        }
+        return "Admin force revoke completed for user: " + username;
+    }
+
     private List<AuthRolePermission> validateRolePermissionSelections(String roleCode,
                                                                      List<BatchGrantRequest.RolePermissionSelection> selections,
                                                                      String authBackend) {
@@ -2029,7 +2215,7 @@ public class AccessController {
         List<AuthRolePermission> selected = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
         for (BatchGrantRequest.RolePermissionSelection selection : selections) {
-            String permission = requireText(selection.getPermission(), "请选择权限类型").toUpperCase(Locale.ROOT);
+            String permission = requireText(normalizePermissionValue(selection.getPermission()), "请选择权限类型");
             try {
                 AuthorizationSupport.validatePermission(permission);
             } catch (IllegalArgumentException e) {
@@ -2050,6 +2236,34 @@ public class AccessController {
         selected.sort(Comparator.comparing(permission -> rolePermissionKey(permission.getResourceType(), permission.getDatabaseName(),
                 permission.getTableName(), permission.getPermission(), permission.getAuthBackend())));
         return selected;
+    }
+
+    private List<BatchGrantRequest.RolePermissionSelection> exactRolePermissionsOrThrow(
+            List<BatchGrantRequest.RolePermissionSelection> selections, String authBackend) {
+        if (selections == null || selections.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请至少选择一项权限");
+        }
+        List<BatchGrantRequest.RolePermissionSelection> normalized = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        for (BatchGrantRequest.RolePermissionSelection selection : selections) {
+            String permission = requireText(normalizePermissionValue(selection.getPermission()), "请选择权限类型");
+            AuthorizationSupport.validatePermission(permission);
+            String database = requireText(selection.getDatabaseName(), "请选择数据库");
+            String table = normalizeAuthTable(selection.getTableName());
+            String key = rolePermissionKey(selection.getResourceType(), database, table, permission,
+                    firstNonBlank(selection.getAuthBackend(), authBackend));
+            if (!seen.add(key)) {
+                continue;
+            }
+            BatchGrantRequest.RolePermissionSelection item = new BatchGrantRequest.RolePermissionSelection();
+            item.setResourceType(firstNonBlank(selection.getResourceType(), table == null ? "DATABASE" : "TABLE"));
+            item.setDatabaseName(database);
+            item.setTableName(table);
+            item.setPermission(permission);
+            item.setAuthBackend(firstNonBlank(selection.getAuthBackend(), authBackend));
+            normalized.add(item);
+        }
+        return normalized;
     }
 
     private String rolePermissionKey(String resourceType, String databaseName, String tableName, String permission, String authBackend) {
@@ -2141,14 +2355,14 @@ public class AccessController {
             return;
         }
         for (String part : permission.split(",")) {
-            String normalized = part.trim();
-            if (!normalized.isEmpty()) {
+            String normalized = normalizePermissionValue(part);
+            if (normalized != null && !normalized.isEmpty()) {
                 try {
                     AuthorizationSupport.validatePermission(normalized);
                 } catch (IllegalArgumentException e) {
                     throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持的权限类型: " + normalized, e);
                 }
-                target.add(normalized.toUpperCase());
+                target.add(normalized);
             }
         }
     }
@@ -2236,15 +2450,46 @@ public class AccessController {
         return value.trim();
     }
 
+    private String normalizePermissionValue(String permission) {
+        if (permission == null) {
+            return null;
+        }
+        String normalized = permission.trim().toUpperCase(Locale.ROOT);
+        if (normalized.endsWith("_PRIV")) {
+            normalized = normalized.substring(0, normalized.length() - 5);
+        }
+        if ("*".equals(normalized) || "ALL PRIVILEGES".equals(normalized) || "ALL_PRIVILEGES".equals(normalized)) {
+            return "ALL";
+        }
+        return normalized;
+    }
+
     private String readableAuthorizationError(Exception e) {
         String message = e.getMessage() == null ? "授权执行失败" : e.getMessage();
-        if (message.contains("Access denied") || message.toLowerCase().contains("denied")) {
-            return "授权端点账号权限不足: " + message;
+        String compactMessage = compactExceptionMessage(message);
+        String lower = message.toLowerCase();
+        if (lower.contains("sentrynosuchobjectexception") && lower.contains("role")
+                && (lower.contains("doesn't exist") || lower.contains("does not exist"))) {
+            return "授权后端角色不存在，请先同步或创建 Sentry 角色后再重试";
         }
-        if (message.toLowerCase().contains("syntax") || message.toLowerCase().contains("sql")) {
-            return "授权 SQL 执行失败: " + message;
+        if (lower.contains("access denied") || lower.contains("denied")) {
+            return "授权端点账号权限不足: " + compactMessage;
         }
-        return message;
+        if (lower.contains("syntax") || lower.contains("sql")) {
+            return "授权 SQL 执行失败: " + compactMessage;
+        }
+        return compactMessage;
+    }
+
+    private String compactExceptionMessage(String message) {
+        if (message == null || message.trim().isEmpty()) {
+            return "授权执行失败";
+        }
+        String compact = message.replaceAll("\\s+", " ").trim();
+        compact = compact.replaceAll("(?i)Server Stacktrace:.*$", "").trim();
+        compact = compact.replaceAll("(?i);\\s*nested exception is.*$", "").trim();
+        compact = compact.replaceAll("；\\s*根因:.*$", "").trim();
+        return compact.length() > 240 ? compact.substring(0, 240) + "..." : compact;
     }
 
     private List<Map<String, Object>> normalizePermissionRows(List<Map<String, Object>> rawPermissions) {
@@ -2276,7 +2521,7 @@ public class AccessController {
             grant.put("resourceType", firstNonBlank(access.getResourceType(), access.getTableName() == null ? "DATABASE" : "TABLE"));
             grant.put("databaseName", access.getDatabaseName());
             grant.put("tableName", normalizeAuthTable(access.getTableName()));
-            grant.put("permission", access.getPermission() == null ? "-" : access.getPermission().toUpperCase(Locale.ROOT));
+            grant.put("permission", firstNonBlank(normalizePermissionValue(access.getPermission()), "-"));
             grant.put("grantText", recordedPermissionText(access));
             grant.put("source", access.getSource());
             grant.put("status", access.getStatus());
@@ -2325,6 +2570,7 @@ public class AccessController {
             permission = permission != null ? permission : parsed.get("permission");
             resourceType = parsed.get("resourceType") != null ? parsed.get("resourceType") : resourceType;
         }
+        permission = normalizePermissionValue(permission);
         table = normalizeAuthTable(table);
         if (table == null && !"GLOBAL".equals(resourceType)) {
             resourceType = "DATABASE";
@@ -2336,6 +2582,9 @@ public class AccessController {
         grant.put("tableName", table);
         grant.put("permission", permission != null ? permission.toUpperCase() : "-");
         grant.put("grantText", grantText);
+        grant.put("source", pickString(lowerRow, "source"));
+        grant.put("sourceRole", pickString(lowerRow, "sourceRole", "source_role"));
+        grant.put("sourceGroup", pickString(lowerRow, "sourceGroup", "source_group"));
         grant.put("raw", row);
         return grant;
     }

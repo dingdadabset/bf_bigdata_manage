@@ -1,5 +1,7 @@
 package com.dga.access.service.authorization;
 
+import com.dga.access.dto.BackendRoleInventoryRequest;
+import com.dga.access.dto.BackendRoleSnapshot;
 import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
 import com.dga.cluster.repository.ClusterEndpointRepository;
@@ -55,6 +57,12 @@ public class AuthorizationService {
     public List<String> listGroups(String clusterIdentifier, String authBackend) {
         AuthorizationContext context = buildContext(clusterIdentifier, authBackend);
         return selectProvider(context).listGroups(context);
+    }
+
+    public List<BackendRoleSnapshot> listBackendRoles(BackendRoleInventoryRequest request) {
+        AuthorizationContext context = buildContext(request == null ? null : request.getCluster(),
+                request == null ? null : request.getAuthBackend());
+        return selectProvider(context).listBackendRoles(context, request);
     }
 
     public boolean userExists(String clusterIdentifier, String username, String authBackend) {
@@ -136,6 +144,17 @@ public class AuthorizationService {
                                        String permission, String authBackend) {
         AuthorizationContext context = buildContext(clusterIdentifier, authBackend);
         selectProvider(context).grantPermissionToGroup(context, groupName, database, table, permission);
+    }
+
+    public void revokePermissionFromGroup(String clusterIdentifier, String groupName, String database, String table, String permission) {
+        AuthorizationContext context = buildContext(clusterIdentifier);
+        selectProvider(context).revokePermissionFromGroup(context, groupName, database, table, permission);
+    }
+
+    public void revokePermissionFromGroup(String clusterIdentifier, String groupName, String database, String table,
+                                          String permission, String authBackend) {
+        AuthorizationContext context = buildContext(clusterIdentifier, authBackend);
+        selectProvider(context).revokePermissionFromGroup(context, groupName, database, table, permission);
     }
 
     public void revokePermissionFromRole(String clusterIdentifier, String roleCode, String database, String table, String permission) {

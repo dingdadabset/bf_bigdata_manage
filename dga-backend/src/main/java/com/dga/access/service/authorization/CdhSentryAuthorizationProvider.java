@@ -1,5 +1,8 @@
 package com.dga.access.service.authorization;
 
+import com.dga.access.dto.BackendRoleInventoryRequest;
+import com.dga.access.dto.BackendRolePermissionSnapshot;
+import com.dga.access.dto.BackendRoleSnapshot;
 import com.dga.access.service.LdapService;
 import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
@@ -11,10 +14,15 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Service
 public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
@@ -89,13 +97,57 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
     }
 
     @Override
+    public List<BackendRoleSnapshot> listBackendRoles(AuthorizationContext context, BackendRoleInventoryRequest request) {
+        BackendRoleInventoryRequest inventoryRequest = request == null ? new BackendRoleInventoryRequest() : request;
+        JdbcTemplate template = jdbcTemplate(context);
+        Set<String> requestedRoles = normalizedRoleFilter(inventoryRequest.getRoleCodes());
+        String keyword = trimToNull(inventoryRequest.getKeyword());
+        List<String> roleNames = backendRoleNames(template);
+        if (roleNames.isEmpty() && !requestedRoles.isEmpty()) {
+            roleNames.addAll(requestedRoles);
+        }
+        Map<String, List<String>> groupNamesByRole = inventoryRequest.isIncludeAssignments()
+                ? groupNamesByRole(context, template) : new HashMap<>();
+
+        List<BackendRoleSnapshot> snapshots = new ArrayList<>();
+        for (String roleName : roleNames) {
+            String roleCode = trimToNull(roleName);
+            if (roleCode == null || !matchesRoleFilter(roleCode, requestedRoles, keyword)) {
+                continue;
+            }
+            BackendRoleSnapshot snapshot = new BackendRoleSnapshot();
+            snapshot.setRoleCode(roleCode);
+            snapshot.setRoleName(roleCode);
+            snapshot.setCluster(context.getClusterCodeOrName());
+            snapshot.setAuthBackend(authBackend());
+            snapshot.setEngineType(engineType());
+            if (inventoryRequest.isIncludePermissions()) {
+                try {
+                    snapshot.setPermissions(rolePermissions(template, roleCode));
+                } catch (Exception e) {
+                    snapshot.getWarnings().add("读取角色权限失败: " + compactErrorMessage(e));
+                }
+            }
+            if (inventoryRequest.isIncludeAssignments()) {
+                List<String> groups = groupNamesByRole.get(lower(roleCode));
+                if (groups != null) {
+                    snapshot.setGroupNames(groups);
+                }
+                snapshot.getWarnings().add("CDH/Sentry 无法稳定按角色直接反查 LDAP 组，已根据 LDAP 组清单尽力匹配；未列出的组需手动接管。");
+            }
+            snapshots.add(snapshot);
+        }
+        return snapshots;
+    }
+
+    @Override
     public List<Map<String, Object>> getUserPermissions(AuthorizationContext context, String username) {
         AuthorizationSupport.validateName(username);
         List<Map<String, Object>> permissions = new ArrayList<>();
         JdbcTemplate template = jdbcTemplate(context);
 
         try {
-            permissions.addAll(template.queryForList("SHOW GRANT USER " + username));
+            permissions.addAll(withGrantSource(template.queryForList("SHOW GRANT USER " + username), "USER", username, null));
         } catch (Exception e) {
             String msg = e.getMessage();
             if (msg == null || !msg.contains("Sentry does not allow privileges")) {
@@ -104,7 +156,8 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
         }
 
         try {
-            permissions.addAll(template.queryForList("SHOW GRANT ROLE role_" + username));
+            String userRole = "role_" + username;
+            permissions.addAll(withGrantSource(template.queryForList("SHOW GRANT ROLE " + userRole), "USER_ROLE", userRole, username));
         } catch (Exception e) {
             // Role may not exist. This is expected for users without role-based grants.
         }
@@ -112,7 +165,7 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
         for (String group : userLdapGroups(context, username)) {
             for (String role : rolesGrantedToGroup(template, group)) {
                 try {
-                    permissions.addAll(template.queryForList("SHOW GRANT ROLE " + role));
+                    permissions.addAll(withGrantSource(template.queryForList("SHOW GRANT ROLE " + role), "GROUP_ROLE", role, group));
                 } catch (Exception e) {
                     System.out.println("SHOW GRANT ROLE " + role + " failed: " + e.getMessage());
                 }
@@ -120,6 +173,250 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
         }
 
         return permissions;
+    }
+
+    private List<String> backendRoleNames(JdbcTemplate template) {
+        List<String> roles = new ArrayList<>();
+        try {
+            List<String> rows = template.queryForList("SHOW ROLES", String.class);
+            if (rows != null) {
+                for (String row : rows) {
+                    String role = trimToNull(row);
+                    if (role != null) {
+                        roles.add(role);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            try {
+                for (Map<String, Object> row : template.queryForList("SHOW ROLES")) {
+                    String role = trimToNull(roleNameFromRow(row));
+                    if (role != null) {
+                        roles.add(role);
+                    }
+                }
+            } catch (Exception nested) {
+                throw new RuntimeException("SHOW ROLES failed: " + compactErrorMessage(nested));
+            }
+        }
+        return roles;
+    }
+
+    private Map<String, List<String>> groupNamesByRole(AuthorizationContext context, JdbcTemplate template) {
+        Map<String, LinkedHashSet<String>> groupsByRole = new HashMap<>();
+        String clusterIdentifier = context.getClusterCodeOrName();
+        try {
+            List<Map<String, Object>> groups = ldapService.listPosixGroups(clusterIdentifier);
+            if (groups == null) {
+                return new HashMap<>();
+            }
+            for (Map<String, Object> group : groups) {
+                String groupName = stringValue(group.get("name"));
+                if (groupName == null) {
+                    continue;
+                }
+                for (String role : rolesGrantedToGroup(template, groupName)) {
+                    groupsByRole.computeIfAbsent(lower(role), key -> new LinkedHashSet<>()).add(groupName);
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("LDAP group role inventory failed: " + e.getMessage());
+        }
+        Map<String, List<String>> result = new HashMap<>();
+        for (Map.Entry<String, LinkedHashSet<String>> entry : groupsByRole.entrySet()) {
+            result.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+        }
+        return result;
+    }
+
+    private List<BackendRolePermissionSnapshot> rolePermissions(JdbcTemplate template, String roleCode) {
+        AuthorizationSupport.validateName(roleCode);
+        Map<String, BackendRolePermissionSnapshot> unique = new LinkedHashMap<>();
+        for (Map<String, Object> row : template.queryForList("SHOW GRANT ROLE " + roleCode)) {
+            BackendRolePermissionSnapshot permission = parseRolePermission(row);
+            if (permission.getDatabaseName() == null || permission.getPermission() == null) {
+                continue;
+            }
+            unique.putIfAbsent(permissionKey(permission), permission);
+        }
+        return new ArrayList<>(unique.values());
+    }
+
+    private BackendRolePermissionSnapshot parseRolePermission(Map<String, Object> row) {
+        Map<String, Object> lowerRow = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        if (row != null) {
+            lowerRow.putAll(row);
+        }
+        String grantText = pickString(lowerRow, "grants", "grant", "grant_stmt", "grant_statement", "privilege");
+        if (grantText == null) {
+            grantText = firstStringValue(row);
+        }
+        String database = pickString(lowerRow, "database", "database_name", "db", "db_name", "databaseName");
+        String table = pickString(lowerRow, "table", "table_name", "tbl", "tableName");
+        String permission = pickString(lowerRow, "privilege", "permission", "action");
+        String resourceType = table == null || table.isEmpty() ? "DATABASE" : "TABLE";
+        if (grantText != null && grantText.toUpperCase().startsWith("GRANT ")) {
+            Map<String, String> parsed = parseGrantText(grantText);
+            database = database != null ? database : parsed.get("database");
+            table = table != null ? table : parsed.get("table");
+            permission = permission != null ? permission : parsed.get("permission");
+            resourceType = parsed.get("resourceType") != null ? parsed.get("resourceType") : resourceType;
+        }
+        table = normalizeAuthTable(table);
+        if (table == null && !"GLOBAL".equals(resourceType)) {
+            resourceType = "DATABASE";
+        }
+        BackendRolePermissionSnapshot snapshot = new BackendRolePermissionSnapshot();
+        snapshot.setResourceType(resourceType);
+        snapshot.setDatabaseName(database);
+        snapshot.setTableName(table);
+        snapshot.setPermission(normalizePermissionName(permission));
+        snapshot.setRawGrant(grantText);
+        return snapshot;
+    }
+
+    private Map<String, String> parseGrantText(String grantText) {
+        Map<String, String> parsed = new HashMap<>();
+        Matcher privilegeMatcher = Pattern.compile("(?i)^GRANT\\s+(.+?)\\s+ON\\s+").matcher(grantText);
+        if (privilegeMatcher.find()) {
+            parsed.put("permission", privilegeMatcher.group(1).trim());
+        }
+        if (Pattern.compile("(?i)ON\\s+SERVER\\s+").matcher(grantText).find()) {
+            parsed.put("resourceType", "DATABASE");
+            parsed.put("database", "*");
+            return parsed;
+        }
+        Matcher tableMatcher = Pattern.compile("(?i)ON\\s+TABLE\\s+`?([^`\\.\\s]+)`?\\.`?([^`\\s]+)`?").matcher(grantText);
+        if (tableMatcher.find()) {
+            parsed.put("resourceType", "TABLE");
+            parsed.put("database", tableMatcher.group(1));
+            parsed.put("table", tableMatcher.group(2));
+            return parsed;
+        }
+        Matcher databaseMatcher = Pattern.compile("(?i)ON\\s+DATABASE\\s+`?([^`\\s]+)`?").matcher(grantText);
+        if (databaseMatcher.find()) {
+            parsed.put("resourceType", "DATABASE");
+            parsed.put("database", databaseMatcher.group(1));
+        }
+        return parsed;
+    }
+
+    private Set<String> normalizedRoleFilter(List<String> roleCodes) {
+        Set<String> roles = new LinkedHashSet<>();
+        if (roleCodes == null) {
+            return roles;
+        }
+        for (String roleCode : roleCodes) {
+            String role = trimToNull(roleCode);
+            if (role != null) {
+                roles.add(lower(role));
+            }
+        }
+        return roles;
+    }
+
+    private boolean matchesRoleFilter(String roleCode, Set<String> requestedRoles, String keyword) {
+        if (requestedRoles != null && !requestedRoles.isEmpty() && !requestedRoles.contains(lower(roleCode))) {
+            return false;
+        }
+        return keyword == null || lower(roleCode).contains(lower(keyword));
+    }
+
+    private String permissionKey(BackendRolePermissionSnapshot permission) {
+        return String.join("|",
+                upper(permission.getResourceType()),
+                lower(permission.getDatabaseName()),
+                lower(permission.getTableName() == null ? "*" : permission.getTableName()),
+                upper(permission.getPermission()));
+    }
+
+    private String normalizePermissionName(String permission) {
+        String normalized = trimToNull(permission);
+        if (normalized == null) {
+            return null;
+        }
+        normalized = normalized.toUpperCase();
+        if (normalized.endsWith("_PRIV")) {
+            normalized = normalized.substring(0, normalized.length() - 5);
+        }
+        if ("*".equals(normalized) || "ALL PRIVILEGES".equals(normalized) || "ALL_PRIVILEGES".equals(normalized)) {
+            return "ALL";
+        }
+        return normalized;
+    }
+
+    private String normalizeAuthTable(String table) {
+        String normalized = trimToNull(table);
+        if (normalized == null || "*".equals(normalized) || "ALL TABLES".equalsIgnoreCase(normalized)) {
+            return null;
+        }
+        return normalized;
+    }
+
+    private String stringValue(Object value) {
+        return value == null ? null : trimToNull(String.valueOf(value));
+    }
+
+    private String firstStringValue(Map<String, Object> row) {
+        if (row == null) {
+            return null;
+        }
+        for (Object value : row.values()) {
+            String text = value == null ? null : trimToNull(String.valueOf(value));
+            if (text != null) {
+                return text;
+            }
+        }
+        return null;
+    }
+
+    private String pickString(Map<String, Object> row, String... keys) {
+        for (String key : keys) {
+            Object value = row.get(key);
+            String text = value == null ? null : trimToNull(String.valueOf(value));
+            if (text != null) {
+                return text;
+            }
+        }
+        return null;
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String text = value.trim();
+        return text.isEmpty() ? null : text;
+    }
+
+    private String lower(String value) {
+        String text = trimToNull(value);
+        return text == null ? "" : text.toLowerCase();
+    }
+
+    private String upper(String value) {
+        String text = trimToNull(value);
+        return text == null ? "" : text.toUpperCase();
+    }
+
+    private List<Map<String, Object>> withGrantSource(List<Map<String, Object>> grants, String source, String sourceRole, String sourceGroup) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        if (grants == null) {
+            return result;
+        }
+        for (Map<String, Object> grant : grants) {
+            Map<String, Object> item = new HashMap<>();
+            if (grant != null) {
+                item.putAll(grant);
+            }
+            item.put("source", source);
+            item.put("sourceRole", sourceRole);
+            if (sourceGroup != null && !sourceGroup.trim().isEmpty()) {
+                item.put("sourceGroup", sourceGroup);
+            }
+            result.add(item);
+        }
+        return result;
     }
 
     @Override
@@ -160,29 +457,22 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
         AuthorizationSupport.validateName(command.getUsername());
         AuthorizationSupport.validateName(command.getDatabase());
         AuthorizationSupport.validatePermission(command.getPermission());
+        if (command.getTable() != null && !command.getTable().isEmpty()) {
+            AuthorizationSupport.validateName(command.getTable());
+        }
         JdbcTemplate template = jdbcTemplate(context);
+        String roleName = "role_" + command.getUsername();
+
+        if (!roleExists(roleName, template)) {
+            return;
+        }
 
         try {
             revokeViaRole(command, template);
-            return;
         } catch (Exception e) {
-            System.out.println("Sentry ROLE revoke failed or not applicable: " + e.getMessage());
-        }
-
-        String sql;
-        if (command.getTable() == null || command.getTable().isEmpty()) {
-            sql = String.format("REVOKE %s ON DATABASE %s FROM USER %s",
-                    command.getPermission(), command.getDatabase(), command.getUsername());
-        } else {
-            AuthorizationSupport.validateName(command.getTable());
-            sql = String.format("REVOKE %s ON TABLE %s.%s FROM USER %s",
-                    command.getPermission(), command.getDatabase(), command.getTable(), command.getUsername());
-        }
-
-        try {
-            template.execute(sql);
-        } catch (Exception e) {
-            throw new RuntimeException("Hive Revoke Error: " + e.getMessage());
+            if (!isBenignRevokeMiss(e)) {
+                throw new RuntimeException("Hive Revoke Error: " + compactErrorMessage(e));
+            }
         }
     }
 
@@ -265,7 +555,17 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
         AuthorizationSupport.validateName(roleCode);
         AuthorizationSupport.validateName(subjectName);
         if ("GROUP".equalsIgnoreCase(subjectType)) {
-            jdbcTemplate(context).execute(String.format("REVOKE ROLE %s FROM GROUP %s", roleCode, subjectName));
+            JdbcTemplate template = jdbcTemplate(context);
+            if (!roleExists(roleCode, template)) {
+                return;
+            }
+            try {
+                template.execute(String.format("REVOKE ROLE %s FROM GROUP %s", roleCode, subjectName));
+            } catch (Exception e) {
+                if (!isBenignRevokeMiss(e)) {
+                    throw new RuntimeException("Hive Role Assignment Revoke Error: " + compactErrorMessage(e));
+                }
+            }
         }
     }
 
@@ -413,6 +713,26 @@ public class CdhSentryAuthorizationProvider implements AuthorizationProvider {
                     command.getPermission(), command.getDatabase(), command.getTable(), roleName);
         }
         template.execute(revokeSql);
+    }
+
+    private boolean isBenignRevokeMiss(Exception e) {
+        String message = compactErrorMessage(e).toLowerCase();
+        return message.contains("doesn't exist")
+                || message.contains("does not exist")
+                || message.contains("not exist")
+                || message.contains("not found")
+                || message.contains("no privilege")
+                || message.contains("doesn't have")
+                || message.contains("does not have")
+                || message.contains("not currently granted");
+    }
+
+    private String compactErrorMessage(Exception e) {
+        String message = e == null || e.getMessage() == null ? "授权执行失败" : e.getMessage();
+        String compact = message.replaceAll("\\s+", " ").trim();
+        compact = compact.replaceAll("(?i)Server Stacktrace:.*$", "").trim();
+        compact = compact.replaceAll("(?i);\\s*nested exception is.*$", "").trim();
+        return compact.length() > 240 ? compact.substring(0, 240) + "..." : compact;
     }
 
     private boolean roleExists(String roleName, JdbcTemplate template) {

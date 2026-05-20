@@ -19,6 +19,7 @@ public class BatchGrantRequest {
     private String approver;
     private String expiresAt;
     private String riskLevel;
+    private Boolean forceUserRevoke;
     private Boolean roleSubsetMode;
     private List<RolePermissionSelection> rolePermissions;
     private List<String> databases;
@@ -142,6 +143,14 @@ public class BatchGrantRequest {
 
     public void setRiskLevel(String riskLevel) {
         this.riskLevel = riskLevel;
+    }
+
+    public Boolean getForceUserRevoke() {
+        return forceUserRevoke;
+    }
+
+    public void setForceUserRevoke(Boolean forceUserRevoke) {
+        this.forceUserRevoke = forceUserRevoke;
     }
 
     public Boolean getRoleSubsetMode() {

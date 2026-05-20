@@ -1,9 +1,15 @@
 package com.dga.access.service;
 
+import com.dga.access.dto.AuthRoleAssignmentRequest;
+import com.dga.access.dto.AuthRoleImportRequest;
+import com.dga.access.dto.AuthRoleImportResult;
+import com.dga.access.dto.BackendRolePermissionSnapshot;
+import com.dga.access.dto.BackendRoleSnapshot;
 import com.dga.access.dto.BatchRoleAssignmentItem;
 import com.dga.access.dto.BatchRoleAssignmentRequest;
 import com.dga.access.dto.BatchRoleAssignmentResult;
 import com.dga.access.entity.AuthRole;
+import com.dga.access.entity.AuthRolePermission;
 import com.dga.access.entity.AuthUserRole;
 import com.dga.access.repository.AuthRoleAssignmentAuditRepository;
 import com.dga.access.repository.AuthRolePermissionRepository;
@@ -210,6 +216,49 @@ class AuthRoleServiceTest {
     }
 
     @Test
+    void addAssignmentRecordsSubsetControlledGroupBindingWithoutGrantingFullRole() {
+        givenRole(role(ClusterEndpoint.AUTH_SENTRY));
+        AuthUserRole[] saved = new AuthUserRole[1];
+        when(userRoleRepository.findByRoleCodeAndSubjectTypeAndSubjectNameAndStatus("dga_role", "GROUP", "analytics", "ACTIVE"))
+                .thenReturn(Collections.emptyList());
+        when(userRoleRepository.save(any(AuthUserRole.class))).thenAnswer(invocation -> {
+            saved[0] = invocation.getArgument(0);
+            return saved[0];
+        });
+        when(permissionRepository.findByRoleCodeAndStatus("dga_role", "ACTIVE")).thenReturn(Collections.emptyList());
+        when(userRoleRepository.findByRoleCodeAndStatus("dga_role", "ACTIVE")).thenReturn(Collections.emptyList());
+
+        AuthRoleAssignmentRequest request = new AuthRoleAssignmentRequest();
+        request.setSubjectType("GROUP");
+        request.setSubjectName("analytics");
+        request.setAuthBackend(ClusterEndpoint.AUTH_SENTRY);
+
+        service.addAssignment("dga_role", request);
+
+        assertThat(saved[0].getBackendSyncStatus()).isEqualTo("LOCAL_ONLY");
+        assertThat(saved[0].getSyncMessage()).contains("子集授权下发");
+        verify(authorizationService, never()).assignRoleToGroup(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void deletePermissionRevokesRangerMaterializedGroupPoliciesInsteadOfRolePermission() {
+        AuthRole role = role(ClusterEndpoint.AUTH_RANGER);
+        AuthRolePermission permission = permission(1L, role, "tmp_aggr_pay", null, "ALL");
+        givenRole(role);
+        when(permissionRepository.findById(1L)).thenReturn(java.util.Optional.of(permission));
+        when(userRoleRepository.findByRoleCodeAndStatus("dga_role", "ACTIVE"))
+                .thenReturn(Collections.singletonList(existingAssignment("analytics", ClusterEndpoint.AUTH_RANGER, "SUCCESS", "GROUP")));
+        when(permissionRepository.save(any(AuthRolePermission.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(permissionRepository.findByRoleCodeAndStatus("dga_role", "ACTIVE")).thenReturn(Collections.emptyList());
+
+        service.deletePermission("dga_role", 1L);
+
+        assertThat(permission.getStatus()).isEqualTo("DELETED");
+        verify(authorizationService).revokePermissionFromGroup("CDH", "analytics", "tmp_aggr_pay", null, "ALL", ClusterEndpoint.AUTH_RANGER);
+        verify(authorizationService, never()).revokePermissionFromRole(anyString(), anyString(), anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
     void batchAssignUsersContinuesWhenBackendAssignmentFails() {
         givenRole(role(ClusterEndpoint.AUTH_STARROCKS_SQL));
         when(userRoleRepository.findByRoleCodeAndSubjectTypeAndStatus("dga_role", "USER", "ACTIVE"))
@@ -250,8 +299,83 @@ class AuthRoleServiceTest {
         verify(authorizationService, never()).assignRoleToUser(anyString(), anyString(), anyString(), anyString());
     }
 
+    @Test
+    void importBackendRolesCreatesLocalRecordsWithoutMutatingBackend() {
+        BackendRoleSnapshot snapshot = backendRoleSnapshot("legacy_sentry_role");
+        when(authorizationService.listBackendRoles(any())).thenReturn(Collections.singletonList(snapshot));
+        when(roleRepository.findByRoleCode("legacy_sentry_role")).thenReturn(null);
+        when(roleRepository.save(any(AuthRole.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(permissionRepository.findByRoleCodeAndStatus("legacy_sentry_role", "ACTIVE")).thenReturn(new ArrayList<>());
+        when(userRoleRepository.findByRoleCodeAndSubjectTypeAndSubjectNameAndStatus("legacy_sentry_role", "GROUP", "analytics", "ACTIVE"))
+                .thenReturn(Collections.emptyList());
+        when(permissionRepository.save(any(AuthRolePermission.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(userRoleRepository.save(any(AuthUserRole.class))).thenAnswer(invocation -> invocation.getArgument(0));
+
+        AuthRoleImportResult result = service.importBackendRoles(importRequest("legacy_sentry_role"), "admin");
+
+        assertThat(result.getCreated()).isEqualTo(1);
+        assertThat(result.getUpdated()).isZero();
+        assertThat(result.getFailed()).isZero();
+        assertThat(result.getItems()).hasSize(1);
+        assertThat(result.getItems().get(0).getPermissionCount()).isEqualTo(1);
+        assertThat(result.getItems().get(0).getAssignmentCount()).isEqualTo(1);
+        verify(authorizationService, never()).ensureRole(anyString(), anyString(), anyString());
+        verify(authorizationService, never()).grantPermissionToRole(anyString(), anyString(), anyString(), any(), anyString(), anyString());
+        verify(authorizationService, never()).assignRoleToGroup(anyString(), anyString(), anyString(), anyString());
+        verify(authorizationService, never()).revokePermissionFromRole(anyString(), anyString(), anyString(), any(), anyString(), anyString());
+    }
+
+    @Test
+    void importBackendRolesIsIdempotentForExistingPermissionAndAssignment() {
+        BackendRoleSnapshot snapshot = backendRoleSnapshot("legacy_sentry_role");
+        AuthRole existingRole = role(ClusterEndpoint.AUTH_SENTRY);
+        existingRole.setRoleCode("legacy_sentry_role");
+        when(authorizationService.listBackendRoles(any())).thenReturn(Collections.singletonList(snapshot));
+        when(roleRepository.findByRoleCode("legacy_sentry_role")).thenReturn(existingRole);
+        when(roleRepository.save(any(AuthRole.class))).thenAnswer(invocation -> invocation.getArgument(0));
+        when(permissionRepository.findByRoleCodeAndStatus("legacy_sentry_role", "ACTIVE"))
+                .thenReturn(new ArrayList<>(Collections.singletonList(permission(1L, existingRole, "tmp_aggr_pay", null, "ALL"))));
+        when(userRoleRepository.findByRoleCodeAndSubjectTypeAndSubjectNameAndStatus("legacy_sentry_role", "GROUP", "analytics", "ACTIVE"))
+                .thenReturn(Collections.singletonList(existingAssignment("analytics", ClusterEndpoint.AUTH_SENTRY, "SUCCESS", "GROUP")));
+
+        AuthRoleImportResult result = service.importBackendRoles(importRequest("legacy_sentry_role"), "admin");
+
+        assertThat(result.getSkipped()).isEqualTo(1);
+        assertThat(result.getCreated()).isZero();
+        assertThat(result.getUpdated()).isZero();
+        verify(permissionRepository, never()).save(any(AuthRolePermission.class));
+        verify(userRoleRepository, never()).save(any(AuthUserRole.class));
+        verify(authorizationService, never()).ensureRole(anyString(), anyString(), anyString());
+    }
+
     private void givenRole(AuthRole role) {
         when(roleRepository.findByRoleCode("dga_role")).thenReturn(role);
+    }
+
+    private BackendRoleSnapshot backendRoleSnapshot(String roleCode) {
+        BackendRoleSnapshot snapshot = new BackendRoleSnapshot();
+        snapshot.setRoleCode(roleCode);
+        snapshot.setRoleName(roleCode);
+        snapshot.setCluster("CDH");
+        snapshot.setAuthBackend(ClusterEndpoint.AUTH_SENTRY);
+        snapshot.setEngineType("HIVE");
+        snapshot.setGroupNames(Collections.singletonList("analytics"));
+        BackendRolePermissionSnapshot permission = new BackendRolePermissionSnapshot();
+        permission.setResourceType("DATABASE");
+        permission.setDatabaseName("tmp_aggr_pay");
+        permission.setPermission("ALL");
+        snapshot.setPermissions(Collections.singletonList(permission));
+        return snapshot;
+    }
+
+    private AuthRoleImportRequest importRequest(String roleCode) {
+        AuthRoleImportRequest request = new AuthRoleImportRequest();
+        request.setCluster("CDH");
+        request.setAuthBackend(ClusterEndpoint.AUTH_SENTRY);
+        request.setRoleCodes(Collections.singletonList(roleCode));
+        request.setImportPermissions(true);
+        request.setImportAssignments(true);
+        return request;
     }
 
     private AuthRole role(String authBackend) {
@@ -292,16 +416,39 @@ class AuthRoleServiceTest {
             rbac.setDefaultSubjectType("GROUP");
             rbac.setAllowedSubjectTypes(Arrays.asList("USER", "GROUP"));
         }
+        AuthorizationCapability.GrantCapabilities grant = new AuthorizationCapability.GrantCapabilities();
+        grant.setSupportsRoleSubsetGrant(true);
+        grant.setSupportsUserRoleSubsetGrant(true);
+        grant.setSupportsGroupRoleSubsetGrant(true);
         capability.setRbac(rbac);
+        capability.setGrant(grant);
         return capability;
     }
 
+    private AuthRolePermission permission(Long id, AuthRole role, String database, String table, String action) {
+        AuthRolePermission permission = new AuthRolePermission();
+        permission.setId(id);
+        permission.setRoleCode(role.getRoleCode());
+        permission.setCluster(role.getCluster());
+        permission.setResourceType(table == null ? "DATABASE" : "TABLE");
+        permission.setDatabaseName(database);
+        permission.setTableName(table);
+        permission.setPermission(action);
+        permission.setAuthBackend(role.getAuthBackend());
+        permission.setStatus("ACTIVE");
+        return permission;
+    }
+
     private AuthUserRole existingAssignment(String username, String authBackend, String backendSyncStatus) {
+        return existingAssignment(username, authBackend, backendSyncStatus, "USER");
+    }
+
+    private AuthUserRole existingAssignment(String name, String authBackend, String backendSyncStatus, String subjectType) {
         AuthUserRole assignment = new AuthUserRole();
         assignment.setRoleCode("dga_role");
         assignment.setCluster("CDH");
-        assignment.setSubjectType("USER");
-        assignment.setSubjectName(username);
+        assignment.setSubjectType(subjectType);
+        assignment.setSubjectName(name);
         assignment.setAuthBackend(authBackend);
         assignment.setStatus("ACTIVE");
         assignment.setBackendSyncStatus(backendSyncStatus);

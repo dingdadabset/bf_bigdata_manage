@@ -78,4 +78,14 @@ public interface UserResourceAccessRepository extends JpaRepository<UserResource
                                         @Param("subjectType") String subjectType,
                                         @Param("subjectName") String subjectName,
                                         @Param("revokedBy") String revokedBy);
+
+    @Query("SELECT u FROM UserResourceAccess u WHERE u.isDeleted = false AND u.status = 'ACTIVE' " +
+            "AND u.username = :username " +
+            "AND (:cluster IS NULL OR u.clusterCode = :cluster OR u.clusterName = :cluster) " +
+            "AND (:authBackend IS NULL OR u.authBackend = :authBackend) " +
+            "AND u.roleCode = :roleCode AND u.grantMode = 'ROLE_ADOPTION'")
+    List<UserResourceAccess> findActiveRoleAdoptionRecords(@Param("username") String username,
+                                                           @Param("cluster") String cluster,
+                                                           @Param("authBackend") String authBackend,
+                                                           @Param("roleCode") String roleCode);
 }
