@@ -82,8 +82,74 @@
       </div>
     </div>
 
-    <a-row :gutter="20" class="workspace-row">
-      <a-col v-if="isRoleManagement || state.mode !== 'ROLE'" :xs="24" :lg="8" :xl="7" class="workspace-col role-catalog-col">
+    <!-- 角色管理模式：上下布局 -->
+    <div v-if="isRoleManagement" class="role-management-layout">
+      <div class="role-catalog-top-section">
+        <role-catalog-panel
+          ref="roleCatalogPanel"
+          :roles="roles"
+          :subject-bound-roles="subjectContext.roles"
+          :selected-role-code="selectedRoleCode"
+          :role-detail="selectedRoleView"
+          :capability="capability"
+          :selected-cluster="state.selectedCluster"
+          :selected-auth-backend="state.selectedAuthBackend"
+          :loading-catalog="loading.roles"
+          :loading-detail="loading.roleDetail"
+          :allow-manage-roles="isRoleManagement"
+          @select-role="selectRole"
+          @save-role="saveRole"
+          @delete-role="deleteRole"
+          @add-role-permissions="addRolePermissions"
+          @delete-role-permission="deleteRolePermission"
+          @sync-backend-roles="openBackendRoleSyncModal"
+        />
+      </div>
+      <div class="role-detail-bottom-section">
+        <role-grant-workbench
+          :capability="capability"
+          :selected-role-code="selectedRoleCode"
+          :selected-role-view="selectedRoleView"
+          :selected-principal="selectedPrincipal"
+          :verification-principal="verificationPrincipal"
+          :verification-user="state.verificationUser"
+          :verification-snapshot="verificationSnapshot"
+          :subject-context="subjectContext"
+          :databases="databases"
+          :tables="tables"
+          :active-tab="activeRoleTab"
+          :state="state"
+          :loading="workbenchLoading"
+          :batch-result="batchResult"
+          :mode="workbenchMode"
+          @change="handleStateChange"
+          @change-tab="activeRoleTab = $event"
+          @edit-role="openRoleEditor"
+          @delete-role="deleteSelectedRole"
+          @delete-role-permission="deleteRolePermission"
+          @open-permission-modal="openPermissionModal"
+          @assign-role="assignRole"
+          @revoke-role="revokeRole"
+          @grant-subset="grantSubset"
+          @revoke-subset="revokeSubset"
+          @force-revoke-user="forceRevokeByUser"
+          @table-expansion-change="handleTableExpansionChange"
+          @preview-historical-adoption="previewHistoricalAdoption"
+          @grant-direct="grantDirect"
+          @revoke-direct="revokeDirect"
+          @dry-run-batch="dryRunBatch"
+          @assign-batch="assignBatch"
+          @select-all-role-permissions="selectAllRolePermissions"
+          @refresh-verification="loadVerificationIfNeeded"
+          @sync-verification="syncVerificationUser"
+          @use-subject-as-verification="useSubjectAsVerificationUser"
+        />
+      </div>
+    </div>
+
+    <!-- 授权中心模式：保持原有左右布局 -->
+    <a-row v-else :gutter="20" class="workspace-row">
+      <a-col v-if="state.mode !== 'ROLE'" :xs="24" :lg="8" :xl="7" class="workspace-col role-catalog-col">
         <role-catalog-panel
           ref="roleCatalogPanel"
           :roles="roles"
@@ -107,8 +173,8 @@
 
       <a-col
         :xs="24"
-        :lg="isRoleManagement || state.mode !== 'ROLE' ? 16 : 24"
-        :xl="isRoleManagement || state.mode !== 'ROLE' ? 17 : 24"
+        :lg="state.mode !== 'ROLE' ? 16 : 24"
+        :xl="state.mode !== 'ROLE' ? 17 : 24"
         class="workspace-col workbench-col"
       >
         <role-grant-workbench
@@ -2000,6 +2066,34 @@ export default {
 }
 .role-catalog-strip-panel :deep(.catalog-hint) {
   display: none;
+}
+.role-management-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.role-catalog-top-section {
+  max-height: 320px;
+  overflow-y: auto;
+  border-radius: 14px;
+  border: 1px solid #e7edf5;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 12px 32px rgba(31, 45, 61, 0.06);
+}
+.role-catalog-top-section :deep(.role-card) {
+  box-shadow: none;
+  border: none;
+}
+.role-catalog-top-section :deep(.role-list) {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 10px;
+}
+.role-detail-bottom-section {
+  flex: 1;
+}
+.role-detail-bottom-section :deep(.ant-card) {
+  box-shadow: 0 12px 32px rgba(31, 45, 61, 0.06);
 }
 .workspace-row {
   align-items: stretch;
