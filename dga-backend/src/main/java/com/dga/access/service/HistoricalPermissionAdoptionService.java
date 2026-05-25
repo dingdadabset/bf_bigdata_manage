@@ -1,6 +1,7 @@
 package com.dga.access.service;
 
 import com.dga.access.dto.BatchGrantRequest;
+import com.dga.access.dto.AuthRolePermissionRequest;
 import com.dga.access.dto.HistoricalPermissionAdoptionPreview;
 import com.dga.access.dto.HistoricalPermissionAdoptionPreviewRequest;
 import com.dga.access.dto.HistoricalPermissionAdoptionRequest;
@@ -147,7 +148,78 @@ public class HistoricalPermissionAdoptionService {
             addResultItem(result, key, "ADOPTED", "历史权限已接管为 DGA 本地记录", saved.getId(),
                     item.getSource(), item.getSourceRole(), item.getSourceGroup());
         }
+        if (Boolean.TRUE.equals(request.getReverseBindToRole())
+                && request.getReverseBindPermissions() != null
+                && !request.getReverseBindPermissions().isEmpty()) {
+            processReverseBind(context, request, result, operator);
+        }
         return result;
+    }
+
+    private void processReverseBind(PreviewContext context, HistoricalPermissionAdoptionRequest request,
+                                    HistoricalPermissionAdoptionResult result, String operator) {
+        Map<String, PermissionRecord> roleByKey = rolePermissionsByKey(context.rolePermissions, context.authBackend);
+        Map<String, PermissionRecord> directByKey = new LinkedHashMap<>();
+        Map<String, PermissionRecord> groupByKey = new LinkedHashMap<>();
+        for (Map<String, Object> row : context.livePermissions) {
+            PermissionRecord record = livePermission(row, context.authBackend);
+            if (record.key == null || record.databaseName == null) {
+                continue;
+            }
+            if ("GROUP_ROLE".equals(record.source)) {
+                groupByKey.putIfAbsent(record.key, record);
+            } else if ("USER".equals(record.source) || "USER_ROLE".equals(record.source) || record.source == null) {
+                directByKey.putIfAbsent(record.key, record);
+            }
+        }
+        for (BatchGrantRequest.RolePermissionSelection selection : request.getReverseBindPermissions()) {
+            PermissionRecord selRecord = new PermissionRecord();
+            selRecord.resourceType = normalizedResourceType(selection.getResourceType(), selection.getTableName());
+            selRecord.databaseName = trimToNull(selection.getDatabaseName());
+            selRecord.tableName = normalizeTable(selection.getTableName());
+            selRecord.permission = normalizePermission(selection.getPermission());
+            selRecord.authBackend = normalizeAuthBackend(firstNonBlank(selection.getAuthBackend(), context.authBackend));
+            String selKey = key(selRecord);
+            if (selKey == null) {
+                continue;
+            }
+            if (!directByKey.containsKey(selKey) && !groupByKey.containsKey(selKey)) {
+                HistoricalPermissionAdoptionResult.Item item = new HistoricalPermissionAdoptionResult.Item();
+                item.setKey(selKey);
+                item.setAction("FAILED");
+                item.setMessage("权限不在用户的 live 权限中，无法反向绑定");
+                result.getReverseBindItems().add(item);
+                continue;
+            }
+            if (roleByKey.containsKey(selKey)) {
+                HistoricalPermissionAdoptionResult.Item item = new HistoricalPermissionAdoptionResult.Item();
+                item.setKey(selKey);
+                item.setAction("SKIPPED");
+                item.setMessage("权限已在角色范围内，跳过");
+                result.getReverseBindItems().add(item);
+                continue;
+            }
+            try {
+                AuthRolePermissionRequest permRequest = new AuthRolePermissionRequest();
+                permRequest.setResourceType(selRecord.resourceType);
+                permRequest.setDatabaseName(selRecord.databaseName);
+                permRequest.setTableName(selRecord.tableName);
+                permRequest.setPermission(selRecord.permission);
+                authRoleService.addPermission(context.role.getRoleCode(), permRequest);
+                HistoricalPermissionAdoptionResult.Item item = new HistoricalPermissionAdoptionResult.Item();
+                item.setKey(selKey);
+                item.setAction("REVERSE_BOUND");
+                item.setMessage("已反向绑定到角色权限范围");
+                result.getReverseBindItems().add(item);
+                result.setReverseBindCount(result.getReverseBindCount() + 1);
+            } catch (Exception e) {
+                HistoricalPermissionAdoptionResult.Item item = new HistoricalPermissionAdoptionResult.Item();
+                item.setKey(selKey);
+                item.setAction("FAILED");
+                item.setMessage("反向绑定失败: " + e.getMessage());
+                result.getReverseBindItems().add(item);
+            }
+        }
     }
 
     private PreviewContext buildPreviewContext(String roleCodeValue, HistoricalPermissionAdoptionPreviewRequest request) {
@@ -300,10 +372,12 @@ public class HistoricalPermissionAdoptionService {
             } else if (inDirect) {
                 item.setAdoptionStatus("LIVE_EXTRA_DIRECT");
                 item.setWarning("历史用户拥有该权限，但不在当前角色范围内；不会塞入该角色");
+                item.setReverseBindable(true);
                 summary.setLiveExtraDirectCount(summary.getLiveExtraDirectCount() + 1);
             } else if (inGroup) {
                 item.setAdoptionStatus("LIVE_EXTRA_GROUP_INHERITED");
                 item.setWarning("该 LDAP 组继承权限不在当前角色范围内");
+                item.setReverseBindable(true);
                 summary.setLiveExtraGroupInheritedCount(summary.getLiveExtraGroupInheritedCount() + 1);
             } else if (inRecorded) {
                 item.setAdoptionStatus("RECORDED_ONLY");

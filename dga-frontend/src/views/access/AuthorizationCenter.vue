@@ -627,10 +627,12 @@ export default {
         this.$message.warning('请选择至少一项可接管权限');
         return;
       }
+      const reverseBindKeys = new Set(payload?.reverseBindSelectedKeys || []);
+      const reverseBindItems = (preview?.items || []).filter(item => item.reverseBindable && reverseBindKeys.has(item.key));
       this.loading.submitting = true;
       try {
         const acknowledgements = payload?.acknowledgements || {};
-        const res = await axios.post(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/historical-adoption`, {
+        const body = {
           username: this.historicalAdoptionUsername(),
           cluster: this.state.selectedCluster,
           authBackend: this.state.selectedAuthBackend,
@@ -649,9 +651,15 @@ export default {
           adoptionReason: payload?.adoptionReason || '',
           ticketNo: payload?.ticketNo || '',
           approver: payload?.approver || ''
-        });
+        };
+        if (reverseBindItems.length > 0) {
+          body.reverseBindToRole = true;
+          body.reverseBindPermissions = reverseBindItems.map(rolePermissionSelection);
+        }
+        const res = await axios.post(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/historical-adoption`, body);
         const result = res.data || {};
-        this.$message.success(`历史权限接管完成：接管 ${result.adoptedCount || 0}，跳过 ${result.skippedCount || 0}，阻断 ${result.blockedCount || 0}`);
+        const reverseMsg = result.reverseBindCount ? `，反向绑定 ${result.reverseBindCount}` : '';
+        this.$message.success(`历史权限接管完成：接管 ${result.adoptedCount || 0}，跳过 ${result.skippedCount || 0}，阻断 ${result.blockedCount || 0}${reverseMsg}`);
         this.historicalAdoption.visible = false;
         await this.afterMutation();
       } catch (e) {

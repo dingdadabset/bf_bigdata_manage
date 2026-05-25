@@ -614,3 +614,14 @@ export function isExpandedTableSelection(selection) {
 export function expandDatabasePermissionToTables(permission, tables) {
   return (tables || []).map(table => buildExpandedTableSelection(permission, table));
 }
+
+export function isReverseBindable(item) {
+  return Boolean(item?.reverseBindable);
+}
+
+export function defaultReverseBindKeys(preview) {
+  return (preview?.items || [])
+    .filter(item => item?.reverseBindable === true)
+    .map(item => item.key)
+    .filter(Boolean);
+}
