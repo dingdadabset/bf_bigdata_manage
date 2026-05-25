@@ -21,6 +21,7 @@ public class BatchGrantRequest {
     private String riskLevel;
     private Boolean forceUserRevoke;
     private Boolean roleSubsetMode;
+    private Boolean tableSubsetMode;
     private List<RolePermissionSelection> rolePermissions;
     private List<String> databases;
     private List<TableGrant> tables;
@@ -161,6 +162,14 @@ public class BatchGrantRequest {
         this.roleSubsetMode = roleSubsetMode;
     }
 
+    public Boolean getTableSubsetMode() {
+        return tableSubsetMode;
+    }
+
+    public void setTableSubsetMode(Boolean tableSubsetMode) {
+        this.tableSubsetMode = tableSubsetMode;
+    }
+
     public List<RolePermissionSelection> getRolePermissions() {
         return rolePermissions;
     }
@@ -191,6 +200,7 @@ public class BatchGrantRequest {
         private String tableName;
         private String permission;
         private String authBackend;
+        private Boolean expandedFromDatabasePermission;
 
         public String getResourceType() {
             return resourceType;
@@ -230,6 +240,14 @@ public class BatchGrantRequest {
 
         public void setAuthBackend(String authBackend) {
             this.authBackend = authBackend;
+        }
+
+        public Boolean getExpandedFromDatabasePermission() {
+            return expandedFromDatabasePermission;
+        }
+
+        public void setExpandedFromDatabasePermission(Boolean expandedFromDatabasePermission) {
+            this.expandedFromDatabasePermission = expandedFromDatabasePermission;
         }
     }
 }

@@ -98,6 +98,7 @@ public class HistoricalPermissionAdoptionPreview {
         private String sourceGroup;
         private String grantText;
         private String warning;
+        private boolean reverseBindable;
 
         public String getKey() { return key; }
         public void setKey(String key) { this.key = key; }
@@ -129,5 +130,7 @@ public class HistoricalPermissionAdoptionPreview {
         public void setGrantText(String grantText) { this.grantText = grantText; }
         public String getWarning() { return warning; }
         public void setWarning(String warning) { this.warning = warning; }
+        public boolean isReverseBindable() { return reverseBindable; }
+        public void setReverseBindable(boolean reverseBindable) { this.reverseBindable = reverseBindable; }
     }
 }

@@ -77,6 +77,27 @@
       </template>
     </a-table>
 
+    <div v-if="reverseBindableItems.length" class="reverse-bind-section">
+      <a-divider orientation="left">可反向绑定到角色</a-divider>
+      <a-alert
+        class="adoption-alert"
+        type="info"
+        show-icon
+        message="反向绑定"
+        description="以下权限存在于用户 live 权限中但不在角色范围内。勾选后可将其添加到角色的权限范围。"
+      />
+      <a-checkbox-group v-model="reverseBindSelectedKeys" class="reverse-bind-checkbox-group">
+        <div v-for="item in reverseBindableItems" :key="item.key" class="reverse-bind-item">
+          <a-checkbox :value="item.key">
+            <a-tag color="purple">可反向绑定到角色</a-tag>
+            <span class="reverse-bind-resource">{{ item.databaseName || '*' }}{{ item.tableName ? `.${item.tableName}` : '.*' }}</span>
+            <a-tag color="blue">{{ item.permission }}</a-tag>
+            <span class="adoption-resource-sub">{{ item.resourceType || '-' }}</span>
+          </a-checkbox>
+        </div>
+      </a-checkbox-group>
+    </div>
+
     <div class="adoption-acknowledgements">
       <a-checkbox v-if="needsRoleMissing" v-model="ack.roleMissing">
         我确认角色中缺失的后端权限不会自动补发，后续需要单独通过子集授权显式下发。
@@ -104,10 +125,12 @@
 import {
   adoptionStatusColor,
   adoptionStatusLabel,
+  defaultReverseBindKeys,
   historicalAdoptionNeedsExtraAcknowledgement,
   historicalAdoptionNeedsGroupAcknowledgement,
   historicalAdoptionNeedsPartialAcknowledgement,
   historicalAdoptionNeedsRoleMissingAcknowledgement,
+  isReverseBindable,
   reconciliationStatusColor,
   reconciliationStatusLabel
 } from '../authorizationCenterHelpers';
@@ -137,6 +160,7 @@ export default {
       keyword: '',
       statusFilter: 'ALL',
       localSelectedKeys: [],
+      reverseBindSelectedKeys: [],
       adoptionReason: '',
       ticketNo: '',
       approver: '',
@@ -195,6 +219,9 @@ export default {
     },
     needsGroup() {
       return historicalAdoptionNeedsGroupAcknowledgement(this.preview, this.localSelectedKeys);
+    },
+    reverseBindableItems() {
+      return (this.preview?.items || []).filter(item => isReverseBindable(item));
     }
   },
   watch: {
@@ -217,6 +244,7 @@ export default {
       this.keyword = '';
       this.statusFilter = 'ALL';
       this.localSelectedKeys = Array.isArray(this.selectedKeys) ? this.selectedKeys.slice() : [];
+      this.reverseBindSelectedKeys = defaultReverseBindKeys(this.preview);
       this.adoptionReason = '';
       this.ticketNo = '';
       this.approver = '';
@@ -261,6 +289,7 @@ export default {
       }
       this.$emit('confirm', {
         selectedKeys: this.localSelectedKeys,
+        reverseBindSelectedKeys: this.reverseBindSelectedKeys,
         acknowledgements: { ...this.ack },
         adoptionReason: this.adoptionReason,
         ticketNo: this.ticketNo,
@@ -311,5 +340,25 @@ export default {
 
 .adoption-governance .ant-input {
   max-width: 300px;
+}
+
+.reverse-bind-section {
+  margin-top: 16px;
+}
+
+.reverse-bind-checkbox-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+}
+
+.reverse-bind-item {
+  padding: 4px 0;
+}
+
+.reverse-bind-resource {
+  font-weight: 600;
+  margin: 0 6px;
 }
 </style>

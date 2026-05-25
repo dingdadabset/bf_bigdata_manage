@@ -138,6 +138,7 @@
           @grant-subset="grantSubset"
           @revoke-subset="revokeSubset"
           @force-revoke-user="forceRevokeByUser"
+          @table-expansion-change="handleTableExpansionChange"
           @preview-historical-adoption="previewHistoricalAdoption"
           @grant-direct="grantDirect"
           @revoke-direct="revokeDirect"
@@ -229,9 +230,11 @@ import RoleGrantWorkbench from './components/RoleGrantWorkbench.vue';
 import {
   allowedSubjectTypes,
   boundRoleMeta,
+  buildExpandedTableSelection,
   defaultHistoricalAdoptionKeys,
   defaultSubjectType,
   hasUsableRoleAssignment,
+  isDatabasePermission,
   operationModeLabel,
   parseBatchUsers,
   permissionKey,
@@ -292,6 +295,7 @@ export default {
         ldapProfile: null
       },
       batchResult: null,
+      expandedTableSelections: {},
       routeContext: {
         username: '',
         cluster: ''
@@ -623,10 +627,12 @@ export default {
         this.$message.warning('请选择至少一项可接管权限');
         return;
       }
+      const reverseBindKeys = new Set(payload?.reverseBindSelectedKeys || []);
+      const reverseBindItems = (preview?.items || []).filter(item => item.reverseBindable && reverseBindKeys.has(item.key));
       this.loading.submitting = true;
       try {
         const acknowledgements = payload?.acknowledgements || {};
-        const res = await axios.post(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/historical-adoption`, {
+        const body = {
           username: this.historicalAdoptionUsername(),
           cluster: this.state.selectedCluster,
           authBackend: this.state.selectedAuthBackend,
@@ -645,9 +651,15 @@ export default {
           adoptionReason: payload?.adoptionReason || '',
           ticketNo: payload?.ticketNo || '',
           approver: payload?.approver || ''
-        });
+        };
+        if (reverseBindItems.length > 0) {
+          body.reverseBindToRole = true;
+          body.reverseBindPermissions = reverseBindItems.map(rolePermissionSelection);
+        }
+        const res = await axios.post(`/api/access/roles/${encodeURIComponent(this.selectedRoleCode)}/historical-adoption`, body);
         const result = res.data || {};
-        this.$message.success(`历史权限接管完成：接管 ${result.adoptedCount || 0}，跳过 ${result.skippedCount || 0}，阻断 ${result.blockedCount || 0}`);
+        const reverseMsg = result.reverseBindCount ? `，反向绑定 ${result.reverseBindCount}` : '';
+        this.$message.success(`历史权限接管完成：接管 ${result.adoptedCount || 0}，跳过 ${result.skippedCount || 0}，阻断 ${result.blockedCount || 0}${reverseMsg}`);
         this.historicalAdoption.visible = false;
         await this.afterMutation();
       } catch (e) {
@@ -1228,9 +1240,11 @@ export default {
         this.selectedRoleCode = '';
         this.selectedRoleView = null;
         this.state.selectedRolePermissionKeys = [];
+        this.expandedTableSelections = {};
         return;
       }
       this.selectedRoleCode = roleCode;
+      this.expandedTableSelections = {};
       await this.loadRoleDetail(roleCode);
       if (refreshSubjectContext) {
         await this.loadSubjectContext();
@@ -1519,17 +1533,41 @@ export default {
       }
     },
     buildSubsetPayload() {
+      const basePermissions = this.selectedRolePermissions();
+      const tableSelections = [];
+      const expandedEntries = Object.entries(this.expandedTableSelections || {});
+      for (const [, entry] of expandedEntries) {
+        if (entry && entry.parentPermission && Array.isArray(entry.tables) && entry.tables.length) {
+          for (const table of entry.tables) {
+            tableSelections.push(buildExpandedTableSelection(entry.parentPermission, table));
+          }
+        }
+      }
+      const hasTableExpansions = tableSelections.length > 0;
       return {
         username: this.state.subjectType === 'GROUP' ? this.state.verificationUser : this.state.subjectName,
         cluster: this.state.selectedCluster,
         authBackend: this.state.selectedAuthBackend,
         grantMode: 'ROLE',
         roleSubsetMode: true,
+        tableSubsetMode: hasTableExpansions ? true : undefined,
         roleCode: this.selectedRoleCode,
         subjectType: this.state.subjectType,
         subjectName: this.state.subjectName,
-        rolePermissions: this.selectedRolePermissions()
+        rolePermissions: [...basePermissions, ...tableSelections]
       };
+    },
+    handleTableExpansionChange({ parentPermission, tables, key }) {
+      if (!tables || !tables.length) {
+        const updated = { ...this.expandedTableSelections };
+        delete updated[key];
+        this.expandedTableSelections = updated;
+      } else {
+        this.expandedTableSelections = {
+          ...this.expandedTableSelections,
+          [key]: { parentPermission, tables }
+        };
+      }
     },
     async grantSubset() {
       if (!this.ensureRangerPrincipalExists(true)) {

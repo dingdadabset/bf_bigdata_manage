@@ -18,6 +18,8 @@ public class HistoricalPermissionAdoptionResult {
     private int blockedCount;
     private List<Item> items = new ArrayList<>();
     private List<String> warnings = new ArrayList<>();
+    private int reverseBindCount;
+    private List<Item> reverseBindItems = new ArrayList<>();
 
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
@@ -47,6 +49,10 @@ public class HistoricalPermissionAdoptionResult {
     public void setItems(List<Item> items) { this.items = items; }
     public List<String> getWarnings() { return warnings; }
     public void setWarnings(List<String> warnings) { this.warnings = warnings; }
+    public int getReverseBindCount() { return reverseBindCount; }
+    public void setReverseBindCount(int reverseBindCount) { this.reverseBindCount = reverseBindCount; }
+    public List<Item> getReverseBindItems() { return reverseBindItems; }
+    public void setReverseBindItems(List<Item> reverseBindItems) { this.reverseBindItems = reverseBindItems; }
 
     public static class Item {
         private String key;

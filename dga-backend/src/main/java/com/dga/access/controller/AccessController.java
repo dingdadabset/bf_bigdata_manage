@@ -60,6 +60,7 @@ import javax.servlet.http.HttpServletRequest;
 import java.util.List;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.time.LocalDateTime;
 
 import java.util.Set;
@@ -300,6 +301,27 @@ public class AccessController {
     @Operation(summary = "查询角色有效权限", description = "查询角色权限和当前绑定对象。")
     public AuthRoleView roleEffectivePermissions(@PathVariable String roleCode) {
         return authRoleService.effectivePermissions(roleCode);
+    }
+
+    @GetMapping("/roles/{roleCode}/permissions/{permissionId}/tables")
+    @Operation(summary = "查询角色库级权限下的可选表", description = "列出指定角色库级权限覆盖的数据库中的所有表，供前端表级子集授权时选择。")
+    public List<String> listRolePermissionTables(@PathVariable String roleCode,
+                                                 @PathVariable Long permissionId,
+                                                 @RequestParam(required = false) String cluster,
+                                                 @RequestParam(required = false) String authBackend,
+                                                 HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级用户可查询角色权限表列表");
+        AuthRolePermission rolePermission = authRolePermissionRepository.findById(permissionId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "角色权限不存在: " + permissionId));
+        if (!roleCode.equals(rolePermission.getRoleCode())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "权限不属于该角色");
+        }
+        if (!"DATABASE".equalsIgnoreCase(rolePermission.getResourceType())) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "仅支持库级权限的表展开");
+        }
+        String resolvedCluster = firstNonBlank(cluster, rolePermission.getCluster());
+        String resolvedAuthBackend = firstNonBlank(authBackend, rolePermission.getAuthBackend());
+        return authorizationService.listTables(resolvedCluster, rolePermission.getDatabaseName(), resolvedAuthBackend);
     }
 
     @DeleteMapping("/roles/{roleCode}/assignments")
@@ -2015,7 +2037,9 @@ public class AccessController {
                     "当前授权后端不支持 " + normalizedSubjectType + " 角色权限子集授权，请选择支持的绑定对象类型");
         }
         requireActiveRoleAssignment(roleCode, normalizedSubjectType, normalizedSubjectName, authBackend);
-        List<AuthRolePermission> selected = validateRolePermissionSelections(roleCode, request.getRolePermissions(), authBackend);
+        List<AuthRolePermission> selected = isTableSubsetRequest(request)
+                ? validateTableSubsetSelections(roleCode, request.getRolePermissions(), authBackend)
+                : validateRolePermissionSelections(roleCode, request.getRolePermissions(), authBackend);
         LocalDateTime expiresAt = parseOptionalDateTime(request.getExpiresAt());
         if ("GROUP".equals(normalizedSubjectType)) {
             if (assignmentUsesMaterializedPolicies(cluster, authBackend, normalizedSubjectType)) {
@@ -2148,7 +2172,9 @@ public class AccessController {
         String normalizedSubjectType = requireText(subjectType, "请选择绑定对象类型").toUpperCase(Locale.ROOT);
         String normalizedSubjectName = requireText(subjectName, "请选择用户或 LDAP 组").trim();
         requireActiveRoleAssignment(roleCode, normalizedSubjectType, normalizedSubjectName, authBackend);
-        List<AuthRolePermission> selected = validateRolePermissionSelections(roleCode, request.getRolePermissions(), authBackend);
+        List<AuthRolePermission> selected = isTableSubsetRequest(request)
+                ? validateTableSubsetSelections(roleCode, request.getRolePermissions(), authBackend)
+                : validateRolePermissionSelections(roleCode, request.getRolePermissions(), authBackend);
         if ("GROUP".equals(normalizedSubjectType)) {
             if (assignmentUsesMaterializedPolicies(cluster, authBackend, normalizedSubjectType)) {
                 for (AuthRolePermission permission : selected) {
@@ -2235,6 +2261,120 @@ public class AccessController {
         }
         selected.sort(Comparator.comparing(permission -> rolePermissionKey(permission.getResourceType(), permission.getDatabaseName(),
                 permission.getTableName(), permission.getPermission(), permission.getAuthBackend())));
+        return selected;
+    }
+
+    private boolean isTableSubsetRequest(BatchGrantRequest request) {
+        if (Boolean.TRUE.equals(request.getTableSubsetMode())) {
+            return true;
+        }
+        List<BatchGrantRequest.RolePermissionSelection> selections = request.getRolePermissions();
+        if (selections == null) {
+            return false;
+        }
+        for (BatchGrantRequest.RolePermissionSelection selection : selections) {
+            if (Boolean.TRUE.equals(selection.getExpandedFromDatabasePermission())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static final Set<String> ALL_SUBSUMES = new HashSet<>(java.util.Arrays.asList(
+            "SELECT", "INSERT", "UPDATE", "DELETE", "CREATE", "DROP", "ALTER", "INDEX", "LOCK", "READ", "WRITE", "ALL"));
+
+    private boolean permissionSubsumes(String parentPermission, String childPermission) {
+        String normalizedParent = upper(parentPermission);
+        String normalizedChild = upper(childPermission);
+        if (normalizedParent.equals(normalizedChild)) {
+            return true;
+        }
+        if ("ALL".equals(normalizedParent) || "ALL_PRIVILEGES".equals(normalizedParent)) {
+            return ALL_SUBSUMES.contains(normalizedChild) || normalizedChild.equals("ALL");
+        }
+        return false;
+    }
+
+    private List<AuthRolePermission> validateTableSubsetSelections(String roleCode,
+                                                                   List<BatchGrantRequest.RolePermissionSelection> selections,
+                                                                   String authBackend) {
+        if (selections == null || selections.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择至少一项角色权限");
+        }
+        List<AuthRolePermission> activePermissions = authRolePermissionRepository.findByRoleCodeAndStatus(roleCode, "ACTIVE");
+        Map<String, AuthRolePermission> activeByKey = new HashMap<>();
+        for (AuthRolePermission permission : activePermissions) {
+            activeByKey.put(rolePermissionKey(permission.getResourceType(), permission.getDatabaseName(), permission.getTableName(),
+                    permission.getPermission(), permission.getAuthBackend()), permission);
+        }
+        List<AuthRolePermission> selected = new ArrayList<>();
+        Set<String> seen = new LinkedHashSet<>();
+        long virtualIdCounter = 0;
+        for (BatchGrantRequest.RolePermissionSelection selection : selections) {
+            String permission = requireText(normalizePermissionValue(selection.getPermission()), "请选择权限类型");
+            try {
+                AuthorizationSupport.validatePermission(permission);
+            } catch (IllegalArgumentException e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "不支持的权限类型: " + permission, e);
+            }
+            String resolvedAuthBackend = firstNonBlank(selection.getAuthBackend(), authBackend);
+            if (Boolean.TRUE.equals(selection.getExpandedFromDatabasePermission())
+                    && "TABLE".equalsIgnoreCase(selection.getResourceType())) {
+                String databaseName = requireText(selection.getDatabaseName(), "请选择数据库");
+                String tableName = requireText(normalizeAuthTable(selection.getTableName()), "请选择表");
+                boolean parentFound = false;
+                for (AuthRolePermission active : activePermissions) {
+                    if (!"DATABASE".equalsIgnoreCase(active.getResourceType())) {
+                        continue;
+                    }
+                    if (!databaseName.equalsIgnoreCase(active.getDatabaseName())) {
+                        continue;
+                    }
+                    String activeBackend = upper(active.getAuthBackend());
+                    if (!activeBackend.isEmpty() && !activeBackend.equals(upper(resolvedAuthBackend))) {
+                        continue;
+                    }
+                    if (permissionSubsumes(active.getPermission(), permission)) {
+                        parentFound = true;
+                        break;
+                    }
+                }
+                if (!parentFound) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "所选表级权限 " + databaseName + "." + tableName + " " + permission
+                                    + " 不在角色 " + roleCode + " 的库级权限范围内，请刷新角色权限后重试");
+                }
+                String virtualKey = rolePermissionKey("TABLE", databaseName, tableName, permission, resolvedAuthBackend);
+                if (seen.add(virtualKey)) {
+                    virtualIdCounter++;
+                    AuthRolePermission virtual = new AuthRolePermission();
+                    virtual.setId(-1L * virtualIdCounter);
+                    virtual.setRoleCode(roleCode);
+                    virtual.setResourceType("TABLE");
+                    virtual.setDatabaseName(databaseName);
+                    virtual.setTableName(tableName);
+                    virtual.setPermission(permission);
+                    virtual.setAuthBackend(resolvedAuthBackend);
+                    virtual.setStatus("ACTIVE");
+                    selected.add(virtual);
+                }
+            } else {
+                String key = rolePermissionKey(selection.getResourceType(), selection.getDatabaseName(), selection.getTableName(),
+                        permission, resolvedAuthBackend);
+                AuthRolePermission matched = activeByKey.get(key);
+                if (matched == null) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                            "所选权限不属于角色 " + roleCode + "，请刷新角色权限后重试");
+                }
+                String matchedKey = rolePermissionKey(matched.getResourceType(), matched.getDatabaseName(), matched.getTableName(),
+                        matched.getPermission(), matched.getAuthBackend());
+                if (seen.add(matchedKey)) {
+                    selected.add(matched);
+                }
+            }
+        }
+        selected.sort(Comparator.comparing(p -> rolePermissionKey(p.getResourceType(), p.getDatabaseName(),
+                p.getTableName(), p.getPermission(), p.getAuthBackend())));
         return selected;
     }
 

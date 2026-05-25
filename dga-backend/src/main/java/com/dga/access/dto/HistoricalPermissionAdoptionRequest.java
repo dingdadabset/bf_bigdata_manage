@@ -22,6 +22,8 @@ public class HistoricalPermissionAdoptionRequest {
     private String adoptionReason;
     private String ticketNo;
     private String approver;
+    private Boolean reverseBindToRole;
+    private List<BatchGrantRequest.RolePermissionSelection> reverseBindPermissions = new ArrayList<>();
 
     public String getUsername() { return username; }
     public void setUsername(String username) { this.username = username; }
@@ -59,4 +61,8 @@ public class HistoricalPermissionAdoptionRequest {
     public void setTicketNo(String ticketNo) { this.ticketNo = ticketNo; }
     public String getApprover() { return approver; }
     public void setApprover(String approver) { this.approver = approver; }
+    public Boolean getReverseBindToRole() { return reverseBindToRole; }
+    public void setReverseBindToRole(Boolean reverseBindToRole) { this.reverseBindToRole = reverseBindToRole; }
+    public List<BatchGrantRequest.RolePermissionSelection> getReverseBindPermissions() { return reverseBindPermissions; }
+    public void setReverseBindPermissions(List<BatchGrantRequest.RolePermissionSelection> reverseBindPermissions) { this.reverseBindPermissions = reverseBindPermissions; }
 }
