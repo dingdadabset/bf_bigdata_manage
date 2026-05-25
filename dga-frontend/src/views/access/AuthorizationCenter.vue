@@ -1240,9 +1240,11 @@ export default {
         this.selectedRoleCode = '';
         this.selectedRoleView = null;
         this.state.selectedRolePermissionKeys = [];
+        this.expandedTableSelections = {};
         return;
       }
       this.selectedRoleCode = roleCode;
+      this.expandedTableSelections = {};
       await this.loadRoleDetail(roleCode);
       if (refreshSubjectContext) {
         await this.loadSubjectContext();

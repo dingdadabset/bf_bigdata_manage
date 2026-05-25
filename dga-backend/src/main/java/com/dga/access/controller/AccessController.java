@@ -2309,6 +2309,7 @@ public class AccessController {
         }
         List<AuthRolePermission> selected = new ArrayList<>();
         Set<String> seen = new LinkedHashSet<>();
+        long virtualIdCounter = 0;
         for (BatchGrantRequest.RolePermissionSelection selection : selections) {
             String permission = requireText(normalizePermissionValue(selection.getPermission()), "请选择权限类型");
             try {
@@ -2345,7 +2346,9 @@ public class AccessController {
                 }
                 String virtualKey = rolePermissionKey("TABLE", databaseName, tableName, permission, resolvedAuthBackend);
                 if (seen.add(virtualKey)) {
+                    virtualIdCounter++;
                     AuthRolePermission virtual = new AuthRolePermission();
+                    virtual.setId(-1L * virtualIdCounter);
                     virtual.setRoleCode(roleCode);
                     virtual.setResourceType("TABLE");
                     virtual.setDatabaseName(databaseName);

@@ -158,6 +158,9 @@ public class HistoricalPermissionAdoptionService {
 
     private void processReverseBind(PreviewContext context, HistoricalPermissionAdoptionRequest request,
                                     HistoricalPermissionAdoptionResult result, String operator) {
+        if (request.getReverseBindPermissions().size() > 50) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "单次最多支持反向绑定 50 项权限");
+        }
         Map<String, PermissionRecord> roleByKey = rolePermissionsByKey(context.rolePermissions, context.authBackend);
         Map<String, PermissionRecord> directByKey = new LinkedHashMap<>();
         Map<String, PermissionRecord> groupByKey = new LinkedHashMap<>();

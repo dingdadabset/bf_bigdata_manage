@@ -1312,6 +1312,13 @@ export default {
       return this.permissionSummary.total;
     }
   },
+  watch: {
+    selectedRoleCode() {
+      this.expandedTableMap = {};
+      this.expandedTableList = {};
+      this.selectedExpandedTables = {};
+    }
+  },
   methods: {
     assignmentKey,
     assignmentStatusColor,
