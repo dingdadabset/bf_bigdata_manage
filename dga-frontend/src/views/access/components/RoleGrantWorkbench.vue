@@ -1992,20 +1992,35 @@ export default {
 }
 .table-expansion-panel {
   margin-top: 4px;
-  padding: 8px 10px;
+  padding: 12px 14px;
   border: 1px solid #d9e8ff;
   border-radius: 8px;
   background: #f8fbff;
 }
 .table-expansion-list {
-  max-height: 180px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  max-height: 240px;
   overflow-y: auto;
 }
 .table-expansion-item {
   display: block;
   margin-left: 0;
-  padding: 4px 0;
+  padding: 8px 12px;
+  border: 1px solid #edf0f5;
+  border-radius: 10px;
+  background: #fff;
   font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: border-color 0.2s, background 0.2s, box-shadow 0.2s;
+}
+.table-expansion-item:hover {
+  border-color: #91caff;
+  background: #f0f7ff;
+  box-shadow: 0 4px 12px rgba(24, 144, 255, 0.06);
 }
 .table-expansion-actions {
   display: flex;
