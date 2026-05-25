@@ -1,0 +1,30 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Table-level sub-permission selection for role subset grants. Currently when a role has a DATABASE-level permission (e.g., SELECT on database 'ods'), users can only select that exact database-level permission entry for subset grants. This feature adds the ability to expand a DATABASE-level role permission into individual table-level selections, so administrators can grant only specific tables (e.g., ods.user_info SELECT) to a user even though the role scope is at the full database level.",
+  "status": "in_progress",
+  "steps": [
+    "1. [Backend DTO] Add a new field `tableSubsetMode` (Boolean) to `BatchGrantRequest.java` to signal that the client is selecting individual tables from a database-level role permission. Also add a field `expandedFromDatabasePermission` (Boolean) to `BatchGrantRequest.RolePermissionSelection` to indicate that a TABLE-level selection was derived from a parent DATABASE-level role permission.",
+    "2. [Backend Controller] In `AccessController.java`, modify `grantRolePermissionSubset()` method. Before calling `validateRolePermissionSelections()`, if `tableSubsetMode` is true, transform the validation logic: for each selection where resourceType=TABLE and expandedFromDatabasePermission=true, validate that the role has an active DATABASE-level permission on the same database with the same (or broader) permission. This means the role permission key lookup should match DATABASE|db|*|perm instead of requiring TABLE|db|table|perm to exist in the role. Apply the same logic in `revokeRolePermissionSubset()`.",
+    "3. [Backend Controller] Create a new private method `validateTableSubsetSelections(String roleCode, List<BatchGrantRequest.RolePermissionSelection> selections, String authBackend)` in AccessController.java. This method checks each selection: if resourceType is TABLE and expandedFromDatabasePermission is true, verify the parent DATABASE permission exists in the role's active permissions. If resourceType is DATABASE or expandedFromDatabasePermission is false, use the existing exact-match logic. Return validated `AuthRolePermission` list (constructing virtual AuthRolePermission objects for the table-level expanded items).",
+    "4. [Backend] Add a new endpoint `GET /api/access/roles/{roleCode}/permissions/{permissionId}/tables` in AccessController.java that lists the tables available under a given DATABASE-level role permission. It calls `authorizationService.listTables(cluster, databaseName, authBackend)` and returns the table list so the frontend can display table-level drill-down options.",
+    "5. [Frontend Workbench] In `RoleGrantWorkbench.vue`, add a table-level expansion UI in the permission-subset-section. When a user selects a DATABASE-level permission item, show a 'Drill down to tables' button/icon next to it. Clicking it opens an inline panel or popover that loads the tables for that database (calling the new endpoint) and allows selecting individual tables.",
+    "6. [Frontend AuthorizationCenter] In `AuthorizationCenter.vue`, update `buildSubsetPayload()` method to set `tableSubsetMode: true` when any of the selected permissions are table-expanded. Transform the `rolePermissions` array: for table-expanded items, set `resourceType: 'TABLE'`, `tableName: <selected table>`, `expandedFromDatabasePermission: true`, `databaseName: <parent db>`, `permission: <parent permission>`.",
+    "7. [Frontend Helpers] In `authorizationCenterHelpers.js`, add a helper function `isExpandedTableSelection(selection)` and `expandDatabasePermissionToTables(permission, tables)` to support the expansion logic.",
+    "8. [Backend Tests] Add unit tests in a new or existing test file for the table-subset validation logic, verifying that: (a) TABLE selections with expandedFromDatabasePermission=true pass when the parent DATABASE permission exists in the role, (b) TABLE selections without the flag still require exact match, (c) invalid TABLE selections (database not in role) are rejected."
+  ],
+  "acceptance_criteria": [
+    "When a role has DATABASE-level permission 'SELECT on ods', an admin can drill down and grant only TABLE-level 'SELECT on ods.user_info' to a specific user",
+    "The backend validates that the table belongs to a database covered by the role's permission scope",
+    "The frontend displays a drill-down option for DATABASE-level permissions to select individual tables",
+    "Existing exact-match role permission subset grants continue to work unchanged",
+    "The revoke flow also supports table-level sub-revocation from a database-level role permission"
+  ],
+  "verification": [
+    "cd dga-backend && mvn compile -q",
+    "cd dga-backend && mvn test -q",
+    "cd dga-frontend && npm install && npm run build"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

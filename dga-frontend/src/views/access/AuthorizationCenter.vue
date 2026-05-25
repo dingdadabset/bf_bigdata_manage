@@ -138,6 +138,7 @@
           @grant-subset="grantSubset"
           @revoke-subset="revokeSubset"
           @force-revoke-user="forceRevokeByUser"
+          @table-expansion-change="handleTableExpansionChange"
           @preview-historical-adoption="previewHistoricalAdoption"
           @grant-direct="grantDirect"
           @revoke-direct="revokeDirect"
@@ -229,9 +230,11 @@ import RoleGrantWorkbench from './components/RoleGrantWorkbench.vue';
 import {
   allowedSubjectTypes,
   boundRoleMeta,
+  buildExpandedTableSelection,
   defaultHistoricalAdoptionKeys,
   defaultSubjectType,
   hasUsableRoleAssignment,
+  isDatabasePermission,
   operationModeLabel,
   parseBatchUsers,
   permissionKey,
@@ -292,6 +295,7 @@ export default {
         ldapProfile: null
       },
       batchResult: null,
+      expandedTableSelections: {},
       routeContext: {
         username: '',
         cluster: ''
@@ -1519,17 +1523,41 @@ export default {
       }
     },
     buildSubsetPayload() {
+      const basePermissions = this.selectedRolePermissions();
+      const tableSelections = [];
+      const expandedEntries = Object.entries(this.expandedTableSelections || {});
+      for (const [, entry] of expandedEntries) {
+        if (entry && entry.parentPermission && Array.isArray(entry.tables) && entry.tables.length) {
+          for (const table of entry.tables) {
+            tableSelections.push(buildExpandedTableSelection(entry.parentPermission, table));
+          }
+        }
+      }
+      const hasTableExpansions = tableSelections.length > 0;
       return {
         username: this.state.subjectType === 'GROUP' ? this.state.verificationUser : this.state.subjectName,
         cluster: this.state.selectedCluster,
         authBackend: this.state.selectedAuthBackend,
         grantMode: 'ROLE',
         roleSubsetMode: true,
+        tableSubsetMode: hasTableExpansions ? true : undefined,
         roleCode: this.selectedRoleCode,
         subjectType: this.state.subjectType,
         subjectName: this.state.subjectName,
-        rolePermissions: this.selectedRolePermissions()
+        rolePermissions: [...basePermissions, ...tableSelections]
       };
+    },
+    handleTableExpansionChange({ parentPermission, tables, key }) {
+      if (!tables || !tables.length) {
+        const updated = { ...this.expandedTableSelections };
+        delete updated[key];
+        this.expandedTableSelections = updated;
+      } else {
+        this.expandedTableSelections = {
+          ...this.expandedTableSelections,
+          [key]: { parentPermission, tables }
+        };
+      }
     },
     async grantSubset() {
       if (!this.ensureRangerPrincipalExists(true)) {

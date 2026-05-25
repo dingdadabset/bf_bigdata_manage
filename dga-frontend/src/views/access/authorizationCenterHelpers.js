@@ -590,3 +590,27 @@ export function canDirectExceptionPrincipal(principal) {
 export function principalWarnings(principal) {
   return Array.isArray(principal?.warnings) ? principal.warnings.filter(Boolean) : [];
 }
+
+export function isDatabasePermission(permission) {
+  return String(permission?.resourceType || '').toUpperCase() === 'DATABASE';
+}
+
+export function buildExpandedTableSelection(parentPermission, tableName) {
+  return {
+    resourceType: 'TABLE',
+    databaseName: parentPermission?.databaseName || '',
+    tableName: tableName || null,
+    permission: normalizePermissionName(parentPermission?.permission),
+    authBackend: parentPermission?.authBackend || '',
+    expandedFromDatabasePermission: true
+  };
+}
+
+export function isExpandedTableSelection(selection) {
+  return Boolean(selection?.expandedFromDatabasePermission)
+    && String(selection?.resourceType || '').toUpperCase() === 'TABLE';
+}
+
+export function expandDatabasePermissionToTables(permission, tables) {
+  return (tables || []).map(table => buildExpandedTableSelection(permission, table));
+}

@@ -428,14 +428,53 @@
                 class="permission-grid"
                 @change="update('selectedRolePermissionKeys', $event)"
               >
-                <a-checkbox
+                <div
                   v-for="item in pagedSubsetRolePermissions"
                   :key="permissionKey(item)"
-                  :value="permissionKey(item)"
-                  class="permission-item"
+                  class="permission-item-wrap"
                 >
-                  <span class="permission-item-main">{{ rolePermissionShortText(item) }}</span>
-                </a-checkbox>
+                  <a-checkbox
+                    :value="permissionKey(item)"
+                    class="permission-item"
+                  >
+                    <span class="permission-item-main">{{ rolePermissionShortText(item) }}</span>
+                  </a-checkbox>
+                  <a-button
+                    v-if="isDatabasePermission(item)"
+                    size="small"
+                    type="link"
+                    icon="branches"
+                    class="table-drilldown-btn"
+                    :loading="tableExpansionLoading[permissionKey(item)]"
+                    @click.stop="toggleTableExpansion(item)"
+                  >
+                    表
+                  </a-button>
+                  <div v-if="expandedTableMap[permissionKey(item)]" class="table-expansion-panel">
+                    <a-spin :spinning="!!tableExpansionLoading[permissionKey(item)]" size="small">
+                      <div v-if="expandedTableList[permissionKey(item)] && expandedTableList[permissionKey(item)].length" class="table-expansion-list">
+                        <a-checkbox-group
+                          :value="selectedExpandedTables[permissionKey(item)] || []"
+                          @change="updateExpandedTableSelection(permissionKey(item), item, $event)"
+                        >
+                          <a-checkbox
+                            v-for="table in expandedTableList[permissionKey(item)]"
+                            :key="table"
+                            :value="table"
+                            class="table-expansion-item"
+                          >
+                            {{ item.databaseName }}.{{ table }}
+                          </a-checkbox>
+                        </a-checkbox-group>
+                        <div class="table-expansion-actions">
+                          <a-button size="small" @click="selectAllExpandedTables(permissionKey(item), item)">全选</a-button>
+                          <a-button size="small" @click="clearExpandedTables(permissionKey(item))">清空</a-button>
+                        </div>
+                      </div>
+                      <a-empty v-else-if="!tableExpansionLoading[permissionKey(item)]" class="compact-empty" description="暂无可用表" />
+                    </a-spin>
+                  </div>
+                </div>
               </a-checkbox-group>
               <div class="permission-pagination-row">
                 <span class="pagination-hint">当前页 {{ pagedSubsetRolePermissions.length }} 项，仅分页展示，不影响已勾选结果。</span>
@@ -824,6 +863,7 @@
 </template>
 
 <script>
+import axios from 'axios';
 import PermissionVerificationPanel from './PermissionVerificationPanel.vue';
 import { canDelete } from '../../../utils/currentUser';
 import {
@@ -835,6 +875,7 @@ import {
   filterRoleAssignments,
   filterRolePermissions,
   hasUsableRoleAssignment,
+  isDatabasePermission,
   isGroupInheritedGrant,
   operationModeLabel,
   permissionKey,
@@ -927,6 +968,10 @@ export default {
       subsetPermissionFilter: 'ALL',
       subsetPermissionPage: 1,
       subsetPermissionPageSize: 12,
+      expandedTableMap: {},
+      expandedTableList: {},
+      selectedExpandedTables: {},
+      tableExpansionLoading: {},
       forceRevokeModalVisible: false,
       forceRevokeKeyword: '',
       forceRevokePermissionFilter: 'ALL',
@@ -1272,6 +1317,7 @@ export default {
     assignmentStatusColor,
     batchActionText,
     batchStatusColor,
+    isDatabasePermission,
     operationModeLabel,
     permissionKey,
     resourceTypeLabel,
@@ -1381,6 +1427,45 @@ export default {
     },
     update(field, value) {
       this.$emit('change', { field, value });
+    },
+    async toggleTableExpansion(item) {
+      const key = permissionKey(item);
+      if (this.expandedTableMap[key]) {
+        this.$set(this.expandedTableMap, key, false);
+        return;
+      }
+      this.$set(this.expandedTableMap, key, true);
+      if (this.expandedTableList[key]) {
+        return;
+      }
+      this.$set(this.tableExpansionLoading, key, true);
+      try {
+        const roleCode = this.role?.roleCode;
+        const permissionId = item.id;
+        const params = {};
+        if (this.state.selectedCluster) params.cluster = this.state.selectedCluster;
+        if (this.state.selectedAuthBackend) params.authBackend = this.state.selectedAuthBackend;
+        const response = await axios.get(`/api/access/roles/${roleCode}/permissions/${permissionId}/tables`, { params });
+        this.$set(this.expandedTableList, key, Array.isArray(response.data) ? response.data : []);
+      } catch (e) {
+        this.$message.error('加载表列表失败: ' + (e?.response?.data?.message || e.message || '未知错误'));
+        this.$set(this.expandedTableList, key, []);
+      } finally {
+        this.$set(this.tableExpansionLoading, key, false);
+      }
+    },
+    updateExpandedTableSelection(key, item, tables) {
+      this.$set(this.selectedExpandedTables, key, tables);
+      this.$emit('table-expansion-change', { parentPermission: item, tables, key });
+    },
+    selectAllExpandedTables(key, item) {
+      const tables = this.expandedTableList[key] || [];
+      this.$set(this.selectedExpandedTables, key, [...tables]);
+      this.$emit('table-expansion-change', { parentPermission: item, tables: [...tables], key });
+    },
+    clearExpandedTables(key) {
+      this.$set(this.selectedExpandedTables, key, []);
+      this.$emit('table-expansion-change', { parentPermission: null, tables: [], key });
     }
   }
 };
@@ -1872,6 +1957,9 @@ export default {
   gap: 10px;
   padding: 0 16px;
 }
+.permission-item-wrap {
+  position: relative;
+}
 .permission-item {
   display: flex;
   align-items: center;
@@ -1887,6 +1975,37 @@ export default {
   border-color: #91caff;
   background: #f8fbff;
   box-shadow: 0 6px 16px rgba(24, 144, 255, 0.08);
+}
+.table-drilldown-btn {
+  position: absolute;
+  top: 8px;
+  right: 4px;
+  font-size: 11px;
+  padding: 2px 6px;
+}
+.table-expansion-panel {
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid #d9e8ff;
+  border-radius: 8px;
+  background: #f8fbff;
+}
+.table-expansion-list {
+  max-height: 180px;
+  overflow-y: auto;
+}
+.table-expansion-item {
+  display: block;
+  margin-left: 0;
+  padding: 4px 0;
+  font-size: 12px;
+}
+.table-expansion-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #e7edf5;
 }
 .permission-item-main {
   display: inline-block;
