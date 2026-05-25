@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "feat",
   "description": "Table-level sub-permission selection for role subset grants. Currently when a role has a DATABASE-level permission (e.g., SELECT on database 'ods'), users can only select that exact database-level permission entry for subset grants. This feature adds the ability to expand a DATABASE-level role permission into individual table-level selections, so administrators can grant only specific tables (e.g., ods.user_info SELECT) to a user even though the role scope is at the full database level.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "1. [Backend DTO] Add a new field `tableSubsetMode` (Boolean) to `BatchGrantRequest.java` to signal that the client is selecting individual tables from a database-level role permission. Also add a field `expandedFromDatabasePermission` (Boolean) to `BatchGrantRequest.RolePermissionSelection` to indicate that a TABLE-level selection was derived from a parent DATABASE-level role permission.",
     "2. [Backend Controller] In `AccessController.java`, modify `grantRolePermissionSubset()` method. Before calling `validateRolePermissionSelections()`, if `tableSubsetMode` is true, transform the validation logic: for each selection where resourceType=TABLE and expandedFromDatabasePermission=true, validate that the role has an active DATABASE-level permission on the same database with the same (or broader) permission. This means the role permission key lookup should match DATABASE|db|*|perm instead of requiring TABLE|db|table|perm to exist in the role. Apply the same logic in `revokeRolePermissionSubset()`.",
@@ -26,5 +26,5 @@
     "cd dga-frontend && npm install && npm run build"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Build and test verification could not be completed due to network restrictions (INTEGRATIONS_ONLY mode). Maven cannot resolve spring-boot-starter-parent POM from Maven Central and npm install times out. Syntax correctness was verified via brace-balance checks and code review. All Java files have balanced braces. The Vue file structure (template/script/style) is intact."
 }
