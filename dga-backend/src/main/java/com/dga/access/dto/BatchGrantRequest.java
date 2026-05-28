@@ -200,6 +200,8 @@ public class BatchGrantRequest {
         private String tableName;
         private String permission;
         private String authBackend;
+        private String sourceRole;
+        private String sourceGroup;
         private Boolean expandedFromDatabasePermission;
 
         public String getResourceType() {
@@ -240,6 +242,22 @@ public class BatchGrantRequest {
 
         public void setAuthBackend(String authBackend) {
             this.authBackend = authBackend;
+        }
+
+        public String getSourceRole() {
+            return sourceRole;
+        }
+
+        public void setSourceRole(String sourceRole) {
+            this.sourceRole = sourceRole;
+        }
+
+        public String getSourceGroup() {
+            return sourceGroup;
+        }
+
+        public void setSourceGroup(String sourceGroup) {
+            this.sourceGroup = sourceGroup;
         }
 
         public Boolean getExpandedFromDatabasePermission() {

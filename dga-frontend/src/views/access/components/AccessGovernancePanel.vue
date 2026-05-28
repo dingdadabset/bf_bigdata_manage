@@ -22,6 +22,12 @@
         <a-input-number v-model="scanForm.reviewDays" :min="1" :max="365" size="small" />
         <span class="toolbar-label">复核周期</span>
         <a-button icon="profile" @click="ruleModalVisible = true">规则示例</a-button>
+        <a-tooltip :title="agentConfigured ? '基于当前筛选结果调用 DeepSeek 生成 AI 治理计划' : '未配置 DEEPSEEK_API_KEY，无法调用大模型'">
+          <a-button icon="deployment-unit" :loading="agentPlanLoading" @click="generateAgentPlan">AI 治理计划</a-button>
+        </a-tooltip>
+        <a-tooltip :title="agentConfigured ? '调用 DeepSeek 生成当前风险治理报告' : '未配置 DEEPSEEK_API_KEY，无法调用大模型'">
+          <a-button icon="file-markdown" :loading="agentReportLoading" @click="generateAgentReport">AI 生成报告</a-button>
+        </a-tooltip>
         <a-button icon="reload" :loading="loadingIssues || loadingSummary" @click="refreshAll">刷新</a-button>
         <a-popconfirm
           :title="clearConfirmTitle"
@@ -203,6 +209,15 @@
       <template slot="action" slot-scope="text, record">
         <a-space>
           <a-button
+            type="link"
+            size="small"
+            icon="robot"
+            :loading="agentAdviceLoadingId === record.id"
+            @click="openAgentAdvice(record)"
+          >
+            AI建议
+          </a-button>
+          <a-button
             v-if="record.issueType === 'UNOWNED_PERMISSION' && record.status !== 'RESOLVED'"
             type="link"
             size="small"
@@ -307,6 +322,92 @@
       </a-form-model>
     </a-modal>
 
+    <a-drawer
+      :visible="agentAdviceVisible"
+      title="AI 风险治理建议"
+      width="520"
+      @close="agentAdviceVisible = false"
+    >
+      <a-skeleton v-if="agentAdviceLoadingId" active />
+      <div v-else-if="agentAdvice" class="agent-advice-panel">
+        <a-alert type="info" show-icon message="AI 只提供治理建议，回收、指派和关闭仍需管理员确认执行。" />
+        <div class="agent-section">
+          <h4>{{ agentAdvice.summary || '风险分析' }}</h4>
+          <p>{{ agentAdvice.riskReason || '-' }}</p>
+        </div>
+        <div class="agent-grid">
+          <div>
+            <span>建议动作</span>
+            <a-tag color="blue">{{ agentActionLabel(agentAdvice.suggestedAction) }}</a-tag>
+          </div>
+          <div>
+            <span>推荐负责人</span>
+            <strong>{{ agentAdvice.suggestedOwner || '-' }}</strong>
+          </div>
+          <div>
+            <span>置信度</span>
+            <strong>{{ agentConfidence(agentAdvice.confidence) }}</strong>
+          </div>
+          <div>
+            <span>需要审批</span>
+            <a-tag :color="agentAdvice.approvalRequired ? 'orange' : 'green'">{{ agentAdvice.approvalRequired ? '是' : '否' }}</a-tag>
+          </div>
+        </div>
+        <div class="agent-section">
+          <h4>处理步骤</h4>
+          <ol>
+            <li v-for="(step, index) in agentAdvice.steps || []" :key="index">{{ step }}</li>
+          </ol>
+        </div>
+        <div class="agent-section">
+          <h4>依据数据</h4>
+          <div class="agent-evidence-list">
+            <div v-for="(item, index) in normalizedAgentEvidence" :key="index" class="agent-evidence-item">
+              <a-icon type="check-circle" />
+              <span>{{ item }}</span>
+            </div>
+          </div>
+        </div>
+        <div class="agent-actions">
+          <a-button v-if="agentAdviceRecord && agentAdviceRecord.status !== 'RESOLVED'" type="primary" icon="team" @click="adoptAgentOwner">采纳负责人</a-button>
+          <a-button v-if="agentAdviceRecord && agentAdviceRecord.status !== 'RESOLVED'" icon="check" @click="resolveIssue(agentAdviceRecord)">关闭风险</a-button>
+        </div>
+      </div>
+    </a-drawer>
+
+    <a-modal
+      :visible="agentPlanVisible"
+      title="AI 治理计划"
+      width="760px"
+      :footer="null"
+      @cancel="agentPlanVisible = false"
+    >
+      <div class="agent-plan-panel">
+        <a-alert type="warning" show-icon message="治理计划不会自动执行，请管理员逐项确认后再使用现有认领、指派、回收或关闭操作。" />
+        <p class="agent-summary">{{ agentPlan.summary || '-' }}</p>
+        <div v-for="(action, index) in agentPlan.actions || []" :key="index" class="agent-action-card">
+          <div class="agent-action-head">
+            <a-tag color="blue">{{ agentActionLabel(action.type) }}</a-tag>
+            <span>{{ (action.issueIds || []).length }} 条风险</span>
+          </div>
+          <p>{{ action.reason || '-' }}</p>
+          <div class="muted-text">风险 ID：{{ (action.issueIds || []).join(', ') || '-' }}</div>
+        </div>
+      </div>
+    </a-modal>
+
+    <a-modal
+      :visible="agentReportVisible"
+      title="AI 治理报告"
+      width="820px"
+      @ok="copyAgentReport"
+      ok-text="复制报告"
+      cancel-text="关闭"
+      @cancel="agentReportVisible = false"
+    >
+      <div class="agent-report-preview" v-html="formattedAgentReport"></div>
+    </a-modal>
+
     <a-modal
       :visible="ruleModalVisible"
       title="数据库权限治理规则与审计来源示例"
@@ -368,6 +469,17 @@ export default {
       savingAction: false,
       creatingOwner: false,
       clearingResults: false,
+      agentConfigured: false,
+      agentAdviceVisible: false,
+      agentAdviceLoadingId: null,
+      agentAdviceRecord: null,
+      agentAdvice: null,
+      agentPlanVisible: false,
+      agentPlanLoading: false,
+      agentPlan: {},
+      agentReportVisible: false,
+      agentReportLoading: false,
+      agentReportMarkdown: '',
       actionModalVisible: false,
       ruleModalVisible: false,
       actionMode: '',
@@ -452,11 +564,27 @@ export default {
         { title: '证据', dataIndex: 'evidence', key: 'evidence', scopedSlots: { customRender: 'message' }, width: 300 },
         { title: '建议', dataIndex: 'recommendation', key: 'recommendation', scopedSlots: { customRender: 'message' }, width: 300 },
         { title: '发现时间', dataIndex: 'detectedAt', key: 'detectedAt', scopedSlots: { customRender: 'time' }, width: 170 },
-        { title: '操作', key: 'action', scopedSlots: { customRender: 'action' }, width: 230, fixed: 'right' }
+        { title: '操作', key: 'action', scopedSlots: { customRender: 'action' }, width: 300, fixed: 'right' }
       ]
     };
   },
   computed: {
+    normalizedAgentEvidence() {
+      const evidence = this.agentAdvice?.evidence;
+      if (Array.isArray(evidence)) {
+        return evidence.map(item => String(item || '').trim()).filter(Boolean);
+      }
+      if (typeof evidence === 'string') {
+        return evidence
+          .split(/[\n；;。]+/)
+          .map(item => item.trim())
+          .filter(Boolean);
+      }
+      return [];
+    },
+    formattedAgentReport() {
+      return this.renderMarkdown(this.agentReportMarkdown || '');
+    },
     currentCluster() {
       return this.store.headerSelectedCluster || this.store.currentCluster || '';
     },
@@ -523,10 +651,19 @@ export default {
   },
   mounted() {
     this.refreshAll();
+    this.fetchAgentConfig();
   },
   methods: {
     async refreshAll() {
       await Promise.all([this.fetchSummary(), this.fetchIssues()]);
+    },
+    async fetchAgentConfig() {
+      try {
+        const res = await axios.get('/api/access/governance/agent/config/status');
+        this.agentConfigured = !!res.data?.configured;
+      } catch (e) {
+        this.agentConfigured = false;
+      }
     },
     async fetchSummary() {
       this.loadingSummary = true;
@@ -586,6 +723,79 @@ export default {
       } finally {
         this.scanning = false;
       }
+    },
+    async openAgentAdvice(record) {
+      this.agentAdviceVisible = true;
+      this.agentAdviceRecord = record;
+      this.agentAdvice = null;
+      this.agentAdviceLoadingId = record.id;
+      try {
+        const res = await axios.post('/api/access/governance/agent/analyze', { issueId: record.id });
+        this.agentAdvice = res.data || {};
+      } catch (e) {
+        this.$message.error(e.response?.data?.message || 'AI 风险分析失败');
+      } finally {
+        this.agentAdviceLoadingId = null;
+      }
+    },
+    async generateAgentPlan() {
+      if (!this.issues.length) {
+        this.$message.warning('当前没有可分析的风险记录');
+        return;
+      }
+      this.agentPlanLoading = true;
+      try {
+        const res = await axios.post('/api/access/governance/agent/plan', {
+          issueIds: this.issues.map(item => item.id),
+          scope: 'CURRENT_PAGE',
+          cluster: this.currentCluster,
+          status: this.filters.status === 'ALL' ? '' : this.filters.status,
+          issueTypes: this.filters.issueTypes
+        });
+        this.agentPlan = res.data || {};
+        this.agentPlanVisible = true;
+      } catch (e) {
+        this.$message.error(e.response?.data?.message || '生成 AI 治理计划失败');
+      } finally {
+        this.agentPlanLoading = false;
+      }
+    },
+    async generateAgentReport() {
+      this.agentReportLoading = true;
+      try {
+        const res = await axios.post('/api/access/governance/agent/report', {
+          issueIds: this.issues.map(item => item.id),
+          scope: 'CURRENT_PAGE',
+          cluster: this.currentCluster,
+          status: this.filters.status === 'ALL' ? '' : this.filters.status,
+          issueTypes: this.filters.issueTypes
+        });
+        this.agentReportMarkdown = res.data?.markdown || '';
+        this.agentReportVisible = true;
+      } catch (e) {
+        this.$message.error(e.response?.data?.message || '生成 AI 治理报告失败');
+      } finally {
+        this.agentReportLoading = false;
+      }
+    },
+    copyAgentReport() {
+      const text = this.agentReportMarkdown || '';
+      if (navigator.clipboard && text) {
+        navigator.clipboard.writeText(text);
+        this.$message.success('报告已复制');
+      } else {
+        this.$message.info('请手动复制报告内容');
+      }
+    },
+    adoptAgentOwner() {
+      if (!this.agentAdviceRecord || !this.agentAdvice?.suggestedOwner) {
+        this.$message.warning('AI 未给出可采纳的负责人');
+        return;
+      }
+      this.openAction('claim', this.agentAdviceRecord);
+      this.actionForm.owner = this.agentAdvice.suggestedOwner;
+      this.actionForm.comment = `采纳 AI 建议：${this.agentAdvice.summary || ''}`;
+      this.agentAdviceVisible = false;
     },
     async clearResults() {
       this.clearingResults = true;
@@ -736,6 +946,71 @@ export default {
     },
     confidenceColor(text) {
       return { HIGH: 'green', MEDIUM: 'blue', LOW: 'orange' }[text] || 'default';
+    },
+    agentActionLabel(action) {
+      const labels = {
+        REVOKE: '建议回收',
+        DOWNGRADE: '建议降权',
+        ASSIGN_OWNER: '建议指派负责人',
+        KEEP_WITH_REASON: '保留并补充原因',
+        CLOSE_FALSE_POSITIVE: '建议关闭误报',
+        REVIEW_MANUALLY: '人工复核'
+      };
+      return labels[action] || action || '-';
+    },
+    agentConfidence(value) {
+      const num = Number(value);
+      if (Number.isNaN(num)) return '-';
+      return `${Math.round(num * 100)}%`;
+    },
+    renderMarkdown(markdown) {
+      const escapeHtml = value => String(value || '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+      const lines = String(markdown || '').split('\n');
+      const html = [];
+      let inTable = false;
+      lines.forEach(line => {
+        const raw = line.trim();
+        if (!raw) {
+          if (inTable) {
+            html.push('</tbody></table>');
+            inTable = false;
+          }
+          return;
+        }
+        if (raw.startsWith('|') && raw.endsWith('|')) {
+          const cells = raw.split('|').slice(1, -1).map(cell => escapeHtml(cell.trim()));
+          const separator = cells.every(cell => /^:?-{3,}:?$/.test(cell));
+          if (separator) return;
+          if (!inTable) {
+            html.push('<table><tbody>');
+            inTable = true;
+          }
+          html.push(`<tr>${cells.map(cell => `<td>${cell}</td>`).join('')}</tr>`);
+          return;
+        }
+        if (inTable) {
+          html.push('</tbody></table>');
+          inTable = false;
+        }
+        if (raw.startsWith('### ')) {
+          html.push(`<h3>${escapeHtml(raw.slice(4))}</h3>`);
+        } else if (raw.startsWith('## ')) {
+          html.push(`<h2>${escapeHtml(raw.slice(3))}</h2>`);
+        } else if (raw.startsWith('# ')) {
+          html.push(`<h1>${escapeHtml(raw.slice(2))}</h1>`);
+        } else if (raw.startsWith('- ')) {
+          html.push(`<p class="report-bullet">${escapeHtml(raw.slice(2))}</p>`);
+        } else {
+          html.push(`<p>${escapeHtml(raw)}</p>`);
+        }
+      });
+      if (inTable) html.push('</tbody></table>');
+      return html.join('');
     },
     sourceColor(source) {
       const colors = {
@@ -930,6 +1205,143 @@ export default {
   color: #101828;
   font-size: 24px;
   line-height: 30px;
+}
+.agent-advice-panel {
+  color: #344054;
+}
+.agent-section {
+  margin-top: 18px;
+}
+.agent-section h4 {
+  margin: 0 0 8px;
+  color: #101828;
+  font-size: 15px;
+  font-weight: 700;
+}
+.agent-section p {
+  margin: 0;
+  line-height: 22px;
+}
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 18px;
+}
+.agent-grid > div {
+  padding: 12px;
+  background: #f8fbff;
+  border: 1px solid #e6f0ff;
+  border-radius: 8px;
+}
+.agent-grid span {
+  display: block;
+  margin-bottom: 6px;
+  color: #667085;
+  font-size: 12px;
+}
+.agent-evidence-list {
+  display: grid;
+  gap: 8px;
+}
+.agent-evidence-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  line-height: 20px;
+  color: #344054;
+  background: #f8fbff;
+  border: 1px solid #e6f0ff;
+  border-radius: 8px;
+}
+.agent-evidence-item .anticon {
+  margin-top: 3px;
+  color: #1677ff;
+}
+.agent-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 22px;
+}
+.agent-summary {
+  margin: 14px 0;
+  color: #344054;
+  line-height: 22px;
+}
+.agent-action-card {
+  margin-top: 12px;
+  padding: 14px;
+  background: #fff;
+  border: 1px solid #eaecf0;
+  border-radius: 8px;
+}
+.agent-action-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.agent-report-preview {
+  max-height: 620px;
+  padding: 22px;
+  overflow: auto;
+  text-align: left;
+  background: #ffffff;
+  color: #344054;
+  border: 1px solid #eaecf0;
+  border-radius: 12px;
+}
+.agent-report-preview h1,
+.agent-report-preview h2,
+.agent-report-preview h3 {
+  margin: 18px 0 10px;
+  text-align: left;
+  color: #101828;
+  font-weight: 700;
+}
+.agent-report-preview h1 {
+  margin-top: 0;
+  padding-bottom: 12px;
+  font-size: 22px;
+  border-bottom: 1px solid #eaecf0;
+}
+.agent-report-preview h2 {
+  font-size: 18px;
+}
+.agent-report-preview h3 {
+  font-size: 15px;
+}
+.agent-report-preview p {
+  margin: 8px 0;
+  text-align: left;
+  line-height: 24px;
+}
+.agent-report-preview .report-bullet {
+  position: relative;
+  padding-left: 18px;
+}
+.agent-report-preview .report-bullet::before {
+  position: absolute;
+  left: 2px;
+  content: '•';
+  color: #1677ff;
+}
+.agent-report-preview table {
+  width: 100%;
+  margin: 12px 0 18px;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.agent-report-preview td {
+  padding: 10px 12px;
+  text-align: left;
+  border: 1px solid #eaecf0;
+}
+.agent-report-preview tr:first-child td {
+  color: #101828;
+  font-weight: 700;
+  background: #f8fbff;
 }
 .toolbar {
   display: flex;

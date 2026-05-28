@@ -1,17 +1,21 @@
 # DGA 开放授权接口文档
 
-本文档用于对接 DGA 授权能力的外部系统，覆盖集群查询、用户查询、库表查询、用户权限查询、批量授权和批量回收。
+本文档用于对接 DGA 授权能力的外部系统，覆盖集群查询、用户创建、用户查询、库表查询、用户权限查询、批量授权和批量回收。
 
 > **当前开放接口定位**：`/openapi/v1/authz/grants` 与 `/openapi/v1/authz/revokes` 属于**直接用户授权 / 直接用户回收**接口，会直接调用当前集群对应的授权后端（如 Sentry、Ranger、StarRocks、Doris）并写入 DGA 本地授权记录。它不走授权中心页面的 RBAC 角色绑定、角色权限子集下发或强制按用户回收流程，因此请求体中不需要也不支持 `roleCode`、`subjectType`、`grantMode` 等角色字段。
+>
+> **用户创建接口说明**：用户创建当前复用授权中心管理接口 `/api/access/user`，不是 `/openapi/v1/authz` 前缀下的接口；鉴权方式一致，仍要求 `admin` 或平台超级用户。
 
 ## 1. 基础信息
 
-- 接口前缀：`/openapi/v1/authz`
+- 授权开放接口前缀：`/openapi/v1/authz`
+- 用户创建接口：`/api/access/user`
 - 鉴权方式：`Bearer JWT`
-- 返回格式：`application/json`
+- 返回格式：授权开放接口为 `application/json`；用户创建接口成功响应为 `text/plain`
 - Swagger 地址：
   - `http://{host}:8081/swagger-ui/index.html`
-  - 过滤 `开放授权接口`
+  - 授权开放接口过滤 `开放授权接口`
+  - 用户创建接口查看授权中心管理接口中的 `/api/access/user`
 
 测试环境：10.0.21.191
 生产环境：172.20.85.101
@@ -20,9 +24,10 @@
 
 1. 登录获取 JWT
 2. 查询可授权集群
-3. 查询用户 / 库 / 表
-4. 查询用户现有权限
-5. 执行批量授权或批量回收
+3. 如用户不存在，先创建用户
+4. 查询用户 / 库 / 表
+5. 查询用户现有权限
+6. 执行批量授权或批量回收
 
 ## 2. 获取 Token
 
@@ -101,7 +106,69 @@ GET /openapi/v1/authz/clusters
 - `authBackend`：实际授权后端，例如 `SENTRY` / `RANGER` / `STARROCKS_SQL`
 - `status`：当前授权能力状态，`READY` 才建议开放给外部调用
 
-### 3.2 查询用户列表
+### 3.2 创建用户
+
+接口语义：
+
+- 该接口用于在指定集群创建权限用户，并同步写入 DGA 本地用户表。
+- Hive + Sentry / Hive + Ranger 场景默认创建 OpenLDAP 用户；StarRocks / Doris 等 SQL 授权引擎会调用对应 SQL 后端创建用户。
+- 该接口只创建用户身份，不授予库表权限；创建后仍需调用 `/openapi/v1/authz/grants` 或授权中心 RBAC 流程完成授权。
+- 写接口仅允许 `admin` 或平台超级用户调用。
+
+请求：
+
+```http
+POST /api/access/user
+Content-Type: application/json
+
+{
+  "cluster": "CDH",
+  "username": "zhangsan",
+  "password": "<初始密码>",
+  "email": "zhangsan@example.com",
+  "firstName": "San",
+  "lastName": "Zhang",
+  "creationStrategy": "OPENLDAP",
+  "accountMode": "POSIX_ACCOUNT",
+  "userType": "INTERNAL",
+  "groupName": "analytics",
+  "expiresAt": null
+}
+```
+
+成功响应示例：
+
+```text
+System account created via OpenLDAP: zhangsan
+```
+
+SQL 授权引擎响应示例：
+
+```text
+STARROCKS_SQL user created: zhangsan
+```
+
+字段说明：
+
+- `cluster`：必填，集群编码或集群名称，建议使用 `clusterCode`，例如 `CDH` / `HDP`。
+- `username`：必填，待创建用户名。
+- `password`：必填，初始密码；调用方不要写入代码仓库或日志。
+- `email`：可选，用户邮箱。
+- `firstName` / `lastName`：可选，用户姓名字段。
+- `creationStrategy`：可选，默认 `OPENLDAP`；历史兼容值包括 `IPA_SSH`、`IPA_HTTP`，普通接入方不建议使用。
+- `accountMode`：可选，`POSIX_ACCOUNT` 表示创建可登录系统账号，`LDAP_ONLY` 表示只创建 LDAP 身份；不传时按系统账号处理。
+- `userType`：可选，建议传 `INTERNAL`、`OUTSOURCER`、`TEMPORARY` 或 `SERVICE`。
+- `groupName`：可选，OpenLDAP posixGroup 名称；创建 POSIX 账号时用于指定所属 LDAP 组。
+- `gidNumber`：可选，OpenLDAP 组 gid；通常不建议外部系统直接传，优先使用 `groupName`。
+- `expiresAt`：可选，用户过期时间，格式为 `yyyy-MM-dd'T'HH:mm:ss`，例如 `2026-12-31T23:59:59`。
+
+规则说明：
+
+- 用户已存在且未删除时返回 `409 Conflict`。
+- 创建用户不会自动授权，也不会自动绑定 DGA RBAC 角色。
+- 外包、临时或服务账号建议传 `userType` 和 `expiresAt`，便于后续治理和审计。
+
+### 3.3 查询用户列表
 
 请求：
 
@@ -130,7 +197,7 @@ GET /openapi/v1/authz/principals?clusterCode=CDH&keyword=ding&page=1&pageSize=20
 - `page`：页码，从 `1` 开始
 - `pageSize`：每页条数，最大 `200`
 
-### 3.3 查询数据库列表
+### 3.4 查询数据库列表
 
 请求：
 
@@ -157,7 +224,7 @@ GET /openapi/v1/authz/resources/databases?clusterCode=CDH&keyword=ods&page=1&pag
 
 - 默认会过滤内部系统库，如 `information_schema`、`mysql`、`sys`、`performance_schema`
 
-### 3.4 查询表列表
+### 3.5 查询表列表
 
 请求：
 
@@ -185,7 +252,7 @@ GET /openapi/v1/authz/resources/tables?clusterCode=CDH&database=ods&keyword=user
 - `database`：必填
 - `keyword`：可选
 
-### 3.5 查询用户当前权限
+### 3.6 查询用户当前权限
 
 请求：
 
@@ -225,7 +292,7 @@ GET /openapi/v1/authz/permissions?clusterCode=CDH&username=dingquan
 - `resourceType`：当前版本主要返回 `DATABASE` 或 `TABLE`
 - `grantText`：底层授权后端返回的原始授权语句或授权描述
 
-### 3.6 批量授权
+### 3.7 批量授权
 
 接口语义：
 
@@ -278,7 +345,7 @@ Content-Type: application/json
 - 写接口仅允许 `admin` 或平台超级用户调用
 - 写接口根据 `clusterCode` 自动选择该集群配置的授权后端，不支持在请求体中覆盖 `authBackend`
 
-### 3.7 批量回收
+### 3.8 批量回收
 
 接口语义：
 
@@ -347,6 +414,8 @@ Content-Type: application/json
   - 未登录或 JWT 无效
 - `403 Forbidden`
   - 非 `admin` / 非超级用户调用写接口
+- `409 Conflict`
+  - 创建用户时，目标集群下同名用户已存在且未删除
 - `500 Internal Server Error`
   - 服务端未预期异常
 
@@ -378,35 +447,53 @@ curl -sS "${DGA_BASE_URL}/openapi/v1/authz/clusters" \
   -H "Authorization: Bearer ${TOKEN}"
 ```
 
-### 5.3 查询用户
+### 5.3 创建用户
+
+```bash
+curl -sS -X POST "${DGA_BASE_URL}/api/access/user" \
+  -H "Authorization: Bearer ${TOKEN}" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "cluster": "CDH",
+    "username": "zhangsan",
+    "password": "<初始密码>",
+    "email": "zhangsan@example.com",
+    "creationStrategy": "OPENLDAP",
+    "accountMode": "POSIX_ACCOUNT",
+    "userType": "INTERNAL",
+    "groupName": "analytics"
+  }'
+```
+
+### 5.4 查询用户
 
 ```bash
 curl -sS "${DGA_BASE_URL}/openapi/v1/authz/principals?clusterCode=CDH&keyword=ding&page=1&pageSize=20" \
   -H "Authorization: Bearer ${TOKEN}"
 ```
 
-### 5.4 查询数据库
+### 5.5 查询数据库
 
 ```bash
 curl -sS "${DGA_BASE_URL}/openapi/v1/authz/resources/databases?clusterCode=CDH&page=1&pageSize=20" \
   -H "Authorization: Bearer ${TOKEN}"
 ```
 
-### 5.5 查询表
+### 5.6 查询表
 
 ```bash
 curl -sS "${DGA_BASE_URL}/openapi/v1/authz/resources/tables?clusterCode=CDH&database=ods&page=1&pageSize=20" \
   -H "Authorization: Bearer ${TOKEN}"
 ```
 
-### 5.6 查询用户权限
+### 5.7 查询用户权限
 
 ```bash
 curl -sS "${DGA_BASE_URL}/openapi/v1/authz/permissions?clusterCode=CDH&username=dingquan" \
   -H "Authorization: Bearer ${TOKEN}"
 ```
 
-### 5.7 执行数据库级授权
+### 5.8 执行数据库级授权
 
 ```bash
 curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/grants" \
@@ -425,7 +512,7 @@ curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/grants" \
   }'
 ```
 
-### 5.8 执行表级授权
+### 5.9 执行表级授权
 
 ```bash
 curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/grants" \
@@ -445,7 +532,7 @@ curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/grants" \
   }'
 ```
 
-### 5.9 执行权限回收
+### 5.10 执行权限回收
 
 ```bash
 curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/revokes" \
@@ -479,7 +566,21 @@ curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/revokes" \
 - 集群状态为 `READY`
 - 列表结构包含 `page/pageSize/total/items`
 
-### 用例 2：数据库级授权成功
+### 用例 2：用户创建成功
+
+步骤：
+
+1. 调用 `/api/access/user` 创建测试用户
+2. 调用 `/openapi/v1/authz/principals` 查询用户列表
+
+预期：
+
+- 创建接口返回 `200`
+- 响应文本包含创建成功信息
+- 查询用户列表时能搜索到新用户
+- 不会自动产生库表权限
+
+### 用例 3：数据库级授权成功
 
 步骤：
 
@@ -493,7 +594,7 @@ curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/revokes" \
 - `processed` 与请求条数一致
 - 查询权限时能看到对应 `DATABASE` 权限
 
-### 用例 3：表级授权成功
+### 用例 4：表级授权成功
 
 步骤：
 
@@ -506,7 +607,7 @@ curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/revokes" \
 - 能看到 `TABLE` 级权限
 - `databaseName + tableName + permission` 正确
 
-### 用例 4：权限回收成功
+### 用例 5：权限回收成功
 
 步骤：
 
@@ -518,7 +619,7 @@ curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/revokes" \
 
 - 被回收的权限不再出现在实时权限快照里
 
-### 用例 5：参数校验失败
+### 用例 6：参数校验失败
 
 示例请求：
 
@@ -541,11 +642,11 @@ curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/revokes" \
 - 返回 `400`
 - `message` 明确提示 `TABLE 级授权必须提供 tableName`
 
-### 用例 6：权限不足
+### 用例 7：权限不足
 
 目标：
 
-- 用普通用户 token 调用 `/grants` 或 `/revokes`
+- 用普通用户 token 调用 `/api/access/user`、`/grants` 或 `/revokes`
 
 预期：
 
@@ -555,6 +656,7 @@ curl -sS -X POST "${DGA_BASE_URL}/openapi/v1/authz/revokes" \
 ## 7. 接入建议
 
 - 外部系统只使用 `clusterCode`，不要混用 `clusterName`
+- 授权前先确认用户存在；如不存在，先调用 `/api/access/user` 创建用户
 - 写接口调用前，先查一遍库表和现有权限，避免重复授权
 - 写接口适合工单系统、审批系统在审批通过后做“直接用户授权/回收”落地；如果需要 RBAC 角色绑定、角色权限子集或管理员强制回收，应对接 DGA 内部授权中心流程
 - 调用方不要在文档、代码仓库或日志中保存明文密码；建议使用环境变量、密钥管理系统或 CI/CD Secret 注入

@@ -120,13 +120,23 @@ export function filterRoleAssignments(assignments, keyword, statusFilter = 'ALL'
 }
 
 export function rolePermissionSelection(permission) {
-  return {
+  const selection = {
     resourceType: permission?.resourceType || (permission?.tableName ? 'TABLE' : 'DATABASE'),
     databaseName: permission?.databaseName || '',
     tableName: permission?.tableName || null,
     permission: normalizePermissionName(permission?.permission),
     authBackend: permission?.authBackend || ''
   };
+  if (permission?.expandedFromDatabasePermission) {
+    selection.expandedFromDatabasePermission = true;
+  }
+  if (permission?.sourceRole) {
+    selection.sourceRole = permission.sourceRole;
+  }
+  if (permission?.sourceGroup) {
+    selection.sourceGroup = permission.sourceGroup;
+  }
+  return selection;
 }
 
 export function identityMode(capability) {
@@ -245,6 +255,14 @@ export function supportsColumnPermission(capability) {
     return capability.grant.supportsColumnPermission;
   }
   return (capability?.resourceTypes || []).map(item => String(item).toUpperCase()).includes('COLUMN');
+}
+
+export function isBackendSupportedPermission(capability, permission) {
+  const supported = Array.isArray(capability?.permissions)
+    ? capability.permissions.map(item => normalizePermissionName(item)).filter(Boolean)
+    : [];
+  if (!supported.length) return true;
+  return supported.includes(normalizePermissionName(permission?.permission || permission));
 }
 
 export function userSourceLabel(capability) {
@@ -520,6 +538,10 @@ export function verificationDiffRows(snapshot) {
       source: liveItem?.source || recordedItem?.source || '',
       sourceRole: liveItem?.sourceRole || recordedItem?.sourceRole || '',
       sourceGroup: liveItem?.sourceGroup || recordedItem?.sourceGroup || '',
+      grantMode: liveItem?.grantMode || recordedItem?.grantMode || '',
+      roleCode: liveItem?.roleCode || recordedItem?.roleCode || '',
+      subjectType: liveItem?.subjectType || recordedItem?.subjectType || '',
+      subjectName: liveItem?.subjectName || recordedItem?.subjectName || '',
       groupInherited: isGroupInheritedGrant(liveItem || recordedItem),
       live: liveItem || null,
       recorded: recordedItem || null,

@@ -1,5 +1,6 @@
 package com.dga.access.service.authorization;
 
+import com.dga.access.service.LdapService;
 import com.dga.access.service.RangerService;
 import com.dga.cluster.entity.Cluster;
 import com.dga.cluster.entity.ClusterEndpoint;
@@ -8,15 +9,19 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
-import java.util.ArrayList;
+import java.util.Set;
 
 @Service
 public class RangerAuthorizationProvider implements AuthorizationProvider {
 
     @Autowired
     private RangerService rangerService;
+
+    @Autowired
+    private LdapService ldapService;
 
     @Value("${hdp.hive.server2.url}")
     private String hdpHiveUrl;
@@ -102,7 +107,7 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
 
     @Override
     public List<Map<String, Object>> getUserPermissions(AuthorizationContext context, String username) {
-        return rangerService.getUserPermissions(username, rangerEndpoint(context));
+        return rangerService.getUserPermissions(username, userLdapGroups(context, username), rangerEndpoint(context));
     }
 
     @Override
@@ -166,6 +171,45 @@ public class RangerAuthorizationProvider implements AuthorizationProvider {
         dataSource.setUsername(hdpHiveUser);
         dataSource.setPassword(hdpHivePassword);
         return new org.springframework.jdbc.core.JdbcTemplate(dataSource);
+    }
+
+    @SuppressWarnings("unchecked")
+    private Set<String> userLdapGroups(AuthorizationContext context, String username) {
+        Set<String> groups = new LinkedHashSet<>();
+        Cluster cluster = context.getCluster();
+        String clusterIdentifier = cluster == null
+                ? null
+                : (cluster.getClusterCode() != null && !cluster.getClusterCode().trim().isEmpty()
+                ? cluster.getClusterCode()
+                : cluster.getClusterName());
+        try {
+            Map<String, Object> profile = ldapService.getUserLdapProfile(clusterIdentifier, username);
+            Object primary = profile.get("primaryGroup");
+            if (primary instanceof Map) {
+                addGroupName(groups, ((Map<String, Object>) primary).get("name"));
+            }
+            Object supplementary = profile.get("supplementaryGroups");
+            if (supplementary instanceof List) {
+                for (Object item : (List<?>) supplementary) {
+                    if (item instanceof Map) {
+                        addGroupName(groups, ((Map<String, Object>) item).get("name"));
+                    }
+                }
+            }
+        } catch (Exception e) {
+            System.out.println("LDAP group lookup failed for Ranger user " + username + ": " + e.getMessage());
+        }
+        return groups;
+    }
+
+    private void addGroupName(Set<String> groups, Object value) {
+        if (value == null) {
+            return;
+        }
+        String group = String.valueOf(value).trim();
+        if (!group.isEmpty()) {
+            groups.add(group);
+        }
     }
 
     private ClusterEndpoint rangerEndpoint(AuthorizationContext context) {

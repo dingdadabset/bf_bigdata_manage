@@ -103,15 +103,34 @@
         <div v-if="permissionPreviewRows.length" class="permission-preview">
           <div class="permission-preview-head">
             <div>
-              <div class="panel-section-title">权限预览</div>
+              <div class="panel-section-title">用户权限明细</div>
               <span>{{ permissionPreviewHint }}</span>
             </div>
-            <a-tag color="blue">Top {{ permissionPreviewRows.length }}</a-tag>
+            <div class="permission-preview-statuses">
+              <a-tag color="green">一致 {{ permissionSummary.matched }}</a-tag>
+              <a-tag color="orange">后端多余 {{ permissionSummary.liveOnly }}</a-tag>
+              <a-tag color="blue">本地未落地 {{ permissionSummary.recordedOnly }}</a-tag>
+            </div>
           </div>
           <div class="permission-preview-list">
-            <div v-for="item in permissionPreviewRows" :key="item.key" class="permission-preview-row">
-              <span class="permission-preview-text">{{ previewPermissionText(item) }}</span>
-              <a-tag :color="verificationStatusColor(item.status)">{{ previewStatusLabel(item.status) }}</a-tag>
+            <div v-for="item in permissionPreviewRows" :key="item.key" class="permission-preview-row" :class="`is-${String(item.status || '').toLowerCase()}`">
+              <div class="permission-preview-main">
+                <a-tag class="permission-resource-tag" :color="item.resourceType === 'DATABASE' ? 'purple' : 'geekblue'">
+                  {{ resourceTypeLabel(item.resourceType) }}
+                </a-tag>
+                <div class="permission-preview-content">
+                  <div class="permission-preview-title">
+                    <strong>{{ previewPermissionScope(item) }}</strong>
+                    <a-tag :color="verificationStatusColor(item.status)">{{ previewStatusLabel(item.status) }}</a-tag>
+                  </div>
+                  <div class="permission-preview-meta">
+                    <span>权限：{{ item.permission || '-' }}</span>
+                    <span v-if="item.authBackend">后端：{{ item.authBackend }}</span>
+                    <span v-if="item.sourceGroup">来源组：{{ item.sourceGroup }}</span>
+                    <span v-if="item.sourceRole">来源角色：{{ item.sourceRole }}</span>
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -499,18 +518,16 @@
               <div class="section-head">
                 <div>
                   <h4>步骤 4：执行授权或回收</h4>
-                  <span>系统会对上方勾选的角色权限子集执行下发或回收。</span>
+                  <span>下发按上方已勾选的 {{ selectedSubsetCount }} 项执行；回收按用户已有权限与当前角色权限交集执行。</span>
                 </div>
               </div>
               <div class="action-row">
-                <a-button type="primary" icon="safety" :loading="loading.submitting" :disabled="!canSubmitSubset" @click="$emit('grant-subset')">
+                <a-button type="primary" icon="safety" :loading="loading.submitting" :disabled="!canGrantSubset" @click="$emit('grant-subset')">
                   下发子集权限
                 </a-button>
-                <a-popconfirm title="确认回收当前勾选的角色子集权限？" ok-text="回收" cancel-text="取消" @confirm="$emit('revoke-subset')">
-                  <a-button type="danger" icon="rollback" :loading="loading.submitting" :disabled="!canSubmitSubset">
-                    回收子集权限
-                  </a-button>
-                </a-popconfirm>
+                <a-button type="danger" icon="rollback" :loading="loading.submitting" :disabled="!canRevokeSubset" @click="openRevokeSubsetModal">
+                  回收子集权限
+                </a-button>
                 <a-tooltip v-if="showHistoricalAdoptionButton" :title="historicalAdoptionDisabledReason">
                   <span class="historical-adoption-action-wrap">
                     <a-button
@@ -564,6 +581,7 @@
                 :verification-user="verificationUser"
                 :subject-name="state.subjectName"
                 :snapshot="verificationSnapshot"
+                :role-permissions="rolePermissions"
                 :loading="loading.verification"
                 @refresh="$emit('refresh-verification')"
                 @sync="$emit('sync-verification')"
@@ -779,6 +797,81 @@
     </a-spin>
 
     <a-modal
+      :visible="revokeSubsetModalVisible"
+      title="选择要回收的角色子集权限"
+      ok-text="确认回收"
+      cancel-text="取消"
+      ok-type="danger"
+      width="760px"
+      destroy-on-close
+      :confirm-loading="loading.submitting"
+      :ok-button-props="{ props: { disabled: !revokeSubsetPermissionKeys.length } }"
+      @ok="confirmRevokeSubset"
+      @cancel="closeRevokeSubsetModal"
+    >
+      <div class="force-revoke-modal">
+        <a-alert
+          class="force-revoke-alert"
+          type="warning"
+          show-icon
+          :message="`这里展示当前用户 live 权限或 DGA 子集记录与当前角色权限范围的交集，将只回收本弹窗中勾选的 ${revokeSubsetPermissionKeys.length} 项权限。`"
+        />
+        <div class="force-revoke-summary">
+          <div class="summary-chip">
+            <span>当前角色</span>
+            <strong>{{ roleDisplayName(selectedRoleView) }}</strong>
+          </div>
+          <div class="summary-chip">
+            <span>可回收</span>
+            <strong>{{ revokeSubsetPermissions.length }}</strong>
+          </div>
+          <div class="summary-chip">
+            <span>已选权限</span>
+            <strong>{{ revokeSubsetPermissionKeys.length }}</strong>
+          </div>
+        </div>
+        <div class="force-revoke-toolbar">
+          <a-input-search
+            v-model="revokeSubsetKeyword"
+            allow-clear
+            placeholder="搜索库名、表名或权限"
+            class="force-revoke-search"
+          />
+          <a-select v-model="revokeSubsetPermissionFilter" class="force-revoke-filter">
+            <a-select-option value="ALL">全部权限</a-select-option>
+            <a-select-option v-for="item in revokeSubsetPermissionOptions" :key="item" :value="item">
+              {{ item }}
+            </a-select-option>
+          </a-select>
+        </div>
+        <div class="force-revoke-actions">
+          <span>筛选命中 {{ filteredRevokeSubsetPermissions.length }} 项，共 {{ revokeSubsetPermissions.length }} 项</span>
+          <div>
+            <a-button size="small" :disabled="!filteredRevokeSubsetPermissions.length" @click="selectFilteredRevokeSubsetPermissions">全选筛选结果</a-button>
+            <a-button size="small" :disabled="!filteredRevokeSubsetPermissions.length" @click="clearFilteredRevokeSubsetPermissions">清空筛选结果</a-button>
+            <a-button size="small" @click="restoreCurrentRevokeSubsetSelection">还原当前勾选</a-button>
+          </div>
+        </div>
+        <a-empty v-if="!filteredRevokeSubsetPermissions.length" class="force-revoke-empty" description="没有匹配的权限范围" />
+        <a-checkbox-group
+          v-else
+          :value="revokeSubsetPermissionKeys"
+          class="force-revoke-permission-list"
+          @change="revokeSubsetPermissionKeys = $event"
+        >
+          <a-checkbox
+            v-for="item in filteredRevokeSubsetPermissions"
+            :key="permissionKey(item)"
+            :value="permissionKey(item)"
+            class="force-revoke-permission-item"
+          >
+            <span class="permission-item-main">{{ rolePermissionShortText(item) }}</span>
+          </a-checkbox>
+        </a-checkbox-group>
+      </div>
+    </a-modal>
+
+    <a-modal
       :visible="forceRevokeModalVisible"
       title="选择强制回收权限"
       ok-text="确认回收"
@@ -875,6 +968,7 @@ import {
   filterRoleAssignments,
   filterRolePermissions,
   hasUsableRoleAssignment,
+  isBackendSupportedPermission,
   isDatabasePermission,
   isGroupInheritedGrant,
   operationModeLabel,
@@ -972,6 +1066,10 @@ export default {
       expandedTableList: {},
       selectedExpandedTables: {},
       tableExpansionLoading: {},
+      revokeSubsetModalVisible: false,
+      revokeSubsetKeyword: '',
+      revokeSubsetPermissionFilter: 'ALL',
+      revokeSubsetPermissionKeys: [],
       forceRevokeModalVisible: false,
       forceRevokeKeyword: '',
       forceRevokePermissionFilter: 'ALL',
@@ -1037,12 +1135,38 @@ export default {
     filteredSubsetRolePermissions() {
       return filterRolePermissions(this.rolePermissions, this.subsetPermissionKeyword, this.subsetPermissionFilter);
     },
+    revokeSubsetPermissions() {
+      const userPermissionRows = verificationDiffRows(this.verificationSnapshot)
+        .filter(item => item.status === 'MATCHED' || item.status === 'LIVE_ONLY' || this.isCurrentRoleSubsetRecordedOnly(item));
+      const matched = [];
+      const matchedKeys = new Set();
+      this.rolePermissions.forEach(rolePermission => {
+        userPermissionRows.forEach(userPermission => {
+          const selection = this.resolveRevokeIntersectionPermission(rolePermission, userPermission);
+          if (!selection) return;
+          const key = permissionKey(selection);
+          if (matchedKeys.has(key)) return;
+          matchedKeys.add(key);
+          matched.push(selection);
+        });
+      });
+      return matched;
+    },
+    revokeSubsetPermissionOptions() {
+      return Array.from(new Set(this.revokeSubsetPermissions.map(item => item.permission).filter(Boolean)));
+    },
+    filteredRevokeSubsetPermissions() {
+      return filterRolePermissions(this.revokeSubsetPermissions, this.revokeSubsetKeyword, this.revokeSubsetPermissionFilter);
+    },
     forceRevokeAllPermissionRows() {
       return verificationDiffRows(this.verificationSnapshot)
         .filter(item => item.status === 'MATCHED' || item.status === 'LIVE_ONLY' || item.status === 'RECORDED_ONLY');
     },
     forceRevokeUserPermissions() {
-      return this.forceRevokeAllPermissionRows.filter(item => !isGroupInheritedGrant(item.live || item.recorded));
+      return this.forceRevokeAllPermissionRows.filter(item => !isGroupInheritedGrant(item.live || item.recorded) && isBackendSupportedPermission(this.capability, item));
+    },
+    forceRevokeUnsupportedPermissionCount() {
+      return this.forceRevokeAllPermissionRows.filter(item => !isGroupInheritedGrant(item.live || item.recorded) && !isBackendSupportedPermission(this.capability, item)).length;
     },
     forceRevokeInheritedPermissionCount() {
       return this.forceRevokeAllPermissionRows.length - this.forceRevokeUserPermissions.length;
@@ -1077,7 +1201,14 @@ export default {
       return this.filteredSubsetRolePermissions.slice(start, start + this.subsetPermissionPageSize);
     },
     selectedSubsetCount() {
-      return Array.isArray(this.state.selectedRolePermissionKeys) ? this.state.selectedRolePermissionKeys.length : 0;
+      return this.selectedPermissionCount + this.selectedExpandedTableCount;
+    },
+    selectedExpandedTableCount() {
+      return Object.values(this.selectedExpandedTables || {})
+        .reduce((total, tables) => total + (Array.isArray(tables) ? tables.length : 0), 0);
+    },
+    hasSelectedSubsetForSubmit() {
+      return this.selectedSubsetCount > 0;
     },
     visibleRolePermissions() {
       return this.permissionExpanded
@@ -1141,16 +1272,28 @@ export default {
     canAssignRole() {
       return Boolean(this.selectedRoleView && this.state.subjectName);
     },
-    canSubmitSubset() {
+    canGrantSubset() {
       return Boolean(
         this.selectedRoleView
         && this.state.subjectName
-        && Array.isArray(this.state.selectedRolePermissionKeys)
-        && this.state.selectedRolePermissionKeys.length
+        && this.hasSelectedSubsetForSubmit
         && supportsRoleSubsetGrant(this.capability, this.state.subjectType)
         && this.hasCurrentBinding
         && (!this.requiresVerificationUser || this.state.verificationUser)
       );
+    },
+    canRevokeSubset() {
+      return Boolean(
+        this.selectedRoleView
+        && this.state.subjectName
+        && supportsRoleSubsetGrant(this.capability, this.state.subjectType)
+        && this.hasCurrentBinding
+        && (!this.requiresVerificationUser || this.state.verificationUser)
+        && this.revokeSubsetPermissions.length
+      );
+    },
+    canSubmitSubset() {
+      return this.canGrantSubset;
     },
     historicalAdoptionTargetUser() {
       if (this.state.subjectType === 'USER') {
@@ -1213,8 +1356,15 @@ export default {
       if (this.forceRevokeDisabledReason) {
         return `管理员操作不可用：${this.forceRevokeDisabledReason}`;
       }
+      const excluded = [];
       if (this.forceRevokeInheritedPermissionCount) {
-        return `管理员操作：将直接按用户 ${this.forceRevokeTargetUser} 回收可选权限；已排除 ${this.forceRevokeInheritedPermissionCount} 项 LDAP 组继承权限。`;
+        excluded.push(`${this.forceRevokeInheritedPermissionCount} 项 LDAP 组继承权限`);
+      }
+      if (this.forceRevokeUnsupportedPermissionCount) {
+        excluded.push(`${this.forceRevokeUnsupportedPermissionCount} 项当前后端不支持直接回收的权限`);
+      }
+      if (excluded.length) {
+        return `管理员操作：将直接按用户 ${this.forceRevokeTargetUser} 回收可选权限；已排除 ${excluded.join('、')}。`;
       }
       return `管理员操作：将直接按用户 ${this.forceRevokeTargetUser} 回收所选用户已有权限，不依赖角色绑定状态。`;
     },
@@ -1293,14 +1443,18 @@ export default {
     },
     permissionPreviewHint() {
       return String(this.state.subjectType || '').toUpperCase() === 'GROUP'
-        ? '基于当前校验用户展示 live / recorded 权限差异。'
-        : '展示当前用户在 live / recorded 中的权限差异。';
+        ? '基于当前校验用户展示后端实际权限与 DGA 本地记录的差异，优先展示异常项。'
+        : '展示当前用户后端实际权限与 DGA 本地记录的差异，优先展示异常项。';
     },
     permissionSummary() {
       return verificationSummary(this.verificationSnapshot);
     },
     permissionPreviewRows() {
-      return verificationDiffRows(this.verificationSnapshot).slice(0, 5);
+      const priority = { LIVE_ONLY: 0, RECORDED_ONLY: 1, MATCHED: 2 };
+      return verificationDiffRows(this.verificationSnapshot)
+        .slice()
+        .sort((left, right) => (priority[left.status] ?? 9) - (priority[right.status] ?? 9))
+        .slice(0, 8);
     },
     livePermissionCount() {
       return Array.isArray(this.verificationSnapshot?.grants) ? this.verificationSnapshot.grants.length : 0;
@@ -1324,6 +1478,7 @@ export default {
     assignmentStatusColor,
     batchActionText,
     batchStatusColor,
+    isBackendSupportedPermission,
     isDatabasePermission,
     operationModeLabel,
     permissionKey,
@@ -1345,14 +1500,17 @@ export default {
       return `${roleDisplayName(roleView)} · ${suffix}`;
     },
     previewPermissionText(row) {
+      return `${resourceTypeLabel(row?.resourceType)} ${this.previewPermissionScope(row)} ${row?.permission || ''}`;
+    },
+    previewPermissionScope(row) {
       const database = row?.databaseName || '*';
-      const table = row?.tableName ? `.${row.tableName}` : '.*';
-      return `${resourceTypeLabel(row?.resourceType)} ${database}${table} ${row?.permission || ''}`;
+      const table = row?.tableName ? row.tableName : '*';
+      return `${database}.${table}`;
     },
     previewStatusLabel(status) {
-      if (status === 'MATCHED') return '一致';
-      if (status === 'LIVE_ONLY') return '仅后端存在';
-      if (status === 'RECORDED_ONLY') return '仅 DGA 记录';
+      if (status === 'MATCHED') return '已一致';
+      if (status === 'LIVE_ONLY') return '后端多余';
+      if (status === 'RECORDED_ONLY') return '本地未落地';
       return status || '-';
     },
     assignmentSyncStatusLabel(status) {
@@ -1394,6 +1552,92 @@ export default {
       const removeKeys = new Set(this.filteredSubsetRolePermissions.map(item => permissionKey(item)));
       const existing = Array.isArray(this.state.selectedRolePermissionKeys) ? this.state.selectedRolePermissionKeys : [];
       this.update('selectedRolePermissionKeys', existing.filter(item => !removeKeys.has(item)));
+    },
+    isCurrentRoleSubsetRecordedOnly(item) {
+      const roleCode = this.selectedRoleView?.role?.roleCode || '';
+      return String(item?.status || '').toUpperCase() === 'RECORDED_ONLY'
+        && String(item?.grantMode || '').toUpperCase() === 'RBAC_ROLE_SUBSET'
+        && String(item?.roleCode || '').toLowerCase() === String(roleCode || '').toLowerCase();
+    },
+    resolveRevokeIntersectionPermission(rolePermission, userPermission) {
+      const roleType = String(rolePermission?.resourceType || '').toUpperCase();
+      const userType = String(userPermission?.resourceType || '').toUpperCase();
+      const roleDatabase = String(rolePermission?.databaseName || '').trim();
+      const userDatabase = String(userPermission?.databaseName || '').trim();
+      const roleTable = String(rolePermission?.tableName || '').trim();
+      const userTable = String(userPermission?.tableName || '').trim();
+      const rolePermissionName = String(rolePermission?.permission || '').trim().toUpperCase();
+      const userPermissionName = String(userPermission?.permission || '').trim().toUpperCase();
+      if (!roleDatabase || !userDatabase || roleDatabase.toLowerCase() !== userDatabase.toLowerCase()) return null;
+      if (rolePermissionName !== userPermissionName) return null;
+      if (roleType === 'TABLE') {
+        if (userType !== 'TABLE') return null;
+        if (String(roleTable || '').toLowerCase() !== String(userTable || '').toLowerCase()) return null;
+        return {
+          ...rolePermission,
+          authBackend: rolePermission.authBackend || userPermission.authBackend,
+          sourceRole: userPermission.sourceRole || '',
+          sourceGroup: userPermission.sourceGroup || ''
+        };
+      }
+      if (roleType === 'DATABASE') {
+        if (userType === 'DATABASE') {
+          return {
+          ...rolePermission,
+          authBackend: rolePermission.authBackend || userPermission.authBackend,
+          sourceRole: userPermission.sourceRole || '',
+          sourceGroup: userPermission.sourceGroup || ''
+        };
+        }
+        if (userType === 'TABLE') {
+          return {
+            ...rolePermission,
+            id: `${rolePermission.id || permissionKey(rolePermission)}:${userTable}`,
+            resourceType: 'TABLE',
+            tableName: userTable,
+            authBackend: rolePermission.authBackend || userPermission.authBackend,
+            expandedFromDatabasePermission: true,
+            sourceRole: userPermission.sourceRole || '',
+            sourceGroup: userPermission.sourceGroup || ''
+          };
+        }
+      }
+      return null;
+    },
+    openRevokeSubsetModal() {
+      if (!this.canRevokeSubset) {
+        this.$message.warning('当前用户已有权限与当前角色权限没有交集，无需回收');
+        return;
+      }
+      this.revokeSubsetKeyword = '';
+      this.revokeSubsetPermissionFilter = 'ALL';
+      this.restoreCurrentRevokeSubsetSelection();
+      this.revokeSubsetModalVisible = true;
+    },
+    closeRevokeSubsetModal() {
+      this.revokeSubsetModalVisible = false;
+    },
+    restoreCurrentRevokeSubsetSelection() {
+      this.revokeSubsetPermissionKeys = this.revokeSubsetPermissions.map(item => permissionKey(item));
+    },
+    selectFilteredRevokeSubsetPermissions() {
+      const existing = Array.isArray(this.revokeSubsetPermissionKeys) ? this.revokeSubsetPermissionKeys : [];
+      const additions = this.filteredRevokeSubsetPermissions.map(item => permissionKey(item));
+      this.revokeSubsetPermissionKeys = Array.from(new Set([...existing, ...additions]));
+    },
+    clearFilteredRevokeSubsetPermissions() {
+      const removeKeys = new Set(this.filteredRevokeSubsetPermissions.map(item => permissionKey(item)));
+      const existing = Array.isArray(this.revokeSubsetPermissionKeys) ? this.revokeSubsetPermissionKeys : [];
+      this.revokeSubsetPermissionKeys = existing.filter(item => !removeKeys.has(item));
+    },
+    confirmRevokeSubset() {
+      const selectedKeys = new Set(this.revokeSubsetPermissionKeys || []);
+      const permissions = this.revokeSubsetPermissions.filter(item => selectedKeys.has(permissionKey(item)));
+      if (!permissions.length) {
+        return;
+      }
+      this.$emit('revoke-subset', { permissions });
+      this.revokeSubsetModalVisible = false;
     },
     openForceRevokeModal() {
       this.forceRevokeKeyword = '';
@@ -1611,34 +1855,79 @@ export default {
 }
 .permission-preview {
   margin-top: 12px;
-  padding-top: 12px;
-  border-top: 1px solid #edf2f7;
-}
-.permission-preview-head,
-.permission-preview-row {
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
+  padding: 14px;
+  border: 1px solid #e4e7ec;
+  border-radius: 12px;
+  background: #fbfcff;
 }
 .permission-preview-head {
+  display: flex;
+  gap: 12px;
   align-items: flex-start;
-  margin-bottom: 10px;
+  justify-content: space-between;
+  margin-bottom: 12px;
 }
 .permission-preview-head span,
 .permission-preview-text {
   color: #667085;
   font-size: 12px;
 }
+.permission-preview-statuses,
+.permission-preview-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
 .permission-preview-list {
   display: grid;
-  gap: 8px;
+  gap: 10px;
 }
 .permission-preview-row {
-  align-items: center;
-  padding: 8px 10px;
+  padding: 12px;
   border: 1px solid #edf0f5;
-  border-radius: 8px;
+  border-left: 4px solid #d0d5dd;
+  border-radius: 10px;
   background: #fff;
+}
+.permission-preview-row.is-live_only {
+  border-left-color: #faad14;
+  background: #fffaf0;
+}
+.permission-preview-row.is-recorded_only {
+  border-left-color: #1677ff;
+  background: #f5f9ff;
+}
+.permission-preview-row.is-matched {
+  border-left-color: #52c41a;
+}
+.permission-preview-main {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.permission-resource-tag {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.permission-preview-content {
+  min-width: 0;
+  flex: 1;
+}
+.permission-preview-title {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+.permission-preview-title strong {
+  color: #101828;
+  font-size: 13px;
+  word-break: break-all;
+}
+.permission-preview-meta {
+  margin-top: 6px;
+  color: #667085;
+  font-size: 12px;
 }
 .permission-preview-text {
   min-width: 0;
@@ -1991,27 +2280,56 @@ export default {
   padding: 2px 6px;
 }
 .table-expansion-panel {
-  margin-top: 4px;
-  padding: 8px 10px;
+  margin-top: 6px;
+  padding: 10px;
+  text-align: left;
   border: 1px solid #d9e8ff;
   border-radius: 8px;
   background: #f8fbff;
 }
 .table-expansion-list {
-  max-height: 180px;
+  max-height: 220px;
   overflow-y: auto;
+  text-align: left;
+}
+.table-expansion-list :deep(.ant-checkbox-group) {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 6px 10px;
+  width: 100%;
+  text-align: left;
 }
 .table-expansion-item {
-  display: block;
-  margin-left: 0;
-  padding: 4px 0;
+  display: flex;
+  align-items: flex-start;
+  min-width: 0;
+  margin-left: 0 !important;
+  padding: 6px 8px;
+  color: #344054;
   font-size: 12px;
+  line-height: 18px;
+  text-align: left;
+  border: 1px solid transparent;
+  border-radius: 6px;
+}
+.table-expansion-item:hover {
+  border-color: #d9e8ff;
+  background: #ffffff;
+}
+.table-expansion-item :deep(.ant-checkbox) {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+.table-expansion-item :deep(span:last-child) {
+  min-width: 0;
+  word-break: break-all;
 }
 .table-expansion-actions {
   display: flex;
   gap: 8px;
-  margin-top: 6px;
-  padding-top: 6px;
+  justify-content: flex-start;
+  margin-top: 8px;
+  padding-top: 8px;
   border-top: 1px dashed #e7edf5;
 }
 .permission-item-main {
@@ -2123,7 +2441,8 @@ export default {
 @media (max-width: 768px) {
   .workspace-header,
   .permission-preview-head,
-  .permission-preview-row {
+  .permission-preview-main,
+  .permission-preview-title {
     flex-direction: column;
   }
   .summary-banner,

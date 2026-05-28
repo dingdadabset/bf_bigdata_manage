@@ -309,8 +309,8 @@ export default {
     targetUserHintText() {
       const parts = [
         this.prefersGroupSubject
-          ? '目标用户用于定位所属 LDAP 组和最终权限校验；不会自动改写授权对象。'
-          : '目标用户用于权限校验；如需作为授权对象请点击“填入授权对象”。'
+          ? '目标用户用于定位所属 LDAP 组和最终权限校验。'
+          : '目标用户会直接作为授权对象。'
       ];
       if (this.verificationPrincipal) {
         const source = principalSourceLabel(this.verificationPrincipal);
@@ -347,9 +347,8 @@ export default {
       this.update('verificationUser', this.state.subjectName);
     },
     useVerificationAsSubject() {
-      const targetUser = String(this.state.verificationUser || '').trim();
-      if (!targetUser) return;
-      this.update('subjectFromVerificationUser', targetUser);
+      if (!this.state.verificationUser) return;
+      this.update('subjectFromVerificationUser', this.state.verificationUser);
     }
   }
 };

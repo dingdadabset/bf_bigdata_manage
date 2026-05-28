@@ -86,11 +86,16 @@ public class RangerService {
     }
 
     public List<Map<String, Object>> getUserPermissions(String user) {
-        return getUserPermissions(user, null);
+        return getUserPermissions(user, Collections.emptySet(), null);
     }
 
     public List<Map<String, Object>> getUserPermissions(String user, ClusterEndpoint endpoint) {
+        return getUserPermissions(user, Collections.emptySet(), endpoint);
+    }
+
+    public List<Map<String, Object>> getUserPermissions(String user, Collection<String> userGroups, ClusterEndpoint endpoint) {
         RangerConfig config = config(endpoint);
+        Set<String> normalizedGroups = normalizeNames(userGroups);
         List<Map<String, Object>> result = new ArrayList<>();
         try {
             String url = String.format("%s/service/public/v2/api/policy?serviceName=%s", config.url, config.serviceName);
@@ -116,7 +121,10 @@ public class RangerService {
 
                     for (Map<String, Object> item : policyItems) {
                         List<String> users = (List<String>) item.get("users");
-                        if (users == null || !users.contains(user)) {
+                        List<String> groups = (List<String>) item.get("groups");
+                        boolean directUserGrant = containsName(users, user);
+                        String matchedGroup = firstMatchingName(groups, normalizedGroups);
+                        if (!directUserGrant && matchedGroup == null) {
                             continue;
                         }
 
@@ -151,6 +159,10 @@ public class RangerService {
                                     perm.put("permission", mappedPerm);
                                     perm.put("policyName", policy.get("name"));
                                     perm.put("policyId", policy.get("id"));
+                                    perm.put("source", matchedGroup == null ? "USER" : "GROUP_ROLE");
+                                    if (matchedGroup != null) {
+                                        perm.put("sourceGroup", matchedGroup);
+                                    }
                                     result.add(perm);
                                 }
                             }
@@ -278,6 +290,46 @@ public class RangerService {
             System.err.println("Error listing Ranger policy tables: " + e.getMessage());
         }
         return new ArrayList<>(tables);
+    }
+
+    private Set<String> normalizeNames(Collection<String> values) {
+        Set<String> result = new LinkedHashSet<>();
+        if (values == null) {
+            return result;
+        }
+        for (String value : values) {
+            String normalized = normalizeName(value);
+            if (normalized != null) {
+                result.add(normalized);
+            }
+        }
+        return result;
+    }
+
+    private boolean containsName(Collection<String> values, String target) {
+        String normalizedTarget = normalizeName(target);
+        return normalizedTarget != null && normalizeNames(values).contains(normalizedTarget);
+    }
+
+    private String firstMatchingName(Collection<String> values, Set<String> normalizedTargets) {
+        if (values == null || normalizedTargets == null || normalizedTargets.isEmpty()) {
+            return null;
+        }
+        for (String value : values) {
+            String normalized = normalizeName(value);
+            if (normalized != null && normalizedTargets.contains(normalized)) {
+                return value == null ? null : value.trim();
+            }
+        }
+        return null;
+    }
+
+    private String normalizeName(String value) {
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.trim();
+        return normalized.isEmpty() ? null : normalized.toLowerCase(Locale.ROOT);
     }
 
     private void collectUsers(Set<String> result, List<Map<String, Object>> policyItems) {

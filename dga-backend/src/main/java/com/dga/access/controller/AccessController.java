@@ -2175,6 +2175,8 @@ public class AccessController {
         List<AuthRolePermission> selected = isTableSubsetRequest(request)
                 ? validateTableSubsetSelections(roleCode, request.getRolePermissions(), authBackend)
                 : validateRolePermissionSelections(roleCode, request.getRolePermissions(), authBackend);
+        Map<String, String> sourceRolesByPermissionKey = sourceRolesByPermissionKey(request.getRolePermissions(), authBackend);
+        Map<String, String> sourceGroupsByPermissionKey = sourceGroupsByPermissionKey(request.getRolePermissions(), authBackend);
         if ("GROUP".equals(normalizedSubjectType)) {
             if (assignmentUsesMaterializedPolicies(cluster, authBackend, normalizedSubjectType)) {
                 for (AuthRolePermission permission : selected) {
@@ -2182,14 +2184,23 @@ public class AccessController {
                             permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), authBackend);
                 }
             } else {
-                String derivedRoleCode = derivedSubsetRoleCode(roleCode, normalizedSubjectType, normalizedSubjectName, selected);
-                authorizationService.revokeRoleAssignment(cluster, derivedRoleCode, "GROUP", normalizedSubjectName, authBackend);
+                String fallbackRoleCode = derivedSubsetRoleCode(roleCode, normalizedSubjectType, normalizedSubjectName, selected);
+                boolean usedFallbackRole = false;
                 for (AuthRolePermission permission : selected) {
+                    String targetRoleCode = sourceSubsetRoleForPermission(sourceRolesByPermissionKey,
+                            sourceGroupsByPermissionKey, permission, normalizedSubjectName, roleCode);
+                    if (targetRoleCode == null) {
+                        targetRoleCode = fallbackRoleCode;
+                        usedFallbackRole = true;
+                    }
                     try {
-                        authorizationService.revokePermissionFromRole(cluster, derivedRoleCode,
+                        authorizationService.revokePermissionFromRole(cluster, targetRoleCode,
                                 permission.getDatabaseName(), normalizeAuthTable(permission.getTableName()), permission.getPermission(), authBackend);
                     } catch (Exception ignored) {
                     }
+                }
+                if (usedFallbackRole) {
+                    authorizationService.revokeRoleAssignment(cluster, fallbackRoleCode, "GROUP", normalizedSubjectName, authBackend);
                 }
             }
         } else if ("USER".equals(normalizedSubjectType)) {
@@ -2415,6 +2426,60 @@ public class AccessController {
                 upper(authBackend));
     }
 
+    private Map<String, String> sourceRolesByPermissionKey(List<BatchGrantRequest.RolePermissionSelection> selections, String authBackend) {
+        Map<String, String> sourceRoles = new HashMap<>();
+        if (selections == null) {
+            return sourceRoles;
+        }
+        for (BatchGrantRequest.RolePermissionSelection selection : selections) {
+            String sourceRole = firstNonBlank(selection.getSourceRole());
+            if (sourceRole == null) {
+                continue;
+            }
+            String permission = normalizePermissionValue(selection.getPermission());
+            String key = rolePermissionKey(selection.getResourceType(), selection.getDatabaseName(), selection.getTableName(),
+                    permission, firstNonBlank(selection.getAuthBackend(), authBackend));
+            sourceRoles.put(key, sourceRole);
+        }
+        return sourceRoles;
+    }
+
+    private Map<String, String> sourceGroupsByPermissionKey(List<BatchGrantRequest.RolePermissionSelection> selections, String authBackend) {
+        Map<String, String> sourceGroups = new HashMap<>();
+        if (selections == null) {
+            return sourceGroups;
+        }
+        for (BatchGrantRequest.RolePermissionSelection selection : selections) {
+            String sourceGroup = firstNonBlank(selection.getSourceGroup());
+            if (sourceGroup == null) {
+                continue;
+            }
+            String permission = normalizePermissionValue(selection.getPermission());
+            String key = rolePermissionKey(selection.getResourceType(), selection.getDatabaseName(), selection.getTableName(),
+                    permission, firstNonBlank(selection.getAuthBackend(), authBackend));
+            sourceGroups.put(key, sourceGroup);
+        }
+        return sourceGroups;
+    }
+
+    private String sourceSubsetRoleForPermission(Map<String, String> sourceRolesByPermissionKey,
+                                                 Map<String, String> sourceGroupsByPermissionKey,
+                                                 AuthRolePermission permission,
+                                                 String subjectName,
+                                                 String roleCode) {
+        String key = rolePermissionKey(permission.getResourceType(), permission.getDatabaseName(), permission.getTableName(),
+                permission.getPermission(), permission.getAuthBackend());
+        String sourceRole = firstNonBlank(sourceRolesByPermissionKey.get(key));
+        if (sourceRole == null) {
+            return null;
+        }
+        String sourceGroup = firstNonBlank(sourceGroupsByPermissionKey.get(key));
+        if (sourceRole.toLowerCase(Locale.ROOT).startsWith(roleSubsetPrefix(roleCode)) || sameText(sourceGroup, subjectName)) {
+            return sourceRole;
+        }
+        return null;
+    }
+
     private String derivedSubsetRoleCode(String roleCode, String subjectType, String subjectName, List<AuthRolePermission> permissions) {
         String seed = roleCode + "|" + subjectType + "|" + subjectName + "|" + permissions.stream()
                 .map(permission -> rolePermissionKey(permission.getResourceType(), permission.getDatabaseName(), permission.getTableName(),
@@ -2422,11 +2487,15 @@ public class AccessController {
                 .sorted()
                 .collect(Collectors.joining(";"));
         String hash = Integer.toHexString(seed.hashCode());
+        return roleSubsetPrefix(roleCode) + hash;
+    }
+
+    private String roleSubsetPrefix(String roleCode) {
         String prefix = roleCode == null ? "role_subset" : roleCode.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9_]", "_");
         if (prefix.length() > 44) {
             prefix = prefix.substring(0, 44);
         }
-        return prefix + "_sub_" + hash;
+        return prefix + "_sub_";
     }
 
     private void revokeRoleSubsetAccessRecord(String cluster, String roleCode, String subjectType, String subjectName,
@@ -2611,6 +2680,9 @@ public class AccessController {
         if (lower.contains("sentrynosuchobjectexception") && lower.contains("role")
                 && (lower.contains("doesn't exist") || lower.contains("does not exist"))) {
             return "授权后端角色不存在，请先同步或创建 Sentry 角色后再重试";
+        }
+        if (lower.contains("invalid permission")) {
+            return "权限类型不被当前授权后端支持，请只选择该后端支持的资源权限后重试";
         }
         if (lower.contains("access denied") || lower.contains("denied")) {
             return "授权端点账号权限不足: " + compactMessage;

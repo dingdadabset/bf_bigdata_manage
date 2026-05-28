@@ -82,8 +82,14 @@
       </div>
     </div>
 
-    <a-row :gutter="20" class="workspace-row">
-      <a-col v-if="isRoleManagement || state.mode !== 'ROLE'" :xs="24" :lg="8" :xl="7" class="workspace-col role-catalog-col">
+    <a-row :gutter="20" class="workspace-row" :class="{ 'role-management-stack': isRoleManagement }">
+      <a-col
+        v-if="isRoleManagement || state.mode !== 'ROLE'"
+        :xs="24"
+        :lg="roleCatalogColLg"
+        :xl="roleCatalogColXl"
+        class="workspace-col role-catalog-col"
+      >
         <role-catalog-panel
           ref="roleCatalogPanel"
           :roles="roles"
@@ -107,8 +113,8 @@
 
       <a-col
         :xs="24"
-        :lg="isRoleManagement || state.mode !== 'ROLE' ? 16 : 24"
-        :xl="isRoleManagement || state.mode !== 'ROLE' ? 17 : 24"
+        :lg="workbenchColLg"
+        :xl="workbenchColXl"
         class="workspace-col workbench-col"
       >
         <role-grant-workbench
@@ -340,6 +346,20 @@ export default {
     isRoleManagement() {
       return this.pageMode === 'role-management';
     },
+    roleCatalogColLg() {
+      return this.isRoleManagement ? 24 : 8;
+    },
+    roleCatalogColXl() {
+      return this.isRoleManagement ? 24 : 7;
+    },
+    workbenchColLg() {
+      if (this.isRoleManagement) return 24;
+      return this.state.mode !== 'ROLE' ? 16 : 24;
+    },
+    workbenchColXl() {
+      if (this.isRoleManagement) return 24;
+      return this.state.mode !== 'ROLE' ? 17 : 24;
+    },
     workbenchMode() {
       return this.isRoleManagement ? 'role-management' : 'authorization';
     },
@@ -412,7 +432,8 @@ export default {
       );
     },
     hasSelectedSubset() {
-      return Array.isArray(this.state.selectedRolePermissionKeys) && this.state.selectedRolePermissionKeys.length > 0;
+      return (Array.isArray(this.state.selectedRolePermissionKeys) && this.state.selectedRolePermissionKeys.length > 0)
+        || Object.values(this.expandedTableSelections || {}).some(entry => Array.isArray(entry?.tables) && entry.tables.length > 0);
     },
     canVerifyFlow() {
       return Boolean(this.state.verificationUser && this.verificationSnapshot);
@@ -623,12 +644,12 @@ export default {
       const preview = this.historicalAdoption.preview;
       const selectedKeys = new Set(payload?.selectedKeys || []);
       const selectedItems = (preview?.items || []).filter(item => selectedKeys.has(item.key));
-      if (!selectedItems.length) {
-        this.$message.warning('请选择至少一项可接管权限');
-        return;
-      }
       const reverseBindKeys = new Set(payload?.reverseBindSelectedKeys || []);
       const reverseBindItems = (preview?.items || []).filter(item => item.reverseBindable && reverseBindKeys.has(item.key));
+      if (!selectedItems.length && !reverseBindItems.length) {
+        this.$message.warning('请选择至少一项可接管或可反向绑定权限');
+        return;
+      }
       this.loading.submitting = true;
       try {
         const acknowledgements = payload?.acknowledgements || {};
@@ -1532,10 +1553,15 @@ export default {
         this.loading.submitting = false;
       }
     },
-    buildSubsetPayload() {
-      const basePermissions = this.selectedRolePermissions();
+    buildSubsetPayload(permissions = null) {
       const tableSelections = [];
       const expandedEntries = Object.entries(this.expandedTableSelections || {});
+      const tableSelectedParentKeys = new Set(expandedEntries
+        .filter(([, entry]) => entry && Array.isArray(entry.tables) && entry.tables.length)
+        .map(([key]) => key));
+      const basePermissions = Array.isArray(permissions) && permissions.length
+        ? permissions.map(rolePermissionSelection)
+        : this.selectedRolePermissions().filter(item => !tableSelectedParentKeys.has(permissionKey(item)));
       for (const [, entry] of expandedEntries) {
         if (entry && entry.parentPermission && Array.isArray(entry.tables) && entry.tables.length) {
           for (const table of entry.tables) {
@@ -1543,7 +1569,8 @@ export default {
           }
         }
       }
-      const hasTableExpansions = tableSelections.length > 0;
+      const rolePermissions = [...basePermissions, ...tableSelections];
+      const hasTableExpansions = rolePermissions.some(item => item?.expandedFromDatabasePermission);
       return {
         username: this.state.subjectType === 'GROUP' ? this.state.verificationUser : this.state.subjectName,
         cluster: this.state.selectedCluster,
@@ -1554,7 +1581,7 @@ export default {
         roleCode: this.selectedRoleCode,
         subjectType: this.state.subjectType,
         subjectName: this.state.subjectName,
-        rolePermissions: [...basePermissions, ...tableSelections]
+        rolePermissions
       };
     },
     handleTableExpansionChange({ parentPermission, tables, key }) {
@@ -1584,14 +1611,25 @@ export default {
         this.loading.submitting = false;
       }
     },
-    async revokeSubset() {
+    async revokeSubset({ permissions } = {}) {
+      const selectedPermissions = Array.isArray(permissions) ? permissions : [];
+      if (!selectedPermissions.length && !this.hasSelectedSubset) {
+        this.$message.warning('请先选择需要回收的权限');
+        return;
+      }
       this.loading.submitting = true;
       try {
-        await axios.post('/api/access/revokes/batch', this.buildSubsetPayload());
+        await axios.post('/api/access/revokes/batch', this.buildSubsetPayload(selectedPermissions));
         this.$message.success('角色权限子集已回收');
-        await this.afterMutation();
       } catch (e) {
         this.$message.error(this.messageOf(e, '角色权限子集回收失败'));
+        this.loading.submitting = false;
+        return;
+      }
+      try {
+        await this.afterMutation({ forceVerificationSync: true });
+      } catch (e) {
+        this.$message.warning(this.messageOf(e, '回收已完成，但刷新权限校验失败，请手动点击刷新'));
       } finally {
         this.loading.submitting = false;
       }
@@ -1722,13 +1760,24 @@ export default {
     selectAllRolePermissions() {
       this.state.selectedRolePermissionKeys = uniqueRolePermissions(this.selectedRoleView).map(permissionKey);
     },
-    async afterMutation() {
+    async afterMutation({ forceVerificationSync = false } = {}) {
       const currentRoleCode = this.selectedRoleCode;
       if (this.state.selectedCluster && this.state.selectedAuthBackend) {
         await this.loadRoles();
       }
       if (currentRoleCode) {
         await this.loadRoleDetail(currentRoleCode);
+      }
+      if (forceVerificationSync && this.state.verificationUser) {
+        try {
+          await axios.post(`/api/access/sync/${encodeURIComponent(this.state.verificationUser)}`, null, {
+            params: {
+              cluster: this.state.selectedCluster
+            }
+          });
+        } catch (e) {
+          this.$message.warning(this.messageOf(e, '后端权限同步失败，已改为直接刷新校验结果'));
+        }
       }
       await Promise.all([
         this.loadSubjectContext(),
@@ -2004,10 +2053,16 @@ export default {
 .workspace-row {
   align-items: stretch;
 }
+.role-management-stack {
+  row-gap: 20px;
+}
 .workspace-col {
   display: flex;
   flex-direction: column;
   margin-bottom: 20px;
+}
+.role-management-stack .workspace-col {
+  margin-bottom: 0;
 }
 .workspace-col :deep(.ant-card) {
   width: 100%;

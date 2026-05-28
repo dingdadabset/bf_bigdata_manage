@@ -87,17 +87,22 @@ public class HistoricalPermissionAdoptionService {
             previewItems.put(item.getKey(), item);
         }
         Set<String> selectedKeys = selectedKeys(request.getRolePermissions(), context.authBackend);
-        if (selectedKeys.isEmpty()) {
+        boolean hasReverseBindRequest = Boolean.TRUE.equals(request.getReverseBindToRole())
+                && request.getReverseBindPermissions() != null
+                && !request.getReverseBindPermissions().isEmpty();
+        if (selectedKeys.isEmpty() && !hasReverseBindRequest) {
             for (HistoricalPermissionAdoptionPreview.Item item : preview.getItems()) {
                 if (item.isAdoptable()) {
                     selectedKeys.add(item.getKey());
                 }
             }
         }
-        if (selectedKeys.isEmpty()) {
+        if (selectedKeys.isEmpty() && !hasReverseBindRequest) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前角色与历史权限没有可接管的权限项");
         }
-        validateAcknowledgements(preview, selectedKeys, previewItems, request);
+        if (!selectedKeys.isEmpty()) {
+            validateAcknowledgements(preview, selectedKeys, previewItems, request);
+        }
 
         HistoricalPermissionAdoptionResult result = new HistoricalPermissionAdoptionResult();
         result.setUsername(context.username);
@@ -148,9 +153,7 @@ public class HistoricalPermissionAdoptionService {
             addResultItem(result, key, "ADOPTED", "历史权限已接管为 DGA 本地记录", saved.getId(),
                     item.getSource(), item.getSourceRole(), item.getSourceGroup());
         }
-        if (Boolean.TRUE.equals(request.getReverseBindToRole())
-                && request.getReverseBindPermissions() != null
-                && !request.getReverseBindPermissions().isEmpty()) {
+        if (hasReverseBindRequest) {
             processReverseBind(context, request, result, operator);
         }
         return result;

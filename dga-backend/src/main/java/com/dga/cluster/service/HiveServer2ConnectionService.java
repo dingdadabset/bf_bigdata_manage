@@ -191,11 +191,17 @@ public class HiveServer2ConnectionService {
         if (!isBlank(endpoint.getPassword())) {
             properties.setProperty("password", endpoint.getPassword());
         }
-        Connection connection = handle.driver.connect(endpoint.getUrl(), properties);
-        if (connection == null) {
-            throw new SQLException("Hive JDBC 驱动 [" + registeredDriver.getName() + "] 未接受该连接串: " + endpoint.getUrl());
+        ClassLoader previousContextLoader = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(handle.classLoader);
+        try {
+            Connection connection = handle.driver.connect(endpoint.getUrl(), properties);
+            if (connection == null) {
+                throw new SQLException("Hive JDBC 驱动 [" + registeredDriver.getName() + "] 未接受该连接串: " + endpoint.getUrl());
+            }
+            return connection;
+        } finally {
+            Thread.currentThread().setContextClassLoader(previousContextLoader);
         }
-        return connection;
     }
 
     private ExternalDriverHandle loadExternalDriver(RegisteredDriver registeredDriver) throws Exception {
@@ -210,7 +216,7 @@ public class HiveServer2ConnectionService {
             if (cached != null) {
                 return cached;
             }
-            URLClassLoader loader = new URLClassLoader(new URL[]{jarFile.toURI().toURL()}, jdbcApiParentClassLoader());
+            URLClassLoader loader = new ChildFirstHiveJdbcClassLoader(new URL[]{jarFile.toURI().toURL()}, jdbcApiParentClassLoader());
             Class<?> driverClass = Class.forName(registeredDriver.getDriverClassName(), true, loader);
             Driver driver = (Driver) driverClass.getDeclaredConstructor().newInstance();
             ExternalDriverHandle handle = new ExternalDriverHandle(driver, loader);
@@ -351,12 +357,47 @@ public class HiveServer2ConnectionService {
 
     private static final class ExternalDriverHandle {
         private final Driver driver;
-        @SuppressWarnings("unused")
         private final URLClassLoader classLoader;
 
         private ExternalDriverHandle(Driver driver, URLClassLoader classLoader) {
             this.driver = driver;
             this.classLoader = classLoader;
+        }
+    }
+
+    private static final class ChildFirstHiveJdbcClassLoader extends URLClassLoader {
+        private ChildFirstHiveJdbcClassLoader(URL[] urls, ClassLoader parent) {
+            super(urls, parent);
+        }
+
+        @Override
+        protected Class<?> loadClass(String name, boolean resolve) throws ClassNotFoundException {
+            synchronized (getClassLoadingLock(name)) {
+                Class<?> loaded = findLoadedClass(name);
+                if (loaded == null && shouldLoadFromDriverFirst(name)) {
+                    try {
+                        loaded = findClass(name);
+                    } catch (ClassNotFoundException ignored) {
+                    }
+                }
+                if (loaded == null) {
+                    loaded = super.loadClass(name, false);
+                }
+                if (resolve) {
+                    resolveClass(loaded);
+                }
+                return loaded;
+            }
+        }
+
+        private boolean shouldLoadFromDriverFirst(String name) {
+            return name.startsWith("org.apache.hive.")
+                    || name.startsWith("org.apache.thrift.")
+                    || name.startsWith("org.apache.hadoop.")
+                    || name.startsWith("org.apache.curator.")
+                    || name.startsWith("org.apache.zookeeper.")
+                    || name.startsWith("org.apache.http.")
+                    || name.startsWith("com.facebook.fb303.");
         }
     }
 

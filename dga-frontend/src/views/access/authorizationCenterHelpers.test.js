@@ -22,6 +22,7 @@ import {
   permissionKey,
   reconciliationStatusColor,
   reconciliationStatusLabel,
+  rolePermissionSelection,
   rolePermissionShortText,
   rolePermissionText,
   shouldShowLdapGroupInput,
@@ -96,6 +97,28 @@ describe('authorizationCenterHelpers', () => {
     expect(rolePermissionShortText(databasePermission)).toBe('finance.* SELECT');
     expect(rolePermissionText(tablePermission)).toBe('TABLE finance.orders INSERT');
     expect(rolePermissionShortText(tablePermission)).toBe('finance.orders INSERT');
+  });
+
+  it('preserves revoke source metadata in role permission selections', () => {
+    expect(rolePermissionSelection({
+      resourceType: 'TABLE',
+      databaseName: 'finance',
+      tableName: 'orders',
+      permission: 'select',
+      authBackend: 'sentry',
+      expandedFromDatabasePermission: true,
+      sourceRole: 'role_finance_sub_abc123',
+      sourceGroup: 'analytics'
+    })).toEqual({
+      resourceType: 'TABLE',
+      databaseName: 'finance',
+      tableName: 'orders',
+      permission: 'SELECT',
+      authBackend: 'sentry',
+      expandedFromDatabasePermission: true,
+      sourceRole: 'role_finance_sub_abc123',
+      sourceGroup: 'analytics'
+    });
   });
 
   it('finds direct and inherited role assignments for the current subject', () => {

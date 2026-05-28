@@ -267,8 +267,10 @@ export default {
       return source || '-';
     },
     confirm() {
-      if (!this.localSelectedKeys.length) {
-        this.$message.warning('请选择至少一项可接管权限');
+      const hasAdoptionSelection = this.localSelectedKeys.length > 0;
+      const hasReverseBindSelection = this.reverseBindSelectedKeys.length > 0;
+      if (!hasAdoptionSelection && !hasReverseBindSelection) {
+        this.$message.warning('请选择至少一项可接管或可反向绑定权限');
         return;
       }
       if (this.needsRoleMissing && !this.ack.roleMissing) {
