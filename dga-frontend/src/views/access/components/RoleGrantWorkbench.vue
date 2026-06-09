@@ -968,7 +968,6 @@ import {
   filterRoleAssignments,
   filterRolePermissions,
   hasUsableRoleAssignment,
-  isBackendSupportedPermission,
   isDatabasePermission,
   isGroupInheritedGrant,
   operationModeLabel,
@@ -1163,13 +1162,10 @@ export default {
         .filter(item => item.status === 'MATCHED' || item.status === 'LIVE_ONLY' || item.status === 'RECORDED_ONLY');
     },
     forceRevokeUserPermissions() {
-      return this.forceRevokeAllPermissionRows.filter(item => !isGroupInheritedGrant(item.live || item.recorded) && isBackendSupportedPermission(this.capability, item));
-    },
-    forceRevokeUnsupportedPermissionCount() {
-      return this.forceRevokeAllPermissionRows.filter(item => !isGroupInheritedGrant(item.live || item.recorded) && !isBackendSupportedPermission(this.capability, item)).length;
+      return this.forceRevokeAllPermissionRows;
     },
     forceRevokeInheritedPermissionCount() {
-      return this.forceRevokeAllPermissionRows.length - this.forceRevokeUserPermissions.length;
+      return this.forceRevokeAllPermissionRows.filter(item => isGroupInheritedGrant(item.live || item.recorded)).length;
     },
     forceRevokePermissionOptions() {
       return Array.from(new Set(this.forceRevokeUserPermissions.map(item => item.permission).filter(Boolean)));
@@ -1347,26 +1343,16 @@ export default {
       if (!this.forceRevokeAllPermissionRows.length) {
         return `当前用户 ${this.forceRevokeTargetUser} 暂无可回收的 live 或 DGA 记录权限，请先刷新权限校验。`;
       }
-      if (!this.forceRevokeUserPermissions.length && this.forceRevokeInheritedPermissionCount) {
-        return `当前用户 ${this.forceRevokeTargetUser} 的权限均继承自 LDAP 组，不能按用户强制回收；请回收组绑定或组权限。`;
-      }
-      return `当前用户 ${this.forceRevokeTargetUser} 暂无可按用户直接回收的权限。`;
+      return `当前用户 ${this.forceRevokeTargetUser} 暂无可按用户回收的权限。`;
     },
     forceRevokeUserHint() {
       if (this.forceRevokeDisabledReason) {
         return `管理员操作不可用：${this.forceRevokeDisabledReason}`;
       }
-      const excluded = [];
       if (this.forceRevokeInheritedPermissionCount) {
-        excluded.push(`${this.forceRevokeInheritedPermissionCount} 项 LDAP 组继承权限`);
+        return `管理员操作：将按用户 ${this.forceRevokeTargetUser} 回收所选权限；其中 ${this.forceRevokeInheritedPermissionCount} 项可能来自 LDAP 组继承，实际效果以授权后端回收结果为准。`;
       }
-      if (this.forceRevokeUnsupportedPermissionCount) {
-        excluded.push(`${this.forceRevokeUnsupportedPermissionCount} 项当前后端不支持直接回收的权限`);
-      }
-      if (excluded.length) {
-        return `管理员操作：将直接按用户 ${this.forceRevokeTargetUser} 回收可选权限；已排除 ${excluded.join('、')}。`;
-      }
-      return `管理员操作：将直接按用户 ${this.forceRevokeTargetUser} 回收所选用户已有权限，不依赖角色绑定状态。`;
+      return `管理员操作：将按用户 ${this.forceRevokeTargetUser} 回收所选已有权限，不依赖角色绑定状态或端点类型。`;
     },
     canSubmitDirect() {
       if (this.state.subjectType !== 'USER' || !this.state.subjectName) return false;
@@ -1478,7 +1464,6 @@ export default {
     assignmentStatusColor,
     batchActionText,
     batchStatusColor,
-    isBackendSupportedPermission,
     isDatabasePermission,
     operationModeLabel,
     permissionKey,

@@ -143,7 +143,17 @@ public class StarRocksSqlAuthorizationProvider implements AuthorizationProvider 
 
     @Override
     public void revokeAll(AuthorizationContext context, String username) {
-        System.out.println("StarRocks revokeAll is not implemented because StarRocks grants are resource scoped.");
+        validateUserIdentity(username);
+        String userIdentity = formatUserIdentity(username);
+        try {
+            executePrivileged(context, "DROP USER " + userIdentity);
+        } catch (Exception e) {
+            if (isMissingUser(e)) {
+                System.out.println("StarRocks user already absent, skip drop: " + userIdentity);
+                return;
+            }
+            throw new RuntimeException("StarRocks 离职权限回收失败，原生用户删除未完成: " + e.getMessage(), e);
+        }
     }
 
     @Override

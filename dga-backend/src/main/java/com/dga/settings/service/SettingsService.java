@@ -177,6 +177,8 @@ public class SettingsService {
         Map<String, Object> notification = new LinkedHashMap<>();
         notification.put("wecomEnabled", false);
         notification.put("wecomWebhook", "");
+        notification.put("mailEnabled", true);
+        notification.put("mailTestRecipient", "quan_ding@baofu.com");
         notification.put("collectFailureAlert", true);
         notification.put("qualityIssueAlert", true);
         result.put(GROUP_NOTIFICATION, notification);

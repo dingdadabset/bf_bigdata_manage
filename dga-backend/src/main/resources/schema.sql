@@ -630,7 +630,33 @@ CREATE TABLE IF NOT EXISTS `access_owner` (
   INDEX `idx_access_owner_status` (`status`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Permission owner directory';
 
--- 18. System and User Settings
+-- 18. Offboarding Access Revocation Tasks
+CREATE TABLE IF NOT EXISTS `dga_offboarding_revocation_task` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT,
+  `task_no` VARCHAR(80) NOT NULL,
+  `username` VARCHAR(100) NOT NULL,
+  `cluster_name` VARCHAR(100) NOT NULL,
+  `departure_date` DATE NOT NULL,
+  `scheduled_at` DATETIME NOT NULL,
+  `manager_contact` VARCHAR(255),
+  `security_contact` VARCHAR(255),
+  `reason` VARCHAR(500),
+  `status` VARCHAR(30) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING, RUNNING, COMPLETED, FAILED',
+  `created_by` VARCHAR(100),
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `started_at` DATETIME,
+  `completed_at` DATETIME,
+  `confirmation_no` VARCHAR(100),
+  `archive_name` VARCHAR(200),
+  `confirmation_text` LONGTEXT,
+  `message` VARCHAR(1000),
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_offboarding_task_no` (`task_no`),
+  INDEX `idx_offboarding_task_due` (`status`, `scheduled_at`),
+  INDEX `idx_offboarding_task_user` (`username`, `cluster_name`, `status`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离职权限回收任务';
+
+-- 19. System and User Settings
 CREATE TABLE IF NOT EXISTS `dga_system_setting` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `scope` VARCHAR(100) NOT NULL COMMENT 'SYSTEM or USER:{username}',
@@ -647,7 +673,7 @@ CREATE TABLE IF NOT EXISTS `dga_system_setting` (
   INDEX `idx_setting_key` (`setting_key`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='系统与用户设置';
 
--- 19. Scheduler Task Owner Context
+-- 20. Scheduler Task Owner Context
 CREATE TABLE IF NOT EXISTS `dga_scheduler_task_owner` (
   `id` BIGINT NOT NULL AUTO_INCREMENT,
   `cluster_code` VARCHAR(100) NOT NULL,

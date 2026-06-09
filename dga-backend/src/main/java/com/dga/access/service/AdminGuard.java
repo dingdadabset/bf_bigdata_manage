@@ -11,10 +11,14 @@ import javax.servlet.http.HttpServletRequest;
 @Component
 public class AdminGuard {
 
-    private static final String DELETE_FORBIDDEN_MESSAGE = "仅 admin 或超级用户可执行删除操作";
+    private static final String DELETE_FORBIDDEN_MESSAGE = "仅 admin 用户可执行删除操作";
 
     public void requireDeletePrivilege(HttpServletRequest request) {
-        requirePlatformAdmin(request, DELETE_FORBIDDEN_MESSAGE);
+        AuthenticatedUser user = CurrentUser.get();
+        if (user != null && user.isRootAdmin()) {
+            return;
+        }
+        throw new ResponseStatusException(HttpStatus.FORBIDDEN, DELETE_FORBIDDEN_MESSAGE);
     }
 
     public void requirePlatformAdmin(HttpServletRequest request, String forbiddenMessage) {

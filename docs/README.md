@@ -4,11 +4,13 @@ This directory keeps design notes, implementation summaries, and planning files 
 
 ## Structure
 
+- `current-architecture-and-optimization-plan.md`: 当前代码架构设计、风险识别和分阶段迭代优化方案。
 - `DGA_Design_Document.md`: overall platform design document.
 - `authz-openapi.md`: external authorization API document and curl test cases.
 - `database-change-log.md`: manual database migration notes and table/index change records.
 - `data-map/`: data map feature implementation notes and summaries.
 - `planning/todo.md`: project roadmap and task notes.
+- `plans/starrocks-role-template-requirements.md`: StarRocks 角色模板化治理需求梳理。
 
 
 

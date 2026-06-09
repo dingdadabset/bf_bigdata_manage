@@ -4,23 +4,33 @@
       <div>
         <div class="page-eyebrow">{{ isRoleManagement ? 'RBAC ROLE MANAGEMENT' : 'RBAC AUTHORIZATION CENTER' }}</div>
         <h2>{{ isRoleManagement ? '角色管理' : '授权中心' }}</h2>
-        <p>{{ isRoleManagement ? '维护角色、权限范围与当前绑定对象；用户授权与角色绑定请在授权中心执行。' : '围绕用户或组执行角色绑定、权限下发、回收与后端校验。' }}</p>
+        <p>{{ isRoleManagement ? '维护角色、权限范围、绑定对象与 StarRocks 权限盘点；用户授权与角色绑定请在授权中心执行。' : '围绕用户或组执行角色绑定、权限下发、回收与后端校验。' }}</p>
       </div>
-      <a-button
-        v-if="isRoleManagement"
-        type="primary"
-        icon="safety-certificate"
-        @click="$router.push('/authorization-center')"
-      >
-        去授权中心
-      </a-button>
-      <a-button
-        v-else
-        icon="profile"
-        @click="$router.push('/role-management')"
-      >
-        角色管理
-      </a-button>
+      <div class="page-heading-actions">
+        <a-button
+          v-if="isRoleManagement"
+          type="primary"
+          icon="safety-certificate"
+          @click="$router.push('/authorization-center')"
+        >
+          去授权中心
+        </a-button>
+        <a-button
+          v-else
+          icon="profile"
+          @click="$router.push('/role-management')"
+        >
+          角色管理
+        </a-button>
+        <a-button
+          v-if="showStarRocksInventoryButton"
+          icon="unordered-list"
+          :disabled="!isSelectedStarRocksBackend"
+          @click="openStarRocksInventoryModal"
+        >
+          StarRocks 盘点
+        </a-button>
+      </div>
     </div>
 
     <authorization-workbench-filters
@@ -224,6 +234,17 @@
       @confirm="confirmHistoricalAdoption"
       @cancel="closeHistoricalAdoptionModal"
     />
+
+    <star-rocks-inventory-modal
+      :visible="isRoleManagement && starRocksInventory.visible"
+      :loading="starRocksInventory.loading"
+      :cluster-label="selectedClusterLabel"
+      :form="starRocksInventory"
+      :result="starRocksInventory.result"
+      @change-form="updateStarRocksInventoryForm"
+      @run="runStarRocksInventory"
+      @cancel="starRocksInventory.visible = false"
+    />
   </div>
 </template>
 
@@ -233,6 +254,7 @@ import AuthorizationWorkbenchFilters from './components/AuthorizationWorkbenchFi
 import HistoricalPermissionAdoptionModal from './components/HistoricalPermissionAdoptionModal.vue';
 import RoleCatalogPanel from './components/RoleCatalogPanel.vue';
 import RoleGrantWorkbench from './components/RoleGrantWorkbench.vue';
+import StarRocksInventoryModal from './components/StarRocksInventoryModal.vue';
 import {
   allowedSubjectTypes,
   boundRoleMeta,
@@ -259,7 +281,8 @@ export default {
     AuthorizationWorkbenchFilters,
     HistoricalPermissionAdoptionModal,
     RoleCatalogPanel,
-    RoleGrantWorkbench
+    RoleGrantWorkbench,
+    StarRocksInventoryModal
   },
   props: {
     pageMode: {
@@ -339,6 +362,14 @@ export default {
         visible: false,
         preview: null,
         selectedKeys: []
+      },
+      starRocksInventory: {
+        visible: false,
+        loading: false,
+        keyword: '',
+        maxUsers: 50,
+        includeRecordedGrants: true,
+        result: null
       }
     };
   },
@@ -480,6 +511,17 @@ export default {
     capabilityReady() {
       return Boolean(this.capability && this.capability.status === 'READY');
     },
+    isSelectedStarRocksBackend() {
+      const text = [
+        this.state.selectedAuthBackend,
+        this.capability && this.capability.authBackend,
+        this.capability && this.capability.engineType
+      ].filter(Boolean).join(' ').toUpperCase();
+      return text.includes('STARROCKS');
+    },
+    showStarRocksInventoryButton() {
+      return this.isRoleManagement && Boolean(this.state.selectedCluster);
+    },
     capabilityEngineTypeLabel() {
       return this.capability && this.capability.engineType ? this.capability.engineType : '-';
     },
@@ -499,10 +541,61 @@ export default {
   watch: {
     pageMode(value) {
       this.activeRoleTab = value === 'role-management' ? 'info' : 'actions';
+      if (value !== 'role-management') {
+        this.starRocksInventory.visible = false;
+      }
     }
   },
   methods: {
     operationModeLabel,
+    openStarRocksInventoryModal() {
+      if (!this.state.selectedCluster || !this.state.selectedAuthBackend) {
+        this.$message.warning('请先选择集群和授权后端');
+        return;
+      }
+      if (!this.isSelectedStarRocksBackend) {
+        this.$message.info('当前仅支持对 StarRocks 授权后端执行权限盘点。');
+        return;
+      }
+      this.starRocksInventory.visible = true;
+      if (!this.starRocksInventory.result) {
+        this.runStarRocksInventory();
+      }
+    },
+    updateStarRocksInventoryForm({ field, value }) {
+      this.starRocksInventory = {
+        ...this.starRocksInventory,
+        [field]: value
+      };
+    },
+    async runStarRocksInventory() {
+      if (!this.state.selectedCluster || !this.state.selectedAuthBackend) {
+        this.$message.warning('请先选择集群和授权后端');
+        return;
+      }
+      if (!this.isSelectedStarRocksBackend) {
+        this.$message.info('当前仅支持对 StarRocks 授权后端执行权限盘点。');
+        return;
+      }
+      this.starRocksInventory.loading = true;
+      try {
+        const usernames = this.starRocksInventoryUsernames();
+        const res = await axios.post('/api/access/starrocks/inventory/permissions', {
+          cluster: this.state.selectedCluster,
+          authBackend: this.state.selectedAuthBackend,
+          usernames: usernames.length ? usernames : undefined,
+          keyword: this.starRocksInventory.keyword || undefined,
+          maxUsers: this.starRocksInventory.maxUsers,
+          includeRecordedGrants: this.starRocksInventory.includeRecordedGrants
+        });
+        this.starRocksInventory.result = res.data || null;
+        this.$message.success((res.data && res.data.message) || 'StarRocks 权限盘点完成');
+      } catch (e) {
+        this.$message.error(this.messageOf(e, 'StarRocks 权限盘点失败'));
+      } finally {
+        this.starRocksInventory.loading = false;
+      }
+    },
     flowStepMeta(done, current) {
       if (done) {
         return { status: 'done', statusLabel: '已就绪', tagColor: 'green' };
@@ -1147,6 +1240,8 @@ export default {
       this.state.approver = '';
       this.state.expiresAt = '';
       this.state.riskLevel = 'LOW';
+      this.starRocksInventory.visible = false;
+      this.starRocksInventory.result = null;
     },
     async loadBackendOptions() {
       this.loading.backends = true;
@@ -1835,6 +1930,40 @@ export default {
         .trim();
       return concise.length > 180 ? `${concise.slice(0, 180)}...` : concise;
     },
+    starRocksInventoryUsernames() {
+      const keyword = String(this.starRocksInventory.keyword || '').trim().toLowerCase();
+      const maxUsers = Number(this.starRocksInventory.maxUsers) || 50;
+      const source = [];
+      if (this.state.subjectType === 'USER' && Array.isArray(this.principals)) {
+        source.push(...this.principals);
+      }
+      if (Array.isArray(this.verificationPrincipals)) {
+        source.push(...this.verificationPrincipals);
+      }
+      const unique = new Set();
+      for (const item of source) {
+        const subjectType = String(item && item.subjectType ? item.subjectType : 'USER').toUpperCase();
+        if (subjectType !== 'USER') {
+          continue;
+        }
+        const username = this.firstNonBlank(
+          item && item.value,
+          item && item.name,
+          item && item.label
+        );
+        if (!username) {
+          continue;
+        }
+        if (keyword && !String(username).toLowerCase().includes(keyword)) {
+          continue;
+        }
+        unique.add(username);
+        if (unique.size >= maxUsers) {
+          break;
+        }
+      }
+      return Array.from(unique);
+    },
     normalizeDateTimeInput(value) {
       if (!value) return null;
       return String(value).length === 16 ? `${value}:00` : value;
@@ -1883,6 +2012,12 @@ export default {
 .page-heading p {
   margin: 0;
   color: #667085;
+}
+.page-heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
 }
 .context-panel {
   margin-bottom: 12px;
@@ -2095,6 +2230,10 @@ export default {
   .page-heading {
     flex-direction: column;
     padding: 14px;
+  }
+  .page-heading-actions {
+    width: 100%;
+    justify-content: flex-start;
   }
   .flow-strip,
   .context-strip {

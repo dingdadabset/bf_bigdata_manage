@@ -56,6 +56,7 @@ public class LdapService {
     private static final String POSIX_ACCOUNT = "posixAccount";
     private static final String SHADOW_ACCOUNT = "shadowAccount";
     private static final String LOCKED_TIME_VALUE = "000001010000Z";
+    private static final String DISABLED_LOGIN_SHELL = "/sbin/nologin";
 
     @Autowired
     private LdapTemplate defaultLdapTemplate;
@@ -429,6 +430,23 @@ public class LdapService {
         return false;
     }
 
+    private boolean isAttributeNotAllowedError(Throwable error) {
+        Throwable current = error;
+        while (current != null) {
+            String message = current.getMessage();
+            if (message != null) {
+                String lower = message.toLowerCase(Locale.ROOT);
+                if (lower.contains("error code 65")
+                        || (lower.contains("attribute") && lower.contains("not allowed"))
+                        || lower.contains("object class violation")) {
+                    return true;
+                }
+            }
+            current = current.getCause();
+        }
+        return false;
+    }
+
     public Map<String, Object> getUserPrimaryGroup(String clusterIdentifier, String username) {
         Cluster cluster = resolveCluster(clusterIdentifier);
         LdapTemplate ldapTemplate = getLdapTemplate(cluster);
@@ -529,6 +547,41 @@ public class LdapService {
         result.put("locked", locked);
         result.put("message", locked ? "LDAP 用户已锁定" : "LDAP 用户已解锁");
         return result;
+    }
+
+    public Map<String, Object> disableUserForOffboarding(String clusterIdentifier, String username) {
+        Cluster cluster = resolveCluster(clusterIdentifier);
+        LdapTemplate ldapTemplate = getLdapTemplate(cluster);
+        Name dn = buildUserDn(cluster, username);
+        try {
+            ldapTemplate.modifyAttributes(dn, new ModificationItem[]{
+                    replaceAttribute("pwdAccountLockedTime", LOCKED_TIME_VALUE)
+            });
+            Map<String, Object> result = new HashMap<>();
+            result.put("username", username);
+            result.put("locked", true);
+            result.put("method", "pwdAccountLockedTime");
+            result.put("message", "LDAP 账户已通过 pwdAccountLockedTime 锁定");
+            return result;
+        } catch (Exception lockError) {
+            if (!isAttributeNotAllowedError(lockError)) {
+                throw new RuntimeException("LDAP Lock Update Error: " + lockError.getMessage(), lockError);
+            }
+            try {
+                ldapTemplate.modifyAttributes(dn, new ModificationItem[]{
+                        replaceAttribute("loginShell", DISABLED_LOGIN_SHELL)
+                });
+                Map<String, Object> result = new HashMap<>();
+                result.put("username", username);
+                result.put("locked", true);
+                result.put("method", "loginShell");
+                result.put("message", "LDAP schema 不允许 pwdAccountLockedTime，已改用 loginShell=" + DISABLED_LOGIN_SHELL + " 禁止登录");
+                return result;
+            } catch (Exception shellError) {
+                throw new RuntimeException("LDAP Offboarding Disable Error: pwdAccountLockedTime 不可用，loginShell 兜底也失败 - "
+                        + shellError.getMessage(), shellError);
+            }
+        }
     }
 
     public List<Map<String, Object>> getUserSupplementaryGroups(String clusterIdentifier, String username) {

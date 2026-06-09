@@ -56,4 +56,15 @@ public class SettingsController {
         result.put("message", "企业微信测试消息已发送");
         return result;
     }
+
+    @PostMapping("/notifications/mail/test")
+    public Map<String, Object> testMail(@RequestBody Map<String, Object> body, HttpServletRequest request) {
+        adminGuard.requirePlatformAdmin(request, "仅 admin 或超级管理员可测试通知告警");
+        String recipient = body == null ? null : String.valueOf(body.getOrDefault("recipient", ""));
+        notificationService.sendMailTest(CurrentUser.usernameOrUnknown(), recipient);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("success", true);
+        result.put("message", "SMTP 测试邮件已发送");
+        return result;
+    }
 }

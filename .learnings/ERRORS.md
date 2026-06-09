@@ -91,3 +91,61 @@ Check available local scripts with `ls` before invoking status helpers in this r
 - Related Files: run-local.sh
 
 ---
+
+## [ERR-20260602-001] run_local_stale_backend_jar
+
+**Logged**: 2026-06-02T06:02:06Z
+**Priority**: medium
+**Status**: pending
+**Area**: backend
+
+### Summary
+Restarting local services after backend dependency changes can fail if an old backend process still owns port 8081, and running only `mvn compile` is not enough for the jar used by `run-local.sh`.
+
+### Error
+```text
+Web server failed to start. Port 8081 was already in use.
+```
+
+### Context
+- Added a backend dependency and first verified with `mvn -q -DskipTests compile`.
+- `run-local.sh` runs `dga-backend/target/dga-backend-0.0.1-SNAPSHOT.jar`, so backend runtime changes require a packaged jar.
+- A previous backend PID was still alive during restart and the new process failed to bind port 8081.
+
+### Suggested Fix
+For backend dependency/runtime changes, use `run-local.sh` or `mvn -q -DskipTests package` before restarting; if port 8081 is stale, stop the old process and then rerun `run-local.sh`.
+
+### Metadata
+- Reproducible: yes
+- Related Files: run-local.sh, dga-backend/pom.xml
+
+---
+
+## [ERR-20260602-002] cross_exec_localhost_unreachable
+
+**Logged**: 2026-06-02T06:06:02Z
+**Priority**: low
+**Status**: pending
+**Area**: infra
+
+### Summary
+A foreground Spring Boot process can remain running in one exec session while `curl` from another exec session cannot connect to its localhost port.
+
+### Error
+```text
+curl: (7) Failed to connect to 127.0.0.1 port 8081 after 0 ms: Could not connect to server
+```
+
+### Context
+- Started the backend in a long-running exec session and saw Spring Boot reach ACCEPTING_TRAFFIC.
+- Separate exec calls to `curl 127.0.0.1:8081` failed immediately.
+- The Java session stayed alive until explicitly stopped by PID, so this appears to be tool/session networking isolation rather than a backend startup failure.
+
+### Suggested Fix
+For localhost verification in this environment, prefer checks performed inside the same startup script/session, browser tooling, or normal user terminal rather than cross-exec curl against a foreground process.
+
+### Metadata
+- Reproducible: unknown
+- Related Files: run-local.sh
+
+---

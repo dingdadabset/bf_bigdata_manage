@@ -15,9 +15,21 @@ public interface UserResourceAccessRepository extends JpaRepository<UserResource
     List<UserResourceAccess> findByUsernameAndIsDeletedFalse(String username);
     List<UserResourceAccess> findByUsernameAndClusterCodeAndIsDeletedFalse(String username, String clusterCode);
 
+    @Query("SELECT u FROM UserResourceAccess u WHERE u.username = :username " +
+            "AND (:cluster IS NULL OR :cluster = '' OR u.clusterCode = :cluster OR u.clusterName = :cluster) " +
+            "ORDER BY COALESCE(u.revokeTime, u.grantTime, u.updateTime) DESC")
+    List<UserResourceAccess> findAuditByUsernameAndCluster(@Param("username") String username,
+                                                           @Param("cluster") String cluster);
+
     @Query("SELECT u FROM UserResourceAccess u WHERE u.isDeleted = false AND u.status = 'ACTIVE' " +
             "AND (:cluster IS NULL OR :cluster = '' OR u.clusterCode = :cluster OR u.clusterName = :cluster)")
     List<UserResourceAccess> findActiveByCluster(@Param("cluster") String cluster);
+
+    @Query("SELECT COUNT(u) FROM UserResourceAccess u WHERE u.isDeleted = false AND u.status = 'ACTIVE' " +
+            "AND u.username = :username " +
+            "AND (:cluster IS NULL OR :cluster = '' OR u.clusterCode = :cluster OR u.clusterName = :cluster)")
+    long countActiveByUsernameAndCluster(@Param("username") String username,
+                                         @Param("cluster") String cluster);
 
     @Query("SELECT u FROM UserResourceAccess u WHERE u.isDeleted = false AND u.status = 'ACTIVE' " +
             "AND (:clusterCode IS NULL OR u.clusterCode = :clusterCode) " +

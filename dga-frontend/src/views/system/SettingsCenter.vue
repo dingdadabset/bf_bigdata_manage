@@ -285,7 +285,7 @@
               <div class="panel-heading">
                 <div>
                   <h2>通知告警设置</h2>
-                  <p>第一版支持企业微信 Webhook，用于采集失败和质量异常通知。</p>
+                  <p>支持企业微信 Webhook 和 SMTP 邮件，用于采集失败、质量异常和离职权限回收通知。</p>
                 </div>
                 <div class="button-group">
                   <a-button
@@ -295,6 +295,14 @@
                     @click="testWecom"
                   >
                     测试发送
+                  </a-button>
+                  <a-button
+                    icon="mail"
+                    :disabled="!canManageSystem || !notificationForm.mailEnabled"
+                    :loading="testingMail"
+                    @click="testMail"
+                  >
+                    测试邮件
                   </a-button>
                   <a-button
                     type="primary"
@@ -331,6 +339,23 @@
                         v-model="notificationForm.wecomWebhook"
                         :disabled="!canManageSystem"
                         placeholder="https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=..."
+                      />
+                    </a-form-model-item>
+                  </a-col>
+                  <a-col :xs="24" :md="12">
+                    <a-form-model-item label="启用 SMTP 邮件">
+                      <div class="switch-line">
+                        <a-switch v-model="notificationForm.mailEnabled" :disabled="!canManageSystem" />
+                        <span>{{ notificationForm.mailEnabled ? '邮件通知已启用' : '邮件通知未启用' }}</span>
+                      </div>
+                    </a-form-model-item>
+                  </a-col>
+                  <a-col :xs="24" :md="12">
+                    <a-form-model-item label="邮件测试收件人">
+                      <a-input
+                        v-model="notificationForm.mailTestRecipient"
+                        :disabled="!canManageSystem"
+                        placeholder="quan_ding@baofu.com"
                       />
                     </a-form-model-item>
                   </a-col>
@@ -387,6 +412,8 @@ const defaults = {
   notification: {
     wecomEnabled: false,
     wecomWebhook: '',
+    mailEnabled: true,
+    mailTestRecipient: 'quan_ding@baofu.com',
     collectFailureAlert: true,
     qualityIssueAlert: true
   }
@@ -399,6 +426,7 @@ export default {
       loading: false,
       savingGroup: '',
       testingWecom: false,
+      testingMail: false,
       activeTab: 'personal',
       canManageSystem: canDelete(),
       personalForm: { ...defaults.personal },
@@ -506,6 +534,23 @@ export default {
         this.$message.error(e.response?.data?.message || e.response?.data || '企业微信测试发送失败');
       } finally {
         this.testingWecom = false;
+      }
+    },
+    async testMail() {
+      if (!this.canManageSystem) {
+        this.$message.warning('仅 admin 或超级管理员可测试通知告警');
+        return;
+      }
+      this.testingMail = true;
+      try {
+        await axios.post('/api/settings/notifications/mail/test', {
+          recipient: this.notificationForm.mailTestRecipient
+        });
+        this.$message.success('SMTP 测试邮件已发送');
+      } catch (e) {
+        this.$message.error(e.response?.data?.message || e.response?.data || 'SMTP 测试邮件发送失败');
+      } finally {
+        this.testingMail = false;
       }
     }
   }

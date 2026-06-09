@@ -125,7 +125,7 @@
               </a-menu-item>
               <a-menu-item key="/access">
                 <a-icon type="user" />
-                <span>权限管理</span>
+                <span>用户管理</span>
               </a-menu-item>
               <a-menu-item key="/authorization-center">
                 <a-icon type="safety-certificate" />
@@ -138,6 +138,10 @@
               <a-menu-item key="/access-governance">
                 <a-icon type="audit" />
                 <span>风险治理</span>
+              </a-menu-item>
+              <a-menu-item key="/offboarding-revocation">
+                <a-icon type="disconnect" />
+                <span>离职权限回收</span>
               </a-menu-item>
             </a-sub-menu>
             <a-menu-item key="/metadata">
@@ -247,7 +251,7 @@ export default {
       return isRootAdmin();
     },
     defaultOpenKeys() {
-      const authPaths = ['/environment-resources', '/access', '/authorization-center', '/role-management', '/access-governance'];
+      const authPaths = ['/environment-resources', '/access', '/authorization-center', '/role-management', '/access-governance', '/offboarding-revocation'];
       return authPaths.includes(this.$route.path) ? ['bigdata-auth'] : [];
     }
   },

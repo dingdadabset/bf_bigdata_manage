@@ -17,11 +17,14 @@ import com.dga.access.dto.HistoricalPermissionAdoptionPreview;
 import com.dga.access.dto.HistoricalPermissionAdoptionPreviewRequest;
 import com.dga.access.dto.HistoricalPermissionAdoptionRequest;
 import com.dga.access.dto.HistoricalPermissionAdoptionResult;
+import com.dga.access.dto.StarRocksPermissionInventoryRequest;
 import com.dga.access.dto.TableGrant;
+import com.dga.access.entity.AuthRoleAssignmentAudit;
 import com.dga.access.entity.AuthRolePermission;
 import com.dga.access.entity.DgaUser;
 import com.dga.access.entity.UserResourceAccess;
 import com.dga.access.security.CurrentUser;
+import com.dga.access.repository.AuthRoleAssignmentAuditRepository;
 import com.dga.access.repository.AuthRolePermissionRepository;
 import com.dga.access.repository.DgaUserRepository;
 import com.dga.access.service.AdminGuard;
@@ -57,8 +60,11 @@ import org.springframework.web.server.ResponseStatusException;
 import org.springframework.http.HttpStatus;
 
 import javax.servlet.http.HttpServletRequest;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.List;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.time.LocalDateTime;
@@ -145,6 +151,9 @@ public class AccessController {
 
     @Autowired
     private AuthRoleService authRoleService;
+
+    @Autowired
+    private AuthRoleAssignmentAuditRepository authRoleAssignmentAuditRepository;
 
     @Autowired
     private HistoricalPermissionAdoptionService historicalPermissionAdoptionService;
@@ -1365,6 +1374,22 @@ public class AccessController {
         }
     }
 
+    @GetMapping("/users/{username}/audit-timeline")
+    @Operation(summary = "查询用户审计时间线", description = "聚合用户授权、回收、角色绑定等操作记录。")
+    public List<Map<String, Object>> userAuditTimeline(@PathVariable String username,
+                                                       @RequestParam(required = false) String cluster) {
+        String resolvedCluster = authorizationService.resolveClusterCodeOrName(cluster);
+        List<Map<String, Object>> rows = new ArrayList<>();
+        for (UserResourceAccess access : userResourceAccessRepository.findAuditByUsernameAndCluster(username, resolvedCluster)) {
+            rows.add(permissionAuditRow(access));
+        }
+        for (AuthRoleAssignmentAudit audit : authRoleAssignmentAuditRepository.findUserTimelineAudits(username, resolvedCluster)) {
+            rows.add(roleAssignmentAuditRow(audit));
+        }
+        rows.sort((left, right) -> String.valueOf(right.get("timeValue")).compareTo(String.valueOf(left.get("timeValue"))));
+        return rows.stream().limit(80).collect(Collectors.toList());
+    }
+
     @GetMapping("/resources/permissions")
     @Operation(summary = "查询用户实时权限", description = "查询指定集群授权后端中的实时权限明细，包含库、表和权限类型。")
     public Map<String, Object> listResourcePermissions(@RequestParam("username") String username,
@@ -1389,6 +1414,65 @@ public class AccessController {
         } catch (Exception e) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readableAuthorizationError(e), e);
         }
+    }
+
+    @PostMapping("/starrocks/inventory/permissions")
+    @Operation(summary = "盘点 StarRocks 用户当前权限", description = "批量拉取 StarRocks 用户当前 live 权限，并按权限组合聚类输出模板候选。")
+    public Map<String, Object> inventoryStarRocksPermissions(@RequestBody StarRocksPermissionInventoryRequest request,
+                                                             HttpServletRequest httpRequest) {
+        adminGuard.requirePlatformAdmin(httpRequest, "仅 admin 或超级用户可执行 StarRocks 权限盘点");
+        if (request == null) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "盘点参数不能为空");
+        }
+        String cluster = requireText(request.getCluster(), "请选择 StarRocks 集群");
+        String authBackend = authorizationService.normalizeAuthBackend(
+                firstNonBlank(request.getAuthBackend(), authorizationService.authBackend(cluster)));
+        String engineType = authorizationService.engineType(cluster, authBackend);
+        if (!"STARROCKS".equalsIgnoreCase(engineType) && !"STARROCKS_SQL".equalsIgnoreCase(authBackend)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "当前集群不是 StarRocks 授权后端，无法执行 StarRocks 权限盘点");
+        }
+
+        String resolvedCluster = authorizationService.resolveClusterCodeOrName(cluster);
+        boolean includeRecordedGrants = request.getIncludeRecordedGrants() == null || request.getIncludeRecordedGrants();
+        List<String> usernames = resolveStarRocksInventoryUsernames(request, cluster, resolvedCluster, authBackend);
+        if (usernames.isEmpty()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "未找到可盘点的 StarRocks 用户");
+        }
+
+        List<Map<String, Object>> users = new ArrayList<>();
+        List<Map<String, Object>> failures = new ArrayList<>();
+        for (String username : usernames) {
+            try {
+                users.add(buildStarRocksInventoryUser(username, cluster, resolvedCluster, authBackend, includeRecordedGrants));
+            } catch (Exception e) {
+                Map<String, Object> failure = new LinkedHashMap<>();
+                failure.put("username", username);
+                failure.put("message", readableAuthorizationError(e));
+                failures.add(failure);
+            }
+        }
+        users.sort(Comparator.comparing(item -> String.valueOf(item.get("username")), String.CASE_INSENSITIVE_ORDER));
+        List<Map<String, Object>> templateCandidates = buildStarRocksTemplateCandidates(users);
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("cluster", resolvedCluster);
+        result.put("engineType", engineType);
+        result.put("authBackend", authBackend);
+        result.put("scannedAt", LocalDateTime.now().toString());
+        result.put("requestedUserCount", usernames.size());
+        result.put("scannedUserCount", users.size());
+        result.put("successCount", users.size());
+        result.put("failedCount", failures.size());
+        result.put("templateCandidateCount", templateCandidates.size());
+        result.put("status", failures.isEmpty() ? "SUCCESS" : (users.isEmpty() ? "FAILED" : "PARTIAL_SUCCESS"));
+        result.put("message", "StarRocks 权限盘点完成：扫描 " + usernames.size()
+                + "，成功 " + users.size()
+                + "，失败 " + failures.size()
+                + "，模板候选 " + templateCandidates.size());
+        result.put("users", users);
+        result.put("templateCandidates", templateCandidates);
+        result.put("failures", failures);
+        return result;
     }
 
     @PostMapping("/grant/batch")
@@ -2627,6 +2711,342 @@ public class AccessController {
         return false;
     }
 
+    private List<String> resolveStarRocksInventoryUsernames(StarRocksPermissionInventoryRequest request,
+                                                            String cluster,
+                                                            String resolvedCluster,
+                                                            String authBackend) {
+        int maxUsers = normalizeInventoryMaxUsers(request.getMaxUsers());
+        String keyword = lower(request.getKeyword());
+        Set<String> unique = new LinkedHashSet<>();
+        if (request.getUsernames() != null) {
+            for (String item : request.getUsernames()) {
+                String username = firstNonBlank(item);
+                if (username != null) {
+                    unique.add(username);
+                }
+            }
+        }
+        if (!unique.isEmpty()) {
+            List<String> selected = new ArrayList<>(unique);
+            selected.sort(String.CASE_INSENSITIVE_ORDER);
+            return selected.size() > maxUsers ? selected.subList(0, maxUsers) : selected;
+        }
+        List<String> principals;
+        try {
+            principals = authorizationService.listPrincipals(cluster, authBackend);
+        } catch (Exception e) {
+            List<String> recordedFallback = recordedInventoryUsernames(resolvedCluster, cluster, authBackend, keyword);
+            if (!recordedFallback.isEmpty()) {
+                return recordedFallback.size() > maxUsers ? recordedFallback.subList(0, maxUsers) : recordedFallback;
+            }
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST,
+                    readablePrincipalListError(e) + "；当前没有可兜底的 recorded 权限用户，请先同步 StarRocks 用户或补齐权限记录后重试", e);
+        }
+        if (principals != null) {
+            for (String principal : principals) {
+                String username = firstNonBlank(principal);
+                if (username == null) {
+                    continue;
+                }
+                if (!keyword.isEmpty() && !lower(username).contains(keyword)) {
+                    continue;
+                }
+                unique.add(username);
+            }
+        }
+        for (String username : recordedInventoryUsernames(resolvedCluster, cluster, authBackend, keyword)) {
+            unique.add(username);
+        }
+        List<String> selected = new ArrayList<>(unique);
+        selected.sort(String.CASE_INSENSITIVE_ORDER);
+        return selected.size() > maxUsers ? selected.subList(0, maxUsers) : selected;
+    }
+
+    private List<String> recordedInventoryUsernames(String resolvedCluster,
+                                                    String cluster,
+                                                    String authBackend,
+                                                    String keyword) {
+        String targetCluster = firstNonBlank(resolvedCluster, cluster);
+        String normalizedAuthBackend = authorizationService.normalizeAuthBackend(authBackend);
+        Set<String> usernames = new LinkedHashSet<>();
+        for (UserResourceAccess access : userResourceAccessRepository.findActiveByCluster(targetCluster)) {
+            String username = firstNonBlank(access == null ? null : access.getUsername());
+            if (username == null) {
+                continue;
+            }
+            if (!keyword.isEmpty() && !lower(username).contains(keyword)) {
+                continue;
+            }
+            String recordedBackend = authorizationService.normalizeAuthBackend(access.getAuthBackend());
+            if (normalizedAuthBackend != null && recordedBackend != null && !normalizedAuthBackend.equals(recordedBackend)) {
+                continue;
+            }
+            usernames.add(username);
+        }
+        List<String> selected = new ArrayList<>(usernames);
+        selected.sort(String.CASE_INSENSITIVE_ORDER);
+        return selected;
+    }
+
+    private int normalizeInventoryMaxUsers(Integer value) {
+        if (value == null) {
+            return 50;
+        }
+        if (value < 1) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "maxUsers 必须大于 0");
+        }
+        if (value > 200) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "maxUsers 不能超过 200");
+        }
+        return value;
+    }
+
+    private Map<String, Object> buildStarRocksInventoryUser(String username,
+                                                            String cluster,
+                                                            String resolvedCluster,
+                                                            String authBackend,
+                                                            boolean includeRecordedGrants) {
+        List<Map<String, Object>> grants = dedupePermissionRows(
+                normalizePermissionRows(authorizationService.getUserPermissions(username, cluster, authBackend)),
+                authBackend);
+        List<Map<String, Object>> recordedGrants = new ArrayList<>();
+        if (includeRecordedGrants) {
+            List<UserResourceAccess> recordedAccess = resolvedCluster == null || resolvedCluster.trim().isEmpty()
+                    ? userResourceAccessRepository.findByUsernameAndIsDeletedFalse(username)
+                    : userResourceAccessRepository.findByUsernameAndClusterCodeAndIsDeletedFalse(username, resolvedCluster);
+            recordedGrants = dedupePermissionRows(normalizeRecordedPermissionRows(recordedAccess), authBackend);
+        }
+
+        Set<String> liveKeys = permissionRowKeys(grants, authBackend);
+        Set<String> recordedKeys = permissionRowKeys(recordedGrants, authBackend);
+        int matchedRecordedCount = 0;
+        for (String key : liveKeys) {
+            if (recordedKeys.contains(key)) {
+                matchedRecordedCount++;
+            }
+        }
+
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("username", username);
+        item.put("grantCount", grants.size());
+        item.put("recordedGrantCount", recordedGrants.size());
+        item.put("matchedRecordedCount", matchedRecordedCount);
+        item.put("liveOnlyCount", Math.max(liveKeys.size() - matchedRecordedCount, 0));
+        item.put("recordedOnlyCount", Math.max(recordedKeys.size() - matchedRecordedCount, 0));
+        item.put("highRiskGrantCount", countHighRiskGrants(grants));
+        item.put("permissionCategory", templateCategory(grants));
+        item.put("permissionSignature", permissionSignature(grants, authBackend));
+        item.put("permissionSummary", permissionSummary(grants));
+        item.put("grants", grants);
+        item.put("recordedGrants", recordedGrants);
+        return item;
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<Map<String, Object>> buildStarRocksTemplateCandidates(List<Map<String, Object>> users) {
+        Map<String, List<Map<String, Object>>> usersBySignature = new LinkedHashMap<>();
+        for (Map<String, Object> user : users) {
+            String signature = String.valueOf(user.get("permissionSignature"));
+            usersBySignature.computeIfAbsent(signature, key -> new ArrayList<>()).add(user);
+        }
+        List<Map<String, Object>> candidates = new ArrayList<>();
+        int index = 1;
+        for (Map.Entry<String, List<Map<String, Object>>> entry : usersBySignature.entrySet()) {
+            List<Map<String, Object>> groupedUsers = entry.getValue();
+            if (groupedUsers.isEmpty()) {
+                continue;
+            }
+            groupedUsers.sort(Comparator.comparing(item -> String.valueOf(item.get("username")), String.CASE_INSENSITIVE_ORDER));
+            Map<String, Object> first = groupedUsers.get(0);
+            List<Map<String, Object>> grants = (List<Map<String, Object>>) first.get("grants");
+            List<String> usernames = new ArrayList<>();
+            for (Map<String, Object> groupedUser : groupedUsers) {
+                usernames.add(String.valueOf(groupedUser.get("username")));
+            }
+
+            Map<String, Object> candidate = new LinkedHashMap<>();
+            candidate.put("candidateNo", index);
+            candidate.put("templateCodeSuggestion", suggestTemplateCode(grants, index));
+            candidate.put("permissionSignature", entry.getKey());
+            candidate.put("permissionCategory", first.get("permissionCategory"));
+            candidate.put("userCount", groupedUsers.size());
+            candidate.put("grantCount", grants == null ? 0 : grants.size());
+            candidate.put("highRiskGrantCount", first.get("highRiskGrantCount"));
+            candidate.put("usernames", usernames);
+            candidate.put("permissionSummary", first.get("permissionSummary"));
+            candidate.put("grants", grants);
+            candidates.add(candidate);
+            index++;
+        }
+        candidates.sort(Comparator
+                .comparing((Map<String, Object> item) -> ((Number) item.get("userCount")).intValue()).reversed()
+                .thenComparing(item -> String.valueOf(item.get("templateCodeSuggestion")), String.CASE_INSENSITIVE_ORDER));
+        return candidates;
+    }
+
+    private List<Map<String, Object>> dedupePermissionRows(List<Map<String, Object>> rows, String authBackend) {
+        Map<String, Map<String, Object>> unique = new LinkedHashMap<>();
+        if (rows == null) {
+            return new ArrayList<>();
+        }
+        for (Map<String, Object> row : rows) {
+            Map<String, Object> compact = compactPermissionRow(row);
+            String key = permissionRowKey(compact, authBackend);
+            if (!unique.containsKey(key)) {
+                unique.put(key, compact);
+            }
+        }
+        List<Map<String, Object>> normalized = new ArrayList<>(unique.values());
+        normalized.sort(Comparator.comparing(item -> permissionRowKey(item, authBackend)));
+        int index = 1;
+        for (Map<String, Object> item : normalized) {
+            item.put("id", index++);
+        }
+        return normalized;
+    }
+
+    private Map<String, Object> compactPermissionRow(Map<String, Object> row) {
+        Map<String, Object> compact = new LinkedHashMap<>();
+        compact.put("resourceType", firstNonBlank(stringValue(row.get("resourceType")), "DATABASE"));
+        compact.put("databaseName", stringValue(row.get("databaseName")));
+        compact.put("tableName", normalizeAuthTable(stringValue(row.get("tableName"))));
+        compact.put("permission", firstNonBlank(normalizePermissionValue(stringValue(row.get("permission"))), "-"));
+        compact.put("grantText", stringValue(row.get("grantText")));
+        compact.put("source", stringValue(row.get("source")));
+        compact.put("sourceRole", stringValue(row.get("sourceRole")));
+        compact.put("sourceGroup", stringValue(row.get("sourceGroup")));
+        compact.put("status", stringValue(row.get("status")));
+        compact.put("grantMode", stringValue(row.get("grantMode")));
+        compact.put("roleCode", stringValue(row.get("roleCode")));
+        compact.put("subjectType", stringValue(row.get("subjectType")));
+        compact.put("subjectName", stringValue(row.get("subjectName")));
+        return compact;
+    }
+
+    private Set<String> permissionRowKeys(List<Map<String, Object>> rows, String authBackend) {
+        Set<String> keys = new LinkedHashSet<>();
+        if (rows == null) {
+            return keys;
+        }
+        for (Map<String, Object> row : rows) {
+            keys.add(permissionRowKey(row, authBackend));
+        }
+        return keys;
+    }
+
+    private String permissionRowKey(Map<String, Object> row, String authBackend) {
+        return rolePermissionKey(
+                stringValue(row.get("resourceType")),
+                stringValue(row.get("databaseName")),
+                stringValue(row.get("tableName")),
+                stringValue(row.get("permission")),
+                authBackend);
+    }
+
+    private int countHighRiskGrants(List<Map<String, Object>> grants) {
+        int count = 0;
+        if (grants == null) {
+            return count;
+        }
+        for (Map<String, Object> grant : grants) {
+            if (isHighRiskPermission(stringValue(grant.get("permission")))) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private List<String> permissionSummary(List<Map<String, Object>> grants) {
+        List<String> summary = new ArrayList<>();
+        if (grants == null) {
+            return summary;
+        }
+        for (Map<String, Object> grant : grants) {
+            summary.add(resourceSummary(
+                    stringValue(grant.get("resourceType")),
+                    stringValue(grant.get("databaseName")),
+                    stringValue(grant.get("tableName")),
+                    stringValue(grant.get("permission"))));
+        }
+        return summary;
+    }
+
+    private String templateCategory(List<Map<String, Object>> grants) {
+        if (grants == null || grants.isEmpty()) {
+            return "EMPTY";
+        }
+        boolean hasAdmin = false;
+        boolean hasWrite = false;
+        boolean hasRead = false;
+        for (Map<String, Object> grant : grants) {
+            String permission = upper(stringValue(grant.get("permission")));
+            if ("ALL".equals(permission) || "DROP".equals(permission) || "ALTER".equals(permission) || "CREATE".equals(permission)) {
+                hasAdmin = true;
+            }
+            if ("INSERT".equals(permission)) {
+                hasWrite = true;
+            }
+            if ("SELECT".equals(permission)) {
+                hasRead = true;
+            }
+        }
+        if (hasAdmin) {
+            return "ADMIN";
+        }
+        if (hasWrite && hasRead) {
+            return "READ_WRITE";
+        }
+        if (hasWrite) {
+            return "WRITE";
+        }
+        if (hasRead) {
+            return "READONLY";
+        }
+        return "MIXED";
+    }
+
+    private String permissionSignature(List<Map<String, Object>> grants, String authBackend) {
+        List<String> keys = new ArrayList<>(permissionRowKeys(grants, authBackend));
+        java.util.Collections.sort(keys);
+        return sha256Hex(String.join("||", keys));
+    }
+
+    private String suggestTemplateCode(List<Map<String, Object>> grants, int index) {
+        Set<String> databases = new LinkedHashSet<>();
+        if (grants != null) {
+            for (Map<String, Object> grant : grants) {
+                String database = firstNonBlank(stringValue(grant.get("databaseName")));
+                if (database != null && !"ALL DATABASES".equalsIgnoreCase(database) && !"SYSTEM".equalsIgnoreCase(database)) {
+                    databases.add(slugToken(database));
+                }
+            }
+        }
+        String scope = databases.isEmpty() ? "global" : (databases.size() == 1 ? databases.iterator().next() : "mixed");
+        return String.format("sr_%s_%s_%03d", scope, templateCategory(grants).toLowerCase(Locale.ROOT), index);
+    }
+
+    private String slugToken(String value) {
+        String normalized = lower(value).replaceAll("[^a-z0-9]+", "_").replaceAll("^_+|_+$", "");
+        if (normalized.isEmpty()) {
+            return "scope";
+        }
+        return normalized.length() > 24 ? normalized.substring(0, 24) : normalized;
+    }
+
+    private String sha256Hex(String value) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] bytes = digest.digest(String.valueOf(value).getBytes(StandardCharsets.UTF_8));
+            StringBuilder builder = new StringBuilder();
+            for (byte b : bytes) {
+                builder.append(String.format("%02x", b));
+            }
+            return builder.toString();
+        } catch (Exception e) {
+            return Integer.toHexString(String.valueOf(value).hashCode());
+        }
+    }
+
     private boolean isHighRiskPermission(String permission) {
         if (permission == null) return false;
         String normalized = permission.trim().toUpperCase();
@@ -2897,6 +3317,14 @@ public class AccessController {
         return null;
     }
 
+    private String stringValue(Object value) {
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
+    }
+
     private String pickString(Map<String, Object> row, String... keys) {
         for (String key : keys) {
             Object value = row.get(key);
@@ -2998,6 +3426,109 @@ public class AccessController {
             access.setGrantTime(LocalDateTime.now());
         }
         userResourceAccessRepository.save(access);
+    }
+
+    private Map<String, Object> permissionAuditRow(UserResourceAccess access) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        boolean revoked = "REVOKED".equalsIgnoreCase(access.getStatus()) || Boolean.TRUE.equals(access.getDeleted());
+        LocalDateTime time = revoked && access.getRevokeTime() != null ? access.getRevokeTime() : access.getGrantTime();
+        row.put("key", "permission-" + access.getId() + (revoked ? "-revoke" : "-grant"));
+        row.put("type", revoked ? "PERMISSION_REVOKE" : "PERMISSION_GRANT");
+        row.put("title", permissionAuditTitle(access, revoked));
+        row.put("time", time);
+        row.put("timeValue", time == null ? "" : time.toString());
+        row.put("operator", revoked ? access.getRevokedBy() : access.getGrantedBy());
+        row.put("cluster", firstNonBlank(access.getClusterCode(), access.getClusterName()));
+        row.put("description", permissionAuditDescription(access));
+        row.put("color", revoked ? "red" : "green");
+        row.put("status", access.getStatus());
+        row.put("roleCode", access.getRoleCode());
+        row.put("source", access.getSource());
+        return row;
+    }
+
+    private Map<String, Object> roleAssignmentAuditRow(AuthRoleAssignmentAudit audit) {
+        Map<String, Object> row = new LinkedHashMap<>();
+        row.put("key", "role-audit-" + audit.getId());
+        row.put("type", "ROLE_ASSIGNMENT");
+        row.put("title", roleAssignmentAuditTitle(audit));
+        row.put("time", audit.getActionTime());
+        row.put("timeValue", audit.getActionTime() == null ? "" : audit.getActionTime().toString());
+        row.put("operator", audit.getOperator());
+        row.put("cluster", audit.getCluster());
+        row.put("description", roleAssignmentAuditDescription(audit));
+        row.put("color", roleAssignmentAuditColor(audit));
+        row.put("status", audit.getBackendStatus());
+        row.put("roleCode", audit.getRoleCode());
+        row.put("source", audit.getAction());
+        return row;
+    }
+
+    private String permissionAuditTitle(UserResourceAccess access, boolean revoked) {
+        String mode = String.valueOf(firstNonBlank(access.getGrantMode(), access.getSource(), "DIRECT"));
+        if (mode.contains("ROLE") || access.getRoleCode() != null) {
+            return revoked ? "角色权限回收" : "角色权限授权";
+        }
+        return revoked ? "权限回收" : "权限授权";
+    }
+
+    private String permissionAuditDescription(UserResourceAccess access) {
+        List<String> parts = new ArrayList<>();
+        parts.add(resourceSummary(access.getResourceType(), access.getDatabaseName(), access.getTableName(), access.getPermission()));
+        if (access.getRoleCode() != null && !access.getRoleCode().trim().isEmpty()) {
+            parts.add("角色 " + access.getRoleCode());
+        }
+        if (access.getSubjectName() != null && !access.getSubjectName().trim().isEmpty()) {
+            parts.add(String.valueOf(access.getSubjectType()).toUpperCase(Locale.ROOT) + " " + access.getSubjectName());
+        }
+        if (access.getAuthBackend() != null && !access.getAuthBackend().trim().isEmpty()) {
+            parts.add(access.getAuthBackend());
+        }
+        return String.join("，", parts);
+    }
+
+    private String roleAssignmentAuditTitle(AuthRoleAssignmentAudit audit) {
+        String action = String.valueOf(audit.getAction()).toUpperCase(Locale.ROOT);
+        if (action.contains("REMOVE") || action.contains("DELETE") || action.contains("REVOKE")) {
+            return "角色绑定移除";
+        }
+        if (action.contains("GRANT") || action.contains("ASSIGN") || action.contains("ADD")) {
+            return "角色绑定";
+        }
+        return "角色绑定变更";
+    }
+
+    private String roleAssignmentAuditDescription(AuthRoleAssignmentAudit audit) {
+        List<String> parts = new ArrayList<>();
+        if (audit.getRoleCode() != null && !audit.getRoleCode().trim().isEmpty()) {
+            parts.add("角色 " + audit.getRoleCode());
+        }
+        if (audit.getSubjectName() != null && !audit.getSubjectName().trim().isEmpty()) {
+            parts.add(String.valueOf(audit.getSubjectType()).toUpperCase(Locale.ROOT) + " " + audit.getSubjectName());
+        }
+        if (audit.getResourceSummary() != null && !audit.getResourceSummary().trim().isEmpty()) {
+            parts.add(audit.getResourceSummary());
+        }
+        if (audit.getMessage() != null && !audit.getMessage().trim().isEmpty()) {
+            parts.add(audit.getMessage());
+        }
+        return String.join("，", parts);
+    }
+
+    private String roleAssignmentAuditColor(AuthRoleAssignmentAudit audit) {
+        String action = String.valueOf(audit.getAction()).toUpperCase(Locale.ROOT);
+        if (action.contains("REMOVE") || action.contains("DELETE") || action.contains("REVOKE")) {
+            return "red";
+        }
+        return "purple";
+    }
+
+    private String resourceSummary(String resourceType, String databaseName, String tableName, String permission) {
+        String type = String.valueOf(firstNonBlank(resourceType, tableName == null ? "DATABASE" : "TABLE")).toUpperCase(Locale.ROOT);
+        String scope = "TABLE".equals(type)
+                ? String.valueOf(firstNonBlank(databaseName, "-")) + "." + String.valueOf(firstNonBlank(tableName, "*"))
+                : String.valueOf(firstNonBlank(databaseName, "ALL DATABASES"));
+        return type + " " + scope + " " + String.valueOf(firstNonBlank(permission, "-"));
     }
 
     private String normalizeAuthTable(String table) {

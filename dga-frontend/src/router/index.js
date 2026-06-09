@@ -4,6 +4,7 @@ import Login from '../views/Login.vue';
 import MainLayout from '../layouts/MainLayout.vue';
 import AccessIndex from '../views/access/AccessIndex.vue';
 import AccessGovernancePanel from '../views/access/components/AccessGovernancePanel.vue';
+import OffboardingRevocation from '../views/access/OffboardingRevocation.vue';
 import DataSourceManagement from '../components/DataSourceManagement.vue';
 import Metadata from '../views/Metadata.vue';
 import MetadataDetail from '../views/MetadataDetail.vue';
@@ -56,7 +57,7 @@ const routes = [
         path: 'access',
         name: 'AccessManagement',
         component: AccessIndex,
-        meta: { title: '用户与权限管理' }
+        meta: { title: '用户管理' }
       },
       {
         path: 'authorization-center',
@@ -77,6 +78,12 @@ const routes = [
         name: 'AccessGovernance',
         component: AccessGovernancePanel,
         meta: { title: '风险治理' }
+      },
+      {
+        path: 'offboarding-revocation',
+        name: 'OffboardingRevocation',
+        component: OffboardingRevocation,
+        meta: { title: '离职权限回收' }
       },
       {
         path: 'metadata',

@@ -185,13 +185,23 @@
             <h3>审计时间线</h3>
             <span>聚合当前页面可追溯的账号、LDAP 与授权动作</span>
           </div>
-          <a-timeline class="audit-timeline">
-            <a-timeline-item v-for="item in auditRows" :key="item.key" :color="item.color">
-              <div class="audit-title">{{ item.title }}</div>
-              <div class="audit-meta">{{ item.time }}</div>
-              <div class="audit-desc">{{ item.description }}</div>
-            </a-timeline-item>
-          </a-timeline>
+          <a-spin :spinning="loadingAudit">
+            <a-timeline class="audit-timeline">
+              <a-timeline-item v-for="item in visibleAuditRows" :key="item.key" :color="item.color">
+                <div class="audit-title">{{ item.title }}</div>
+                <div class="audit-meta">
+                  <span>{{ item.time }}</span>
+                  <span v-if="item.operator">操作人：{{ item.operator }}</span>
+                </div>
+                <div class="audit-desc">{{ item.description }}</div>
+              </a-timeline-item>
+            </a-timeline>
+            <div v-if="auditRows.length > collapsedAuditRows.length" class="audit-toggle">
+              <a-button type="link" size="small" @click="auditExpanded = !auditExpanded">
+                {{ auditExpanded ? '收起操作记录' : `展开全部 ${auditRows.length} 条操作记录` }}
+              </a-button>
+            </div>
+          </a-spin>
         </a-card>
       </a-tab-pane>
     </a-tabs>
@@ -322,6 +332,9 @@ export default {
     return {
       activeDetailTab: 'basic',
       capability: null,
+      auditEvents: [],
+      auditExpanded: false,
+      loadingAudit: false,
       repairingLdap: false,
       ldapGroup: null,
       ldapProfile: null,
@@ -345,13 +358,16 @@ export default {
     user: {
       immediate: true,
       handler: async function() {
+        this.auditExpanded = false;
         await this.loadCapability();
         this.loadLdapGroup();
+        this.loadAuditTimeline();
       }
     },
     effectiveCluster: async function() {
       await this.loadCapability();
       this.loadLdapGroup();
+      this.loadAuditTimeline();
     },
     showLdapTab(value) {
       if (!value && this.activeDetailTab === 'ldap') {
@@ -383,7 +399,7 @@ export default {
       return this.canRepairLdapUser || this.canManageLdapGroup || this.canManageLdapLock || this.canManageProtection || this.canDeleteUser;
     },
     canDeleteUser() {
-      return canDelete();
+      return isRootAdmin();
     },
     canRepairLdapUser() {
       if (!this.user || !canDelete()) return false;
@@ -459,6 +475,25 @@ export default {
         return '';
       }
     },
+    visibleAuditRows() {
+      return this.auditExpanded ? this.auditRows : this.collapsedAuditRows;
+    },
+    collapsedAuditRows() {
+      const created = this.auditRows.find(item => item.key === 'created');
+      const auditEventKeys = new Set(this.auditEvents.map(item => item.key));
+      const recentOperations = this.auditRows.filter(item => auditEventKeys.has(item.key)).slice(0, 2);
+      const fallbackOperations = this.auditRows.filter(item => !['created', 'capability'].includes(item.key) && !auditEventKeys.has(item.key));
+      const rows = [];
+      if (created) {
+        rows.push(created);
+      }
+      [...recentOperations, ...fallbackOperations].slice(0, 2).forEach(item => {
+        if (!rows.some(row => row.key === item.key)) {
+          rows.push(item);
+        }
+      });
+      return rows;
+    },
     auditRows() {
       const rows = [];
       rows.push({
@@ -466,6 +501,7 @@ export default {
         color: 'blue',
         title: '账号创建',
         time: this.formatDate(this.user.createTime),
+        operator: this.user.createdBy || this.user.creator || '',
         description: `${this.sourceLabel}，所属集群 ${this.effectiveCluster || '未选择'}`
       });
       if (this.user.lastActiveAt) {
@@ -486,12 +522,23 @@ export default {
           description: `主组 ${this.ldapGroupName}${this.ldapProfile && this.ldapProfile.locked ? '，账号已锁定' : ''}`
         });
       }
+      this.auditEvents.forEach(item => {
+        rows.push({
+          key: item.key,
+          color: item.color || 'blue',
+          title: item.title || '授权审计',
+          time: this.formatDate(item.time),
+          operator: item.operator || '',
+          description: item.description || '-'
+        });
+      });
       if (this.capability) {
         rows.push({
           key: 'capability',
           color: this.capability.status === 'READY' ? 'green' : 'orange',
           title: '授权适配器检查',
           time: '当前',
+          operator: '',
           description: `${this.capability.engineType || '-'} / ${this.capability.authBackend || '-'}，${this.capability.requiresLdap ? '依赖 LDAP' : '不依赖 LDAP'}`
         });
       }
@@ -510,9 +557,9 @@ export default {
         this.openPasswordModal();
       } else if (key === 'ldap-lock') {
         this.confirmToggleLdapLock();
-      } else if (key === 'protection') {
+      } else if (key === 'protection' && this.canManageProtection) {
         this.$emit('toggle-protection', this.user);
-      } else if (key === 'delete' && !this.isProtectedUser) {
+      } else if (key === 'delete' && this.canDeleteUser && !this.isProtectedUser) {
         this.$emit('delete', this.user);
       }
     },
@@ -530,6 +577,25 @@ export default {
         this.capability = res.data || null;
       } catch (e) {
         this.capability = null;
+      }
+    },
+    async loadAuditTimeline() {
+      if (!this.user || !this.user.username) {
+        this.auditEvents = [];
+        return;
+      }
+      this.loadingAudit = true;
+      try {
+        const params = {};
+        if (this.effectiveCluster) {
+          params.cluster = this.effectiveCluster;
+        }
+        const { data } = await axios.get(`/api/access/users/${encodeURIComponent(this.user.username)}/audit-timeline`, { params });
+        this.auditEvents = Array.isArray(data) ? data : [];
+      } catch (e) {
+        this.auditEvents = [];
+      } finally {
+        this.loadingAudit = false;
       }
     },
     async loadLdapGroup() {
@@ -991,6 +1057,15 @@ export default {
 .audit-desc {
   color: #667085;
   font-size: 12px;
+}
+.audit-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.audit-toggle {
+  margin-top: 8px;
+  padding-left: 18px;
 }
 .danger-menu-item {
   color: #cf1322;

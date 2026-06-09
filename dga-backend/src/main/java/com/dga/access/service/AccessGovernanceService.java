@@ -27,7 +27,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpMethod;
@@ -41,7 +40,6 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
-import javax.persistence.criteria.Predicate;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.sql.Timestamp;
@@ -123,6 +121,37 @@ public class AccessGovernanceService {
     @Autowired
     private HiveServer2ConnectionService hiveServer2ConnectionService;
 
+    public boolean recordOffboardedAccountRemains(String username, String clusterIdentifier, String flowLabel,
+                                                  LocalDateTime departureAt, String confirmationNo,
+                                                  String assignee, String evidenceDetail) {
+        String normalizedUsername = clean(username);
+        String clusterName = resolveClusterName(clusterIdentifier);
+        if (normalizedUsername == null || clusterName == null) {
+            return false;
+        }
+        AccessGovernanceIssue issue = new AccessGovernanceIssue();
+        issue.setIssueType("OFFBOARDED_ACCOUNT_REMAINS");
+        issue.setSeverity("HIGH");
+        issue.setUsername(normalizedUsername);
+        issue.setClusterName(clusterName);
+        issue.setClusterCode(clusterCode(clusterName));
+        issue.setResourceType("ACCOUNT");
+        issue.setPermission("ACCOUNT_EXISTS_AFTER_OFFBOARDING");
+        issue.setSourceSystems(firstNonBlank(flowLabel, "离职权限回收"));
+        issue.setAssignee(clean(assignee));
+        issue.setConfidence("HIGH");
+        issue.setLastActiveAt(departureAt);
+        issue.setLastActiveSource("离职日期");
+        issue.setIssueKey(issueKey("OFFBOARDED_ACCOUNT_REMAINS", clusterValue(clusterName), normalizedUsername));
+        issue.setEvidence(trimTo("离职权限回收完成后账号仍存在或未能确认删除；确认单="
+                + firstNonBlank(confirmationNo, "-")
+                + "，流程=" + firstNonBlank(flowLabel, "-")
+                + "，离职时间=" + (departureAt == null ? "-" : departureAt)
+                + "。" + firstNonBlank(evidenceDetail, ""), 1000));
+        issue.setRecommendation("请在风险治理中复核该离职账号是否仍存在于授权后端；如确认残留，应立即删除账号或补充失败原因、审批依据和人工处理记录。");
+        return upsertIssue(issue);
+    }
+
     @Transactional
     public Map<String, Object> scan(String cluster, int inactiveDays, int reviewDays, String sourceText) {
         String clusterName = resolveClusterName(cluster);
@@ -201,8 +230,12 @@ public class AccessGovernanceService {
                                                   String status,
                                                   String username,
                                                   Pageable pageable) {
-        Specification<AccessGovernanceIssue> spec = issueSpec(cluster, issueTypes, status, username);
-        return issueRepository.findAll(spec, pageable);
+        List<String> types = new ArrayList<>(normalizeList(issueTypes));
+        boolean hasTypes = !types.isEmpty();
+        if (!hasTypes) {
+            types.add("__NO_MATCH__");
+        }
+        return issueRepository.searchIssues(clean(cluster), hasTypes, types, clean(status), clean(username), pageable);
     }
 
     public Map<String, Object> summary(String cluster) {
@@ -2105,33 +2138,6 @@ public class AccessGovernanceService {
         existing.setRecommendation(issue.getRecommendation());
         issueRepository.save(existing);
         return false;
-    }
-
-    private Specification<AccessGovernanceIssue> issueSpec(String cluster,
-                                                           String issueTypes,
-                                                           String status,
-                                                           String username) {
-        return (root, query, cb) -> {
-            List<Predicate> predicates = new ArrayList<>();
-            String cleanCluster = clean(cluster);
-            if (cleanCluster != null) {
-                predicates.add(cb.or(
-                        cb.equal(root.get("clusterCode"), cleanCluster),
-                        cb.equal(root.get("clusterName"), cleanCluster)
-                ));
-            }
-            Set<String> types = normalizeList(issueTypes);
-            if (!types.isEmpty()) {
-                predicates.add(root.get("issueType").in(types));
-            }
-            if (clean(status) != null && !"ALL".equalsIgnoreCase(status.trim())) {
-                predicates.add(cb.equal(root.get("status"), status.trim()));
-            }
-            if (clean(username) != null) {
-                predicates.add(cb.like(cb.lower(root.get("username")), "%" + username.trim().toLowerCase() + "%"));
-            }
-            return cb.and(predicates.toArray(new Predicate[0]));
-        };
     }
 
     private void closeOpenIssue(String issueKey, String operator) {

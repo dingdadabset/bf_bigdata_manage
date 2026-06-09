@@ -513,6 +513,7 @@ export default {
         { value: 'ROLE_BASELINE_EXCEEDED', label: '超出角色权限' },
         { value: 'HIGH_PRIVILEGE_REVIEW', label: '高权限复核' },
         { value: 'UNOWNED_PERMISSION', label: '无人负责权限' },
+        { value: 'OFFBOARDED_ACCOUNT_REMAINS', label: '离职账号残留' },
         { value: 'STALE_EMPTY_LDAP_GROUP', label: '长期空组' }
       ],
       governanceRuleSections: [
@@ -925,6 +926,7 @@ export default {
         ROLE_BASELINE_EXCEEDED: 'red',
         HIGH_PRIVILEGE_REVIEW: 'red',
         UNOWNED_PERMISSION: 'geekblue',
+        OFFBOARDED_ACCOUNT_REMAINS: 'red',
         STALE_EMPTY_LDAP_GROUP: 'volcano'
       };
       return colors[type] || 'default';
