@@ -389,42 +389,54 @@ public class AccessController {
             if (!result.isEmpty()) return result; // Return error if any
             resultMsg = "User created via IPA(SSH): " + request.getUsername();
         } else if ("IPA_HTTP".equalsIgnoreCase(strategy)) {
-            // Ensure groups exist
             try {
-                ipaHttpService.createGroup("new_cluster_users", "Users for New Cluster", "1485400045");
-                ipaHttpService.createGroup("old_cluster_users", "Users for Old Cluster", "1485400046");
-            } catch (Exception e) {
-                System.err.println("Warning: Failed to ensure IPA groups exist: " + e.getMessage());
-            }
-
-            ipaHttpService.createUser(request.getUsername(), request.getFirstName(), request.getLastName(), request.getPassword());
-            
-            // Assign to group based on cluster
-            String cluster = request.getCluster();
-            if (cluster != null) {
                 String groupToAdd = null;
-                if (cluster.toLowerCase().contains("cdh")) {
-                    groupToAdd = "old_cluster_users";
-                } else if (cluster.toLowerCase().contains("hdp")) {
-                    groupToAdd = "new_cluster_users";
-                }
-                
-                if (groupToAdd != null) {
-                    try {
-                        ipaHttpService.addUserToGroup(request.getUsername(), groupToAdd);
-                        resultMsg += " and added to group " + groupToAdd;
-                    } catch (Exception e) {
-                        System.err.println("Failed to add user to group " + groupToAdd + ": " + e.getMessage());
-                        resultMsg += " (Warning: Failed to add to group " + groupToAdd + ")";
+                ipaHttpService.createUser(request.getUsername(), request.getFirstName(), request.getLastName(), request.getPassword());
+                if ("CREATE_NEW".equalsIgnoreCase(request.getGroupStrategy())) {
+                    groupToAdd = firstNonBlank(request.getNewGroupName());
+                    if (groupToAdd != null) {
+                        ipaHttpService.createGroup(groupToAdd, firstNonBlank(request.getNewGroupDescription(), "DGA managed group"), null);
                     }
+                } else {
+                    groupToAdd = firstNonBlank(request.getGroupName());
                 }
+                if (groupToAdd != null) {
+                    ipaHttpService.addUserToGroup(request.getUsername(), groupToAdd);
+                    resultMsg = "User created via IPA(HTTP): " + request.getUsername() + " and added to group " + groupToAdd;
+                } else {
+                    resultMsg = "User created via IPA(HTTP): " + request.getUsername();
+                }
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readableLdapCreateError(e), e);
             }
-            
-            resultMsg = "User created via IPA(HTTP): " + request.getUsername();
         } else {
             boolean posixAccount = !"LDAP_ONLY".equalsIgnoreCase(request.getAccountMode());
-            ldapService.createUser(request.getCluster(), request.getUsername(), request.getPassword(),
-                    request.getEmail(), request.getGidNumber(), request.getGroupName(), posixAccount);
+            try {
+                if (posixAccount && "CREATE_NEW".equalsIgnoreCase(request.getGroupStrategy())) {
+                    String groupName = firstNonBlank(request.getNewGroupName());
+                    if (groupName == null) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请输入新建 LDAP 用户组名称");
+                    }
+                    Map<String, Object> group = ldapService.createPosixGroup(request.getCluster(), groupName, null, request.getNewGroupDescription());
+                    String createdGroupName = firstNonBlank(String.valueOf(group.get("name")));
+                    if (createdGroupName == null || "null".equalsIgnoreCase(createdGroupName)) {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "LDAP 用户组创建成功但未返回组名");
+                    }
+                    request.setGroupName(createdGroupName);
+                    Object gidNumber = group.get("gidNumber");
+                    if (gidNumber instanceof Number) {
+                        request.setGidNumber(((Number) gidNumber).longValue());
+                    } else {
+                        throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "LDAP 用户组创建成功但未返回 gidNumber");
+                    }
+                }
+                ldapService.createUser(request.getCluster(), request.getUsername(), request.getPassword(),
+                        request.getEmail(), request.getGidNumber(), request.getGroupName(), posixAccount);
+            } catch (ResponseStatusException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, readableLdapCreateError(e), e);
+            }
             strategy = "OPENLDAP";
             resultMsg = posixAccount
                     ? "System account created via OpenLDAP: " + request.getUsername()
@@ -1167,20 +1179,22 @@ public class AccessController {
     public List<Map<String, Object>> listResourcePrincipals(@RequestParam(required = false) String cluster,
                                                             @RequestParam(required = false) String authBackend,
                                                             @RequestParam(required = false) String subjectType,
-                                                            @RequestParam(required = false) String groupName) {
+                                                            @RequestParam(required = false) String groupName,
+                                                            @RequestParam(required = false) String keyword) {
         String normalizedSubjectType = firstNonBlank(subjectType, "USER").toUpperCase(Locale.ROOT);
         if ("GROUP".equals(normalizedSubjectType)) {
-            return listGroupPrincipalOptions(cluster, authBackend);
+            return listGroupPrincipalOptions(cluster, authBackend, keyword);
         }
         if (!"USER".equals(normalizedSubjectType)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "subjectType 仅支持 USER 或 GROUP");
         }
-        return listUserPrincipalOptions(cluster, authBackend, groupName);
+        return listUserPrincipalOptions(cluster, authBackend, groupName, keyword);
     }
 
-    private List<Map<String, Object>> listUserPrincipalOptions(String cluster, String authBackend, String groupName) {
+    private List<Map<String, Object>> listUserPrincipalOptions(String cluster, String authBackend, String groupName, String keyword) {
         TreeMap<String, Map<String, Object>> options = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         String normalizedGroupName = firstNonBlank(groupName);
+        String normalizedKeyword = firstNonBlank(keyword);
         Set<String> groupUsers = normalizedGroupName == null ? null : groupUsernames(cluster, normalizedGroupName);
         boolean backendRequiresExistingUser = authorizationService.requiresExistingBackendUser(cluster, authBackend);
         List<String> principals;
@@ -1196,6 +1210,9 @@ public class AccessController {
                 String username = firstNonBlank(principal);
                 if (username != null) {
                     backendUsers.add(lower(username));
+                    if (!matchesPrincipalKeyword(username, normalizedKeyword)) {
+                        continue;
+                    }
                     if (groupUsers != null && !groupUsers.contains(lower(username))) {
                         continue;
                     }
@@ -1216,16 +1233,28 @@ public class AccessController {
             if (resolvedCluster != null && resolvedCluster.getClusterName() != null) {
                 targetCluster = resolvedCluster.getClusterName();
             }
-            users = dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(targetCluster, excludedStrategies, pageable);
+            users = normalizedKeyword == null
+                    ? dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotIn(targetCluster, excludedStrategies, pageable)
+                    : dgaUserRepository.findByClusterNameAndIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+                    targetCluster, excludedStrategies, normalizedKeyword, pageable);
             if (users.isEmpty()) {
-                users = dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(excludedStrategies, pageable);
+                users = normalizedKeyword == null
+                        ? dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(excludedStrategies, pageable)
+                        : dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+                        excludedStrategies, normalizedKeyword, pageable);
             }
         } else {
-            users = dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(excludedStrategies, pageable);
+            users = normalizedKeyword == null
+                    ? dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotIn(excludedStrategies, pageable)
+                    : dgaUserRepository.findByIsDeletedFalseAndCreationStrategyNotInAndUsernameContainingIgnoreCase(
+                    excludedStrategies, normalizedKeyword, pageable);
         }
         for (DgaUser user : users.getContent()) {
             String username = firstNonBlank(user.getUsername());
             if (username == null) {
+                continue;
+            }
+            if (!matchesPrincipalKeyword(username, normalizedKeyword)) {
                 continue;
             }
             if (groupUsers != null && !groupUsers.contains(lower(username)) && !userBelongsToGroupSnapshot(user, normalizedGroupName)) {
@@ -1314,17 +1343,28 @@ public class AccessController {
         return false;
     }
 
-    private List<Map<String, Object>> listGroupPrincipalOptions(String cluster, String authBackend) {
+    private List<Map<String, Object>> listGroupPrincipalOptions(String cluster, String authBackend, String keyword) {
+        String normalizedKeyword = firstNonBlank(keyword);
         if (isRangerAuthBackend(authBackend)) {
             return authorizationService.listGroups(cluster, authBackend).stream()
+                    .filter(groupName -> matchesPrincipalKeyword(groupName, normalizedKeyword))
                     .map(groupName -> principalOption(groupName, "GROUP", "RANGER_GROUP",
                             true, true, true, false, false, new ArrayList<>()))
                     .collect(Collectors.toList());
         }
         return listGroupPrincipals(cluster).stream()
+                .filter(groupName -> matchesPrincipalKeyword(groupName, normalizedKeyword))
                 .map(groupName -> principalOption(groupName, "GROUP", "LDAP_GROUP",
                         true, true, true, false, false, new ArrayList<>()))
                 .collect(Collectors.toList());
+    }
+
+    private boolean matchesPrincipalKeyword(String value, String keyword) {
+        String normalizedKeyword = firstNonBlank(keyword);
+        if (normalizedKeyword == null) {
+            return true;
+        }
+        return value != null && lower(value).contains(lower(normalizedKeyword));
     }
 
     private boolean isRangerAuthBackend(String authBackend) {
@@ -3111,6 +3151,17 @@ public class AccessController {
             return "授权 SQL 执行失败: " + compactMessage;
         }
         return compactMessage;
+    }
+
+    private String readableLdapCreateError(Exception e) {
+        String message = e.getMessage() == null ? "LDAP 创建失败" : e.getMessage();
+        String lower = message.toLowerCase(Locale.ROOT);
+        if (lower.contains("managed entry plugin rejected add operation")
+                || lower.contains("operationnotsupportedexception")
+                || lower.contains("error code 53")) {
+            return "当前目录由 FreeIPA/389ds Managed Entry 管理，不能通过普通 LDAP 直接新建 cn=users/cn=groups 条目。请在“目录写入方式”选择 FreeIPA(IPA HTTP)，或先在 IPA 中创建用户/组后再选择已有组。";
+        }
+        return compactExceptionMessage(message);
     }
 
     private String compactExceptionMessage(String message) {

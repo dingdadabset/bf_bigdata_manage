@@ -92,6 +92,7 @@
             placeholder="请先搜索或输入目标用户"
             :disabled="!capability"
             @change="update('verificationUser', $event)"
+            @search="$emit('search-verification-principals', $event)"
           />
           <a-button :disabled="!state.verificationUser" @click="useVerificationAsSubject">
             填入授权对象
@@ -118,6 +119,7 @@
             placeholder="选择用户后自动填入，也可手动输入授权对象"
             :disabled="!capability"
             @change="update('subjectName', $event)"
+            @search="$emit('search-principals', $event)"
           />
         </div>
         <div class="field-hint">{{ principalHintText }}</div>

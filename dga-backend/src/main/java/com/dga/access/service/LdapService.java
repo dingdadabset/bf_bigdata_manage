@@ -135,6 +135,17 @@ public class LdapService {
             }
             System.out.println("LDAP user created: " + username);
         } catch (Exception e) {
+            if (posixAccount && isManagedEntryAddRejected(e)) {
+                try {
+                    ldapTemplate.bind(dn, null, buildLdapIdentityAttributes(username, password, email));
+                    applyPosixAttributes(ldapTemplate, cluster, dn, username, targetGidNumber);
+                    addUserToGroupMemberUidIfPossible(ldapTemplate, cluster, username, selectedGroupName, targetGidNumber);
+                    System.out.println("LDAP user created with POSIX fallback: " + username);
+                    return;
+                } catch (Exception fallbackError) {
+                    throw new RuntimeException("LDAP Error: " + fallbackError.getMessage(), fallbackError);
+                }
+            }
             throw new RuntimeException("LDAP Error: " + e.getMessage());
         }
     }
@@ -849,6 +860,41 @@ public class LdapService {
             attrs.put("mail", email);
         }
         return attrs;
+    }
+
+    private void applyPosixAttributes(LdapTemplate ldapTemplate, Cluster cluster, Name dn, String username, long gidNumber) {
+        Attributes existing = ldapTemplate.lookup(dn, (AttributesMapper<Attributes>) attributes -> attributes);
+        List<ModificationItem> modifications = new ArrayList<>();
+        List<String> objectClasses = mergeObjectClasses(existing.get("objectClass"));
+        if (!attributeContainsIgnoreCase(existing.get("objectClass"), POSIX_ACCOUNT)) {
+            objectClasses.add(POSIX_ACCOUNT);
+        }
+        if (shadowAccountEnabled && !attributeContainsIgnoreCase(existing.get("objectClass"), SHADOW_ACCOUNT)) {
+            objectClasses.add(SHADOW_ACCOUNT);
+        }
+        if (!sameIgnoreCaseValues(existing.get("objectClass"), objectClasses)) {
+            modifications.add(replaceAttribute("objectClass", objectClasses));
+        }
+        if (!firstLongAttributeValue(existing, "uidNumber").isPresent()) {
+            modifications.add(replaceAttribute("uidNumber", String.valueOf(allocateNextUidNumber(ldapTemplate, cluster))));
+        }
+        modifications.add(replaceAttribute("gidNumber", String.valueOf(gidNumber)));
+        if (trimToNull(firstAttributeValue(existing, "homeDirectory")) == null) {
+            modifications.add(replaceAttribute("homeDirectory", defaultHomeDirectory(username)));
+        }
+        if (trimToNull(firstAttributeValue(existing, "loginShell")) == null) {
+            modifications.add(replaceAttribute("loginShell", posixLoginShell));
+        }
+        if (!modifications.isEmpty()) {
+            ldapTemplate.modifyAttributes(dn, modifications.toArray(new ModificationItem[0]));
+        }
+    }
+
+    private boolean isManagedEntryAddRejected(Exception e) {
+        String message = e == null || e.getMessage() == null ? "" : e.getMessage().toLowerCase(Locale.ROOT);
+        return message.contains("managed entry plugin rejected add operation")
+                || message.contains("operationnotsupportedexception")
+                || message.contains("error code 53");
     }
 
     private synchronized long allocateNextUidNumber(LdapTemplate ldapTemplate, Cluster cluster) {

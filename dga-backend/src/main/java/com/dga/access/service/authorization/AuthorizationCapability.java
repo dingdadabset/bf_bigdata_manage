@@ -14,6 +14,7 @@ public class AuthorizationCapability {
     private List<String> principalTypes = new ArrayList<>();
     private List<String> resourceTypes = new ArrayList<>();
     private List<String> permissions = new ArrayList<>();
+    private List<PermissionLevel> permissionLevels = new ArrayList<>();
     private boolean requiresLdap;
     private String status;
     private List<String> warnings = new ArrayList<>();
@@ -100,6 +101,14 @@ public class AuthorizationCapability {
 
     public void setPermissions(List<String> permissions) {
         this.permissions = permissions;
+    }
+
+    public List<PermissionLevel> getPermissionLevels() {
+        return permissionLevels;
+    }
+
+    public void setPermissionLevels(List<PermissionLevel> permissionLevels) {
+        this.permissionLevels = permissionLevels;
     }
 
     public boolean isRequiresLdap() {
@@ -239,6 +248,45 @@ public class AuthorizationCapability {
 
         public void setUserLabel(String userLabel) {
             this.userLabel = userLabel;
+        }
+    }
+
+    public static class PermissionLevel {
+        private String code;
+        private String label;
+        private String riskLevel;
+        private List<String> permissions = new ArrayList<>();
+
+        public String getCode() {
+            return code;
+        }
+
+        public void setCode(String code) {
+            this.code = code;
+        }
+
+        public String getLabel() {
+            return label;
+        }
+
+        public void setLabel(String label) {
+            this.label = label;
+        }
+
+        public String getRiskLevel() {
+            return riskLevel;
+        }
+
+        public void setRiskLevel(String riskLevel) {
+            this.riskLevel = riskLevel;
+        }
+
+        public List<String> getPermissions() {
+            return permissions;
+        }
+
+        public void setPermissions(List<String> permissions) {
+            this.permissions = permissions;
         }
     }
 

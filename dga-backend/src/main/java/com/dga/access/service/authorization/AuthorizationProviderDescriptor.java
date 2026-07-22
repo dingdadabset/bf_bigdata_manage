@@ -13,6 +13,7 @@ public class AuthorizationProviderDescriptor {
     private List<String> principalTypes = new ArrayList<>();
     private List<String> resourceTypes = new ArrayList<>();
     private List<String> permissions = new ArrayList<>();
+    private List<AuthorizationCapability.PermissionLevel> permissionLevels = new ArrayList<>();
     private boolean requiresLdap;
     private AuthorizationCapability.IdentityCapabilities identity = new AuthorizationCapability.IdentityCapabilities();
     private AuthorizationCapability.RbacCapabilities rbac = new AuthorizationCapability.RbacCapabilities();
@@ -49,6 +50,16 @@ public class AuthorizationProviderDescriptor {
 
     public AuthorizationProviderDescriptor permissions(String... permissions) {
         this.permissions = list(permissions);
+        return this;
+    }
+
+    public AuthorizationProviderDescriptor permissionLevel(String code, String label, String riskLevel, String... permissions) {
+        AuthorizationCapability.PermissionLevel level = new AuthorizationCapability.PermissionLevel();
+        level.setCode(code);
+        level.setLabel(label);
+        level.setRiskLevel(riskLevel);
+        level.setPermissions(list(permissions));
+        this.permissionLevels.add(level);
         return this;
     }
 
@@ -188,6 +199,14 @@ public class AuthorizationProviderDescriptor {
 
     public void setPermissions(List<String> permissions) {
         this.permissions = permissions;
+    }
+
+    public List<AuthorizationCapability.PermissionLevel> getPermissionLevels() {
+        return permissionLevels;
+    }
+
+    public void setPermissionLevels(List<AuthorizationCapability.PermissionLevel> permissionLevels) {
+        this.permissionLevels = permissionLevels;
     }
 
     public boolean isRequiresLdap() {

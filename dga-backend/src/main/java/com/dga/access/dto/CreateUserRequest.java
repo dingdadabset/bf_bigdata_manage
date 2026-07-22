@@ -15,6 +15,9 @@ public class CreateUserRequest {
     private java.time.LocalDateTime expiresAt;
     private Long gidNumber;
     private String groupName;
+    private String groupStrategy;
+    private String newGroupName;
+    private String newGroupDescription;
 
     public String getUsername() {
         return username;
@@ -118,5 +121,29 @@ public class CreateUserRequest {
 
     public void setGroupName(String groupName) {
         this.groupName = groupName;
+    }
+
+    public String getGroupStrategy() {
+        return groupStrategy;
+    }
+
+    public void setGroupStrategy(String groupStrategy) {
+        this.groupStrategy = groupStrategy;
+    }
+
+    public String getNewGroupName() {
+        return newGroupName;
+    }
+
+    public void setNewGroupName(String newGroupName) {
+        this.newGroupName = newGroupName;
+    }
+
+    public String getNewGroupDescription() {
+        return newGroupDescription;
+    }
+
+    public void setNewGroupDescription(String newGroupDescription) {
+        this.newGroupDescription = newGroupDescription;
     }
 }

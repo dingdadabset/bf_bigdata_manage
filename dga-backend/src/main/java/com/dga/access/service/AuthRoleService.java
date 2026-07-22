@@ -24,6 +24,7 @@ import com.dga.access.security.CurrentUser;
 import com.dga.access.service.authorization.AuthorizationCapability;
 import com.dga.access.service.authorization.AuthorizationService;
 import com.dga.access.service.authorization.GrantCommand;
+import com.dga.cluster.entity.ClusterEndpoint;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
@@ -369,6 +370,9 @@ public class AuthRoleService {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "全部库通配仅支持库级权限，表级权限请指定具体数据库");
         }
         String authBackend = resolveRoleAuthBackend(role.getCluster(), role.getAuthBackend(), null);
+        if ("*".equals(database) && isStarRocksRoleBackend(role, authBackend)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "StarRocks 角色权限范围请指定具体数据库，避免后续子集授权无法展开");
+        }
         for (AuthRolePermission existing : permissionRepository.findByRoleCodeAndStatus(role.getRoleCode(), "ACTIVE")) {
             if (samePermission(existing, database, table, permission, authBackend)) {
                 return view(role);
@@ -1008,6 +1012,17 @@ public class AuthRoleService {
     private String resolveRoleAuthBackend(String cluster, String preferredAuthBackend, String fallbackAuthBackend) {
         String backend = authorizationService.normalizeAuthBackend(firstNonBlank(preferredAuthBackend, fallbackAuthBackend));
         return backend != null ? backend : authorizationService.authBackend(cluster);
+    }
+
+    private boolean isStarRocksRoleBackend(AuthRole role, String authBackend) {
+        if (ClusterEndpoint.AUTH_STARROCKS_SQL.equalsIgnoreCase(trimToNull(authBackend))) {
+            return true;
+        }
+        String engineType = upper(role.getEngineType());
+        if (engineType.contains("STARROCKS") || engineType.contains("STAR_ROCKS")) {
+            return true;
+        }
+        return upper(safeEngineType(role.getCluster(), authBackend)).contains("STARROCKS");
     }
 
     private boolean backendUsesMaterializedPolicies(String cluster, String authBackend) {

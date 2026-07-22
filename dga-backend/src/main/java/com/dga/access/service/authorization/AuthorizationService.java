@@ -376,6 +376,7 @@ public class AuthorizationService {
         capability.setPrincipalTypes(descriptor.getPrincipalTypes());
         capability.setResourceTypes(descriptor.getResourceTypes());
         capability.setPermissions(descriptor.getPermissions());
+        capability.setPermissionLevels(descriptor.getPermissionLevels());
         capability.setRequiresLdap(descriptor.isRequiresLdap());
         capability.setIdentity(descriptor.getIdentity());
         capability.setRbac(descriptor.getRbac());

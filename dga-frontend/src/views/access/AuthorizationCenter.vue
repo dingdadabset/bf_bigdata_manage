@@ -50,6 +50,8 @@
       @change="handleStateChange"
       @refresh="reloadAll"
       @sync-verification="syncVerificationUser"
+      @search-principals="searchPrincipals"
+      @search-verification-principals="searchVerificationPrincipals"
     />
 
     <div v-if="!isRoleManagement && state.mode === 'ROLE'" class="flow-role-panel">
@@ -370,6 +372,11 @@ export default {
         maxUsers: 50,
         includeRecordedGrants: true,
         result: null
+      },
+      principalSearchTimers: {
+        subject: null,
+        verification: null,
+        verificationLookup: null
       }
     };
   },
@@ -537,6 +544,11 @@ export default {
   created() {
     this.applyRouteContext();
     this.reloadAll();
+  },
+  beforeDestroy() {
+    Object.values(this.principalSearchTimers || {}).forEach(timer => {
+      if (timer) clearTimeout(timer);
+    });
   },
   watch: {
     pageMode(value) {
@@ -888,7 +900,9 @@ export default {
         const nextVerificationUser = value || '';
         this.state.verificationUser = nextVerificationUser;
         this.verificationSnapshot = null;
-        await this.loadVerificationIfNeeded();
+        if (nextVerificationUser) {
+          this.debouncePrincipalSearch('verificationLookup', () => this.loadVerificationIfNeeded());
+        }
         return;
       }
       if (field === 'subjectFromVerificationUser') {
@@ -1383,7 +1397,23 @@ export default {
         this.loading.roleDetail = false;
       }
     },
-    async fetchPrincipalOptions(subjectType, groupName = '') {
+    searchPrincipals(keyword) {
+      this.debouncePrincipalSearch('subject', () => this.loadPrincipals(keyword));
+    },
+    searchVerificationPrincipals(keyword) {
+      this.debouncePrincipalSearch('verification', () => this.loadVerificationPrincipals(keyword));
+    },
+    debouncePrincipalSearch(type, action) {
+      const key = type || 'subject';
+      if (this.principalSearchTimers[key]) {
+        clearTimeout(this.principalSearchTimers[key]);
+      }
+      this.principalSearchTimers[key] = setTimeout(() => {
+        action();
+        this.principalSearchTimers[key] = null;
+      }, 250);
+    },
+    async fetchPrincipalOptions(subjectType, groupName = '', keyword = '') {
       const params = {
         cluster: this.state.selectedCluster,
         authBackend: this.state.selectedAuthBackend,
@@ -1392,17 +1422,22 @@ export default {
       if (groupName) {
         params.groupName = groupName;
       }
+      const normalizedKeyword = String(keyword || '').trim();
+      if (normalizedKeyword) {
+        params.keyword = normalizedKeyword;
+      }
       const res = await axios.get('/api/access/resources/principals', { params });
       return Array.isArray(res.data) ? res.data : [];
     },
-    async loadPrincipals() {
+    async loadPrincipals(keyword = '') {
       if (!this.state.selectedCluster || !this.state.selectedAuthBackend) {
         this.principals = [];
         return;
       }
       this.loading.principals = true;
       try {
-        this.principals = await this.fetchPrincipalOptions(this.state.subjectType);
+        const options = await this.fetchPrincipalOptions(this.state.subjectType, '', keyword);
+        this.principals = this.withPinnedPrincipalOptions(options, [this.state.subjectName], this.state.subjectType);
       } catch (e) {
         this.principals = [];
         this.$message.error(this.messageOf(e, '加载主体候选失败'));
@@ -1410,7 +1445,7 @@ export default {
         this.loading.principals = false;
       }
     },
-    async loadVerificationPrincipals() {
+    async loadVerificationPrincipals(keyword = '') {
       if (!this.state.selectedCluster || !this.state.selectedAuthBackend) {
         this.verificationPrincipals = [];
         return;
@@ -1418,8 +1453,9 @@ export default {
       this.loading.verificationPrincipals = true;
       try {
         const groupName = this.state.subjectType === 'GROUP' ? String(this.state.subjectName || '').trim() : '';
-        this.verificationPrincipals = await this.fetchPrincipalOptions('USER', groupName);
-        if (groupName && this.state.verificationUser && !this.findPrincipalOption(this.verificationPrincipals, this.state.verificationUser)) {
+        const options = await this.fetchPrincipalOptions('USER', groupName, keyword);
+        this.verificationPrincipals = this.withPinnedPrincipalOptions(options, [this.state.verificationUser], 'USER');
+        if (!String(keyword || '').trim() && groupName && this.state.verificationUser && !this.findPrincipalOption(this.verificationPrincipals, this.state.verificationUser)) {
           this.state.verificationUser = '';
           this.verificationSnapshot = null;
         }
@@ -1429,6 +1465,33 @@ export default {
       } finally {
         this.loading.verificationPrincipals = false;
       }
+    },
+    withPinnedPrincipalOptions(options, names, subjectType = 'USER') {
+      const merged = Array.isArray(options) ? options.slice() : [];
+      const searchPools = [merged, this.principals || [], this.verificationPrincipals || []];
+      (names || []).map(name => String(name || '').trim()).filter(Boolean).forEach(name => {
+        if (this.findPrincipalOption(merged, name)) {
+          return;
+        }
+        let existing = null;
+        for (const pool of searchPools) {
+          existing = this.findPrincipalOption(pool, name);
+          if (existing) break;
+        }
+        merged.unshift(existing || {
+          name,
+          value: name,
+          subjectType,
+          source: 'MANUAL_INPUT',
+          exists: false,
+          historical: false,
+          assignable: true,
+          directExceptionAllowed: false,
+          requiresRoleBinding: true,
+          warnings: ['当前输入项不在搜索结果中，将按手动输入处理。']
+        });
+      });
+      return merged;
     },
     async loadDatabases() {
       this.loading.databases = true;

@@ -5,6 +5,13 @@
         <a-tag :color="isSqlAuthCluster ? 'blue' : 'green'">{{ createBackendLabel }}</a-tag>
         <span class="form-hint">{{ createBackendHint }}</span>
       </a-form-model-item>
+      <a-form-model-item v-if="showLdapGroupInput" label="目录写入方式">
+        <a-radio-group v-model="userForm.creationStrategy" button-style="solid">
+          <a-radio-button value="OPENLDAP">OpenLDAP</a-radio-button>
+          <a-radio-button value="IPA_HTTP">FreeIPA(IPA HTTP)</a-radio-button>
+        </a-radio-group>
+        <div class="form-hint">{{ directoryWriteHint }}</div>
+      </a-form-model-item>
       <a-form-model-item label="所属集群">
         <a-select v-model="userForm.cluster" placeholder="请选择集群">
           <a-select-option v-for="cluster in clusters" :key="cluster.id" :value="cluster.clusterCode || cluster.clusterName">
@@ -36,17 +43,34 @@
           仅 LDAP 身份用于应用认证；Linux/POSIX 账号会写入 uidNumber、gidNumber、homeDirectory、loginShell。
         </div>
       </a-form-model-item>
-      <a-form-model-item v-if="showLdapGroupInput && isPosixAccount" label="所属组">
+      <a-form-model-item v-if="showLdapGroupInput && isPosixAccount" label="主组策略">
+        <a-radio-group v-model="userForm.groupStrategy" button-style="solid">
+          <a-radio-button value="CREATE_NEW">创建新组</a-radio-button>
+          <a-radio-button value="USE_EXISTING">选择已有组</a-radio-button>
+        </a-radio-group>
+        <div class="form-hint">{{ groupStrategyHint }}</div>
+      </a-form-model-item>
+      <template v-if="showLdapGroupInput && isPosixAccount && userForm.groupStrategy === 'CREATE_NEW'">
+        <a-form-model-item label="新组名">
+          <a-input v-model="userForm.newGroupName" placeholder="默认使用用户名作为组名" />
+        </a-form-model-item>
+        <a-form-model-item label="组说明">
+          <a-input v-model="userForm.newGroupDescription" placeholder="可选，例如 用户主组或项目组说明" />
+        </a-form-model-item>
+      </template>
+      <a-form-model-item v-if="showLdapGroupInput && isPosixAccount && userForm.groupStrategy === 'USE_EXISTING'" label="所属组">
         <a-select
           v-model="userForm.groupName"
+          show-search
+          option-filter-prop="children"
           placeholder="请选择 LDAP 组"
           @change="onGroupChange"
         >
-          <a-select-option v-for="group in ldapGroups" :key="group.name" :value="group.name">
+          <a-select-option v-for="group in ldapGroupOptions" :key="group.key" :value="group.name">
             {{ group.name }} (gid={{ group.gidNumber }})
           </a-select-option>
         </a-select>
-        <div class="form-hint">创建系统账号时会写入所选组的 gidNumber。</div>
+        <div class="form-hint">选择已有组会把该 gidNumber 写入新用户。</div>
       </a-form-model-item>
       <a-form-model-item label="过期时间" :required="requiresExpiry">
         <a-input
@@ -96,7 +120,10 @@ export default {
         cluster: '',
         creationStrategy: 'OPENLDAP',
         accountMode: 'POSIX_ACCOUNT',
+        groupStrategy: 'CREATE_NEW',
         groupName: '',
+        newGroupName: '',
+        newGroupDescription: '',
         gidNumber: null,
         userType: 'INTERNAL',
         expiresAt: '',
@@ -124,13 +151,28 @@ export default {
       return this.capability ? createUserTitle(this.capability) : '新建用户';
     },
     createBackendLabel() {
-      return this.capability ? userSourceLabel(this.capability) : 'OpenLDAP';
+      if (this.isSqlAuthCluster) {
+        return this.capability ? userSourceLabel(this.capability) : '授权后端';
+      }
+      return this.userForm.creationStrategy === 'IPA_HTTP' ? 'FreeIPA' : 'OpenLDAP';
     },
     createBackendHint() {
       if (this.isSqlAuthCluster) {
         return '用户将直接写入当前授权后端，不走 OpenLDAP。';
       }
       return '生产环境用户将写入所选集群配置的 LDAP endpoint';
+    },
+    directoryWriteHint() {
+      if (this.userForm.creationStrategy === 'IPA_HTTP') {
+        return 'FreeIPA/389ds 的 cn=users、cn=groups 通常由 Managed Entry 管理，需要通过 IPA API 创建。';
+      }
+      return '仅适用于允许普通 LDAP add/modify 的 OpenLDAP 目录；FreeIPA 目录请选择 IPA HTTP。';
+    },
+    groupStrategyHint() {
+      if (this.userForm.creationStrategy === 'IPA_HTTP') {
+        return 'IPA HTTP 下会通过 IPA 创建组并把用户加入该组；用户主组仍由 IPA 策略决定。';
+      }
+      return 'Linux/POSIX 账号必须有主组；新建组会自动分配 gidNumber。';
     },
     usernamePlaceholder() {
       return this.isSqlAuthCluster ? '例如 analyst 或 analyst@%' : '请输入 LDAP 用户名';
@@ -143,6 +185,19 @@ export default {
     },
     isPosixAccount() {
       return !this.isSqlAuthCluster && this.userForm.accountMode === 'POSIX_ACCOUNT';
+    },
+    ldapGroupOptions() {
+      const seen = new Set();
+      return (this.ldapGroups || []).reduce((result, group) => {
+        const name = String(group?.name || '').trim();
+        const gidNumber = group?.gidNumber;
+        if (!name || !gidNumber) return result;
+        const key = `${name}:${gidNumber}`;
+        if (seen.has(key)) return result;
+        seen.add(key);
+        result.push({ ...group, name, gidNumber, key });
+        return result;
+      }, []);
     }
   },
   watch: {
@@ -158,6 +213,8 @@ export default {
       } else {
         this.ldapGroups = [];
         this.userForm.groupName = '';
+        this.userForm.newGroupName = '';
+        this.userForm.newGroupDescription = '';
         this.userForm.gidNumber = null;
         this.userForm.accountMode = 'LDAP_ONLY';
       }
@@ -167,12 +224,35 @@ export default {
         this.userForm.expiresAt = '';
       }
     },
+    'userForm.username'(value) {
+      this.autoSplitName(value);
+      if (this.userForm.groupStrategy === 'CREATE_NEW') {
+        this.userForm.newGroupName = this.defaultGroupName(value);
+      }
+    },
     'userForm.accountMode'(value) {
       if (value !== 'POSIX_ACCOUNT') {
         this.userForm.groupName = '';
+        this.userForm.newGroupName = '';
+        this.userForm.newGroupDescription = '';
         this.userForm.gidNumber = null;
-      } else if (this.ldapGroups.length > 0) {
-        const selected = this.ldapGroups[0];
+      } else {
+        this.userForm.groupStrategy = 'CREATE_NEW';
+        this.userForm.newGroupName = this.defaultGroupName(this.userForm.username);
+      }
+    },
+    'userForm.creationStrategy'(value) {
+      if (value === 'IPA_HTTP' && this.userForm.accountMode === 'LDAP_ONLY') {
+        this.userForm.accountMode = 'POSIX_ACCOUNT';
+      }
+    },
+    'userForm.groupStrategy'(value) {
+      if (value === 'CREATE_NEW') {
+        this.userForm.groupName = '';
+        this.userForm.gidNumber = null;
+        this.userForm.newGroupName = this.userForm.newGroupName || this.defaultGroupName(this.userForm.username);
+      } else if (this.ldapGroupOptions.length > 0) {
+        const selected = this.ldapGroupOptions[0];
         this.userForm.groupName = selected.name;
         this.userForm.gidNumber = selected.gidNumber;
       }
@@ -223,14 +303,15 @@ export default {
           params: { cluster: this.userForm.cluster }
         });
         this.ldapGroups = Array.isArray(res.data) ? res.data : [];
-        if (this.ldapGroups.length > 0) {
-          const current = this.ldapGroups.find(group => group.name === this.userForm.groupName);
-          const selected = current || this.ldapGroups[0];
+        if (this.userForm.groupStrategy === 'USE_EXISTING' && this.ldapGroupOptions.length > 0) {
+          const current = this.ldapGroupOptions.find(group => group.name === this.userForm.groupName);
+          const selected = current || this.ldapGroupOptions[0];
           this.userForm.groupName = selected.name;
           this.userForm.gidNumber = selected.gidNumber;
         } else {
           this.userForm.groupName = '';
           this.userForm.gidNumber = null;
+          this.userForm.newGroupName = this.userForm.newGroupName || this.defaultGroupName(this.userForm.username);
         }
       } catch (e) {
         console.error('Failed to fetch LDAP groups', e);
@@ -240,9 +321,12 @@ export default {
       }
     },
     onGroupChange(value) {
-      const selected = this.ldapGroups.find(group => group.name === value);
+      const selected = this.ldapGroupOptions.find(group => group.name === value);
       this.userForm.groupName = value;
       this.userForm.gidNumber = selected ? selected.gidNumber : null;
+    },
+    defaultGroupName(value) {
+      return String(value || '').split('@')[0].trim();
     },
     minExpiryInput() {
       return this.formatDateTimeInput(new Date(Date.now() + 60 * 1000));
@@ -284,8 +368,13 @@ export default {
         this.$message.warning('请输入密码');
         return;
       }
-      if (this.isPosixAccount && (!this.userForm.groupName || !this.userForm.gidNumber)) {
-        this.$message.warning('请选择所属 LDAP 组');
+      if (this.isPosixAccount && this.userForm.groupStrategy === 'CREATE_NEW' && !this.userForm.newGroupName.trim()) {
+        this.$message.warning('请输入新组名');
+        return;
+      }
+      if (this.isPosixAccount && this.userForm.groupStrategy === 'USE_EXISTING'
+        && (!this.userForm.groupName || (this.userForm.creationStrategy !== 'IPA_HTTP' && !this.userForm.gidNumber))) {
+        this.$message.warning('请选择已有 LDAP 组');
         return;
       }
       if (this.requiresExpiry && !this.userForm.expiresAt) {
@@ -305,6 +394,10 @@ export default {
           lastName: this.userForm.lastName || 'User',
           accountMode: this.isSqlAuthCluster ? 'SQL_USER' : this.userForm.accountMode,
           creationStrategy: this.isSqlAuthCluster ? (this.capability?.engineType || 'LIVE_AUTH_BACKEND') : this.userForm.creationStrategy,
+          groupName: this.isPosixAccount && this.userForm.groupStrategy === 'USE_EXISTING' ? this.userForm.groupName : '',
+          gidNumber: this.isPosixAccount && this.userForm.groupStrategy === 'USE_EXISTING' ? this.userForm.gidNumber : null,
+          newGroupName: this.isPosixAccount && this.userForm.groupStrategy === 'CREATE_NEW' ? this.userForm.newGroupName.trim() : '',
+          newGroupDescription: this.isPosixAccount && this.userForm.groupStrategy === 'CREATE_NEW' ? this.userForm.newGroupDescription : '',
           userType: this.userForm.userType || 'EMPLOYEE',
           expiresAt: this.normalizeExpiry(this.userForm.expiresAt)
         };

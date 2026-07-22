@@ -122,6 +122,28 @@
               <h3>{{ accountIdentity.hasPosix ? '当前用户组关系' : 'LDAP 身份属性' }}</h3>
               <span>{{ accountIdentity.hasPosix ? '以当前用户为中心维护主组与附加组' : '当前账号是目录身份，未识别为可登录操作系统账号' }}</span>
             </div>
+            <div class="ldap-action-bar">
+              <a-button size="small" icon="reload" @click="loadLdapGroup">
+                刷新属性
+              </a-button>
+              <a-button v-if="canRepairLdapUser" size="small" icon="tool" :loading="repairingLdap" @click="repairLdapUser">
+                修复系统账号
+              </a-button>
+              <a-button v-if="canManageLdapGroup && accountIdentity.hasPosix" size="small" icon="team" @click="openLdapManager">
+                调整用户组
+              </a-button>
+              <a-button v-if="canManageLdapGroup" size="small" icon="key" @click="openPasswordModal">
+                重置密码
+              </a-button>
+              <a-button
+                v-if="canManageLdapLock"
+                size="small"
+                :icon="ldapProfile && ldapProfile.locked ? 'unlock' : 'lock'"
+                @click="confirmToggleLdapLock"
+              >
+                {{ ldapProfile && ldapProfile.locked ? '解锁用户' : '锁定用户' }}
+              </a-button>
+            </div>
             <a-alert
               v-if="!accountIdentity.hasPosix"
               class="ldap-identity-note"
@@ -149,9 +171,6 @@
                   </a-tag>
                   <span v-if="!supplementaryGroupNames.length" class="muted">暂无附加组</span>
                 </div>
-              </div>
-              <div class="membership-actions">
-                <a-button icon="team" @click="openLdapManager">调整用户组</a-button>
               </div>
               <a-collapse v-if="currentLdapDn || ldapAttributesPreview" class="compact-collapse membership-advanced">
                 <a-collapse-panel key="dn" header="DN 与原始属性">
@@ -974,12 +993,18 @@ export default {
   flex-direction: column;
   gap: 16px;
 }
+.ldap-action-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
 .membership-card {
   border: 1px solid #edf0f5;
 }
 .membership-content {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr) auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 1.2fr);
   gap: 16px;
   align-items: center;
 }
@@ -1006,9 +1031,6 @@ export default {
 }
 .supplementary-tags .ant-tag {
   margin-right: 0;
-}
-.membership-actions {
-  justify-self: end;
 }
 .membership-advanced {
   grid-column: 1 / -1;
@@ -1121,9 +1143,6 @@ export default {
 @media (max-width: 960px) {
   .membership-content {
     grid-template-columns: 1fr;
-  }
-  .membership-actions {
-    justify-self: start;
   }
 }
 @media (max-width: 768px) {

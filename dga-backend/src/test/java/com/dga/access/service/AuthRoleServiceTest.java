@@ -3,6 +3,7 @@ package com.dga.access.service;
 import com.dga.access.dto.AuthRoleAssignmentRequest;
 import com.dga.access.dto.AuthRoleImportRequest;
 import com.dga.access.dto.AuthRoleImportResult;
+import com.dga.access.dto.AuthRolePermissionRequest;
 import com.dga.access.dto.BackendRolePermissionSnapshot;
 import com.dga.access.dto.BackendRoleSnapshot;
 import com.dga.access.dto.BatchRoleAssignmentItem;
@@ -175,6 +176,23 @@ class AuthRoleServiceTest {
         assertItem(result, 0, "WILL_BIND", "SUCCESS");
         verify(userRoleRepository, never()).save(any(AuthUserRole.class));
         verify(authorizationService, never()).assignRoleToUser(anyString(), anyString(), anyString(), anyString());
+    }
+
+    @Test
+    void addPermissionRejectsStarRocksWildcardDatabaseScope() {
+        AuthRole role = role(ClusterEndpoint.AUTH_STARROCKS_SQL);
+        role.setEngineType("STARROCKS");
+        givenRole(role);
+
+        AuthRolePermissionRequest request = new AuthRolePermissionRequest();
+        request.setDatabaseName("*");
+        request.setPermission("SELECT");
+
+        assertThatThrownBy(() -> service.addPermission("dga_role", request))
+                .isInstanceOf(ResponseStatusException.class)
+                .hasMessageContaining("StarRocks 角色权限范围请指定具体数据库");
+        verify(permissionRepository, never()).save(any(AuthRolePermission.class));
+        verify(authorizationService, never()).grantPermissionToRole(anyString(), anyString(), anyString(), any(), anyString(), anyString());
     }
 
     @Test

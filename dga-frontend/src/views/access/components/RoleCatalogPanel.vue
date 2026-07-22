@@ -83,8 +83,25 @@
       @cancel="roleModalVisible = false"
     >
       <a-form-model :label-col="{ span: 5 }" :wrapper-col="{ span: 17 }">
+        <a-form-model-item label="业务域">
+          <a-input v-model="roleForm.domain" :disabled="!!roleForm.id" placeholder="例如 pay、risk、ods" @change="syncGeneratedRoleFields" />
+        </a-form-model-item>
+        <a-form-model-item label="资源范围">
+          <a-input v-model="roleForm.scope" :disabled="!!roleForm.id" placeholder="例如 aggr_pay、some_db、project_x" @change="syncGeneratedRoleFields" />
+        </a-form-model-item>
+        <a-form-model-item label="权限级别">
+          <a-select v-model="roleForm.level" :disabled="!!roleForm.id" @change="onRoleLevelChange">
+            <a-select-option v-for="item in permissionLevelOptions" :key="item.code" :value="item.code">
+              {{ item.label }}（{{ item.permissions.join(' + ') }}）
+            </a-select-option>
+          </a-select>
+        </a-form-model-item>
         <a-form-model-item label="角色编码">
-          <a-input v-model="roleForm.roleCode" :disabled="!!roleForm.id" placeholder="例如 dga_pay_readonly" />
+          <a-input v-if="roleForm.id || roleForm.manualRoleCode" v-model="roleForm.roleCode" :disabled="!!roleForm.id" placeholder="例如 dga_cdh_sentry_pay_readonly" />
+          <div v-else class="generated-role-code">{{ generatedRoleCode }}</div>
+          <a-checkbox v-if="!roleForm.id" v-model="roleForm.manualRoleCode" class="manual-code-toggle">
+            手动覆盖角色编码
+          </a-checkbox>
         </a-form-model-item>
         <a-form-model-item label="角色名称">
           <a-input v-model="roleForm.roleName" placeholder="例如 支付域只读分析" />
@@ -142,8 +159,17 @@
               {{ item.label }}
             </a-select-option>
           </a-select>
+          <a-alert
+            v-if="isStarRocksBackend"
+            class="form-hint"
+            type="info"
+            show-icon
+            message="StarRocks 角色范围请使用具体数据库，便于后续按子集授权。"
+          />
           <div class="quick-actions">
-            <a-button size="small" @click="selectAllDatabases">全部库 (*)</a-button>
+            <a-button size="small" :disabled="shouldSelectConcreteDatabases && !databases.length" @click="selectAllDatabases">
+              {{ allDatabaseButtonText }}
+            </a-button>
             <a-button size="small" @click="permissionForm.databaseNames = []; permissionForm.tableSelections = []">清空</a-button>
           </div>
         </a-form-model-item>
@@ -164,6 +190,13 @@
             <a-button size="small" @click="permissionForm.tableSelections = tableOptions.map(item => item.value)">全选表</a-button>
             <a-button size="small" @click="permissionForm.tableSelections = []">清空</a-button>
           </div>
+        </a-form-model-item>
+        <a-form-model-item label="权限级别">
+          <a-select v-model="permissionForm.permissionLevel" @change="applyPermissionLevel">
+            <a-select-option v-for="item in permissionLevelOptions" :key="item.code" :value="item.code">
+              {{ item.label }}（{{ item.permissions.join(' + ') }}）
+            </a-select-option>
+          </a-select>
         </a-form-model-item>
         <a-form-model-item label="权限">
           <a-select v-model="permissionForm.permissions" mode="multiple" placeholder="请选择权限">
@@ -293,14 +326,54 @@ export default {
     canSyncBackendRoles() {
       return String(this.selectedAuthBackend || this.capabilityAuthBackend || '').trim().toUpperCase() === 'SENTRY';
     },
+    isStarRocksBackend() {
+      const text = [
+        this.selectedAuthBackend,
+        this.capabilityAuthBackend,
+        this.capabilityEngineType,
+        this.roleDetail?.role?.authBackend,
+        this.roleDetail?.role?.engineType
+      ].filter(Boolean).join(' ').toUpperCase();
+      return text.includes('STARROCKS') || text.includes('STAR_ROCKS');
+    },
+    allDatabaseButtonText() {
+      return this.shouldSelectConcreteDatabases ? '全选当前库' : '全部库 (*)';
+    },
+    shouldSelectConcreteDatabases() {
+      return this.isStarRocksBackend || this.permissionForm.resourceType === 'TABLE';
+    },
     permissionOptions() {
       return Array.isArray(this.capability?.permissions) && this.capability.permissions.length
         ? this.capability.permissions
         : ['SELECT'];
     },
+    permissionLevelOptions() {
+      if (Array.isArray(this.capability?.permissionLevels) && this.capability.permissionLevels.length) {
+        return this.capability.permissionLevels.map(item => ({
+          code: item.code,
+          label: item.label || item.code,
+          riskLevel: item.riskLevel || 'LOW',
+          permissions: Array.isArray(item.permissions) ? item.permissions : []
+        }));
+      }
+      return [
+        { code: 'READONLY', label: '只读', riskLevel: 'LOW', permissions: ['SELECT'] },
+        { code: 'WRITE', label: '读写', riskLevel: 'MEDIUM', permissions: ['SELECT', 'INSERT'] },
+        { code: 'DDL', label: '结构变更', riskLevel: 'HIGH', permissions: ['CREATE', 'ALTER', 'DROP'] },
+        { code: 'ADMIN', label: '管理员', riskLevel: 'HIGH', permissions: ['ALL'] }
+      ];
+    },
+    selectedPermissionLevel() {
+      return this.permissionLevelOptions.find(item => item.code === this.roleForm.level) || this.permissionLevelOptions[0];
+    },
+    generatedRoleCode() {
+      return this.buildRoleCode(this.selectedCluster, this.capabilityAuthBackend || this.selectedAuthBackend, this.roleForm.domain, this.roleForm.scope, this.roleForm.level);
+    },
     databaseSelectOptions() {
-      const options = (this.databases || []).map(item => ({ value: item, label: item }));
-      if (this.permissionForm.resourceType === 'DATABASE') {
+      const options = (this.databases || [])
+        .filter(item => String(item || '').trim() && String(item || '').trim() !== '*')
+        .map(item => ({ value: item, label: item }));
+      if (this.permissionForm.resourceType === 'DATABASE' && !this.isStarRocksBackend) {
         return [{ value: '*', label: '*（全部库）' }, ...options];
       }
       return options;
@@ -313,6 +386,10 @@ export default {
         roleCode: '',
         roleName: '',
         owner: '',
+        domain: '',
+        scope: '',
+        level: 'READONLY',
+        manualRoleCode: false,
         riskLevel: 'LOW',
         status: 'ACTIVE',
         expiresAt: '',
@@ -324,6 +401,7 @@ export default {
         resourceType: 'DATABASE',
         databaseNames: [],
         tableSelections: [],
+        permissionLevel: 'READONLY',
         permissions: []
       };
     },
@@ -334,6 +412,10 @@ export default {
           roleCode: role.roleCode || '',
           roleName: role.roleName || '',
           owner: role.owner || '',
+          domain: role.domain || '',
+          scope: role.scope || '',
+          level: role.level || 'READONLY',
+          manualRoleCode: true,
           riskLevel: role.riskLevel || 'LOW',
           status: role.status || 'ACTIVE',
           expiresAt: this.formatDateTimeInput(role.expiresAt),
@@ -341,18 +423,27 @@ export default {
         };
       } else {
         this.roleForm = this.emptyRoleForm();
+        this.onRoleLevelChange(this.roleForm.level);
+        this.syncGeneratedRoleFields();
       }
       this.roleModalVisible = true;
     },
     submitRole() {
-      if (!this.roleForm.roleCode || !this.roleForm.roleCode.trim()) {
-        this.$message.warning('请输入角色编码');
+      const roleCode = this.roleForm.manualRoleCode || this.roleForm.id
+        ? this.roleForm.roleCode.trim()
+        : this.generatedRoleCode;
+      if (!roleCode) {
+        this.$message.warning('请填写业务域、资源范围和权限级别以生成角色编码');
         return;
       }
+      const { manualRoleCode, ...rolePayload } = this.roleForm;
       this.$emit('save-role', {
-        ...this.roleForm,
-        roleCode: this.roleForm.roleCode.trim(),
-        roleName: this.roleForm.roleName || this.roleForm.roleCode.trim(),
+        ...rolePayload,
+        roleCode,
+        roleName: this.roleForm.roleName || this.generatedRoleName(roleCode),
+        domain: this.roleForm.domain.trim(),
+        scope: this.roleForm.scope.trim(),
+        level: this.roleForm.level,
         cluster: this.roleDetail?.role?.cluster || this.selectedCluster,
         engineType: this.capabilityEngineType,
         authBackend: this.capabilityAuthBackend || this.selectedAuthBackend,
@@ -360,12 +451,58 @@ export default {
       });
       this.roleModalVisible = false;
     },
+    onRoleLevelChange() {
+      const selected = this.selectedPermissionLevel;
+      if (selected && selected.riskLevel) {
+        this.roleForm.riskLevel = selected.riskLevel;
+      }
+      this.syncGeneratedRoleFields();
+    },
+    syncGeneratedRoleFields() {
+      if (!this.roleForm.id && !this.roleForm.manualRoleCode) {
+        this.roleForm.roleCode = this.generatedRoleCode;
+      }
+      if (!this.roleForm.roleName && this.roleForm.scope) {
+        this.roleForm.roleName = this.generatedRoleName(this.generatedRoleCode);
+      }
+    },
+    generatedRoleName(roleCode) {
+      const level = this.selectedPermissionLevel;
+      const scope = this.roleForm.scope || roleCode;
+      return `${scope} ${level ? level.label : this.roleForm.level}`;
+    },
+    buildRoleCode(cluster, authBackend, domain, scope, level) {
+      const parts = [
+        'dga',
+        this.normalizeCodePart(cluster),
+        this.normalizeCodePart(authBackend),
+        this.normalizeCodePart(domain),
+        this.normalizeCodePart(scope),
+        this.normalizeCodePart(level)
+      ].filter(Boolean);
+      return parts.join('_').replace(/_+/g, '_').replace(/^_|_$/g, '');
+    },
+    normalizeCodePart(value) {
+      return String(value || '')
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '_')
+        .replace(/^_|_$/g, '');
+    },
     async openPermissionModal() {
       if (!this.roleDetail || !this.roleDetail.role) return;
       this.permissionForm = this.emptyPermissionForm();
-      this.permissionForm.permissions = this.permissionOptions.length ? [this.permissionOptions[0]] : [];
+      this.applyPermissionLevel(this.permissionForm.permissionLevel);
       this.permissionModalVisible = true;
       await this.loadDatabases();
+    },
+    applyPermissionLevel(value) {
+      const selected = this.permissionLevelOptions.find(item => item.code === value) || this.permissionLevelOptions[0];
+      this.permissionForm.permissionLevel = selected ? selected.code : 'READONLY';
+      const allowed = new Set(this.permissionOptions);
+      this.permissionForm.permissions = selected && selected.permissions.length
+        ? selected.permissions.filter(item => allowed.has(item))
+        : (this.permissionOptions.length ? [this.permissionOptions[0]] : []);
     },
     onPermissionResourceTypeChange() {
       if (this.permissionForm.resourceType === 'TABLE' && this.permissionForm.databaseNames.includes('*')) {
@@ -378,7 +515,12 @@ export default {
     },
     async onPermissionDatabasesChange(values) {
       const nextValues = values || [];
-      this.permissionForm.databaseNames = nextValues.includes('*') ? ['*'] : nextValues.filter(item => item !== '*');
+      if (this.isStarRocksBackend && nextValues.includes('*')) {
+        this.permissionForm.databaseNames = nextValues.filter(item => item !== '*');
+        this.$message.warning('StarRocks 角色权限范围请指定具体数据库');
+      } else {
+        this.permissionForm.databaseNames = nextValues.includes('*') ? ['*'] : nextValues.filter(item => item !== '*');
+      }
       this.permissionForm.tableSelections = [];
       if (this.permissionForm.resourceType !== 'TABLE' || !this.permissionForm.databaseNames.length) {
         this.tableOptions = [];
@@ -386,10 +528,15 @@ export default {
       }
       await this.loadTablesForDatabases(this.permissionForm.databaseNames);
     },
-    selectAllDatabases() {
-      this.permissionForm.databaseNames = ['*'];
+    async selectAllDatabases() {
+      this.permissionForm.databaseNames = this.shouldSelectConcreteDatabases
+        ? (this.databases || []).filter(item => String(item || '').trim() && String(item || '').trim() !== '*')
+        : ['*'];
       this.permissionForm.tableSelections = [];
       this.tableOptions = [];
+      if (this.permissionForm.resourceType === 'TABLE' && this.permissionForm.databaseNames.length) {
+        await this.loadTablesForDatabases(this.permissionForm.databaseNames);
+      }
     },
     async loadDatabases() {
       if (!this.roleDetail?.role?.cluster) return;
@@ -440,6 +587,10 @@ export default {
       if (!this.roleDetail?.role?.roleCode) return;
       if (!this.permissionForm.databaseNames.length) {
         this.$message.warning('请选择数据库');
+        return;
+      }
+      if (this.isStarRocksBackend && this.permissionForm.databaseNames.includes('*')) {
+        this.$message.warning('StarRocks 角色权限范围请指定具体数据库，避免后续子集授权无法展开');
         return;
       }
       if (!this.permissionForm.permissions.length) {
@@ -523,6 +674,18 @@ export default {
   margin-top: 4px;
   font-size: 12px;
   color: #667085;
+}
+.generated-role-code {
+  min-height: 32px;
+  padding: 5px 11px;
+  color: #344054;
+  background: #f8fafc;
+  border: 1px solid #d9d9d9;
+  border-radius: 4px;
+  word-break: break-all;
+}
+.manual-code-toggle {
+  margin-top: 8px;
 }
 .selected-role-label {
   margin-top: 0;
@@ -649,6 +812,9 @@ export default {
 .quick-actions {
   display: flex;
   gap: 8px;
+  margin-top: 8px;
+}
+.form-hint {
   margin-top: 8px;
 }
 </style>

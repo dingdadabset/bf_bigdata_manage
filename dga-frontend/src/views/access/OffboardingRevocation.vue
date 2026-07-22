@@ -176,6 +176,64 @@
           <a-tag :color="departureDate ? 'green' : 'orange'">{{ departureDate || '未选离职日期' }}</a-tag>
         </div>
 
+        <section v-if="selectedTask" class="task-inspector" :class="taskStatusClass(selectedTask.status)">
+          <div class="inspector-head">
+            <div>
+              <span>当前任务</span>
+              <strong>{{ selectedTask.taskNo }}</strong>
+            </div>
+            <div class="inspector-actions">
+              <a-tag :color="taskStatusColor(selectedTask.status)">{{ taskStatusText(selectedTask.status) }}</a-tag>
+              <a-button
+                v-if="selectedTask.confirmationText"
+                size="small"
+                icon="copy"
+                @click="copyConfirmation"
+              >
+                复制单据
+              </a-button>
+            </div>
+          </div>
+          <div class="inspector-message">{{ selectedTask.message || selectedTask.archiveName || '任务详情已加载' }}</div>
+          <div class="inspector-grid">
+            <div>
+              <span>回收用户</span>
+              <strong>{{ selectedTask.username || '-' }}</strong>
+            </div>
+            <div>
+              <span>集群</span>
+              <strong>{{ selectedTask.cluster || '-' }}</strong>
+            </div>
+            <div>
+              <span>离职日期</span>
+              <strong>{{ formatDate(selectedTask.departureDate) }}</strong>
+            </div>
+            <div>
+              <span>计划执行</span>
+              <strong>{{ formatDateTime(selectedTask.scheduledAt) }}</strong>
+            </div>
+          </div>
+        </section>
+
+        <div class="readiness-card" :class="{ ready: canCreateTask }">
+          <div class="readiness-head">
+            <span>下一步</span>
+            <strong>{{ nextActionText }}</strong>
+          </div>
+          <div class="readiness-checks">
+            <div
+              v-for="check in readinessChecks"
+              :key="check.key"
+              class="readiness-item"
+              :class="{ done: check.done, active: check.active }"
+            >
+              <a-icon :type="check.done ? 'check-circle' : (check.active ? 'clock-circle' : 'minus-circle')" />
+              <span>{{ check.label }}</span>
+              <em>{{ check.detail }}</em>
+            </div>
+          </div>
+        </div>
+
         <div class="execution-form">
           <a-form-model layout="vertical">
             <div class="form-grid">
@@ -190,25 +248,37 @@
               </a-form-model-item>
             </div>
             <div class="button-row">
-              <a-button
-                icon="search"
-                class="preview-button"
-                :loading="previewing"
-                :disabled="!canPreview"
-                @click="fetchPreview"
-              >
-                预检影响范围
-              </a-button>
-              <a-button
-                type="danger"
-                icon="disconnect"
-                class="execute-button"
-                :loading="executing"
-                :disabled="!canCreateTask"
-                @click="confirmExecute"
-              >
-                创建回收任务
-              </a-button>
+              <a-tooltip :title="previewDisabledReason">
+                <span class="button-shell">
+                  <a-button
+                    icon="search"
+                    class="preview-button"
+                    :loading="previewing"
+                    :disabled="!canPreview"
+                    @click="fetchPreview"
+                  >
+                    预检影响范围
+                  </a-button>
+                </span>
+              </a-tooltip>
+              <a-tooltip :title="createDisabledReason">
+                <span class="button-shell">
+                  <a-button
+                    type="danger"
+                    icon="disconnect"
+                    class="execute-button"
+                    :loading="executing"
+                    :disabled="!canCreateTask"
+                    @click="confirmExecute"
+                  >
+                    创建回收任务
+                  </a-button>
+                </span>
+              </a-tooltip>
+            </div>
+            <div v-if="actionHint" class="action-hint">
+              <a-icon type="info-circle" />
+              <span>{{ actionHint }}</span>
             </div>
           </a-form-model>
         </div>
@@ -380,6 +450,104 @@ export default {
     },
     canCreateTask() {
       return Boolean(this.canExecute && this.preview && this.previewIsCurrent && this.preview.executable);
+    },
+    hasClusterContext() {
+      return Boolean(this.selectedUser && (this.selectedUser.clusterName || this.form.cluster));
+    },
+    previewDisabledReason() {
+      if (this.canPreview) {
+        return '';
+      }
+      if (!this.selectedUser) {
+        return '先在左侧选择一个离职用户';
+      }
+      return '当前用户缺少集群信息，请先选择集群';
+    },
+    createDisabledReason() {
+      if (this.canCreateTask) {
+        return '';
+      }
+      if (!this.selectedUser) {
+        return '先在左侧选择一个离职用户';
+      }
+      if (!this.hasClusterContext) {
+        return '当前用户缺少集群信息，请先选择集群';
+      }
+      if (!this.departureDate) {
+        return '请选择离职日期';
+      }
+      if (!this.preview) {
+        return '先执行预检，确认影响范围';
+      }
+      if (!this.previewIsCurrent) {
+        return '用户、集群或离职日期已变化，请重新预检';
+      }
+      if (!this.preview.executable) {
+        return '预检存在阻断项，请处理后再创建任务';
+      }
+      return '等待前置条件完成';
+    },
+    actionHint() {
+      return this.canCreateTask ? '预检已通过，可以创建回收任务。' : this.createDisabledReason;
+    },
+    nextActionText() {
+      if (!this.selectedUser) {
+        return '选择离职用户';
+      }
+      if (!this.hasClusterContext) {
+        return '确认所属集群';
+      }
+      if (!this.departureDate) {
+        return '选择离职日期';
+      }
+      if (!this.preview) {
+        return '预检影响范围';
+      }
+      if (!this.previewIsCurrent) {
+        return '重新预检';
+      }
+      if (!this.preview.executable) {
+        return '处理预检阻断项';
+      }
+      return '创建回收任务';
+    },
+    readinessChecks() {
+      const hasUser = Boolean(this.selectedUser);
+      const hasCluster = this.hasClusterContext;
+      const hasDepartureDate = Boolean(this.departureDate);
+      const hasPreview = Boolean(this.preview);
+      const previewCurrent = Boolean(this.preview && this.previewIsCurrent);
+      const previewExecutable = Boolean(previewCurrent && this.preview && this.preview.executable);
+      return [
+        {
+          key: 'user',
+          label: '处置对象',
+          detail: hasUser ? this.selectedUser.username : '未选择',
+          done: hasUser,
+          active: !hasUser
+        },
+        {
+          key: 'cluster',
+          label: '所属集群',
+          detail: hasCluster ? (this.selectedUser.clusterName || this.form.cluster) : '待确认',
+          done: hasCluster,
+          active: hasUser && !hasCluster
+        },
+        {
+          key: 'date',
+          label: '离职日期',
+          detail: hasDepartureDate ? this.departureDate : '未选择',
+          done: hasDepartureDate,
+          active: hasCluster && !hasDepartureDate
+        },
+        {
+          key: 'preview',
+          label: '影响预检',
+          detail: previewExecutable ? '通过' : (hasPreview && !previewCurrent ? '已过期' : (hasPreview ? '有阻断项' : '未预检')),
+          done: previewExecutable,
+          active: hasDepartureDate && !previewExecutable
+        }
+      ];
     },
     pendingTaskCount() {
       return this.tasks.filter(task => ['PENDING', 'RUNNING'].includes(String(task.status || '').toUpperCase())).length;
@@ -1171,6 +1339,166 @@ h3 {
   text-overflow: ellipsis;
 }
 
+.task-inspector {
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #dbeafe;
+  background: #f7fbff;
+  border-left: 4px solid #1677ff;
+}
+
+.task-inspector.failed {
+  border-color: #ffd8d6;
+  border-left-color: #ff4d4f;
+  background: #fff7f6;
+}
+
+.task-inspector.completed {
+  border-color: #d9f7be;
+  border-left-color: #52c41a;
+  background: #f6ffed;
+}
+
+.task-inspector.pending {
+  border-color: #ffe7ba;
+  border-left-color: #faad14;
+  background: #fffaf0;
+}
+
+.inspector-head,
+.inspector-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.inspector-head span,
+.inspector-grid span,
+.readiness-head span,
+.readiness-item em {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+  font-style: normal;
+}
+
+.inspector-head strong {
+  display: block;
+  color: #111827;
+  font-size: 14px;
+  margin-top: 2px;
+  word-break: break-all;
+}
+
+.inspector-message {
+  margin-top: 8px;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.inspector-grid > div {
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.inspector-grid strong {
+  display: block;
+  margin-top: 2px;
+  color: #111827;
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.readiness-card {
+  margin-bottom: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #e5eaf0;
+  background: #f8fafc;
+}
+
+.readiness-card.ready {
+  border-color: #b7eb8f;
+  background: #f6ffed;
+}
+
+.readiness-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+
+.readiness-head strong {
+  color: #111827;
+  font-size: 14px;
+}
+
+.readiness-checks {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.readiness-item {
+  min-width: 0;
+  min-height: 72px;
+  padding: 9px 10px;
+  border-radius: 8px;
+  border: 1px solid #e5eaf0;
+  background: #fff;
+  color: #94a3b8;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 3px 6px;
+  align-content: start;
+}
+
+.readiness-item.done {
+  border-color: #b7eb8f;
+  color: #389e0d;
+}
+
+.readiness-item.active {
+  border-color: #91caff;
+  color: #1677ff;
+  box-shadow: 0 6px 16px rgba(22, 119, 255, 0.08);
+}
+
+.readiness-item span {
+  min-width: 0;
+  color: #1f2937;
+  font-size: 12px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.readiness-item em {
+  grid-column: 2;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .execution-form {
   padding-bottom: 12px;
   border-bottom: 1px solid #eef2f6;
@@ -1199,6 +1527,29 @@ h3 {
 .button-row {
   display: flex;
   gap: 10px;
+}
+
+.button-shell {
+  flex: 1;
+  display: inline-flex;
+}
+
+.button-shell .ant-btn {
+  width: 100%;
+}
+
+.action-hint {
+  min-height: 28px;
+  margin-top: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #64748b;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .preview-panel {
@@ -1426,6 +1777,8 @@ h3 {
   .filter-strip,
   .form-grid,
   .confirmation-grid,
+  .inspector-grid,
+  .readiness-checks,
   .preview-metrics {
     grid-template-columns: 1fr;
   }
